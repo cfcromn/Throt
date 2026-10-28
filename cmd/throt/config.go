@@ -25,14 +25,21 @@ func runConfig(args []string, cfgPath string, w io.Writer) error {
 		return errors.New(configUsage)
 	}
 	sub := args[0]
+	if sub == "-h" || sub == "-help" || sub == "--help" {
+		fmt.Fprintln(w, configUsage)
+		return flag.ErrHelp
+	}
 	cfs := flag.NewFlagSet("throt config "+sub, flag.ContinueOnError)
 	cfs.SetOutput(io.Discard)
+	cfs.Usage = func() { fmt.Fprintln(cfs.Output(), configUsage); cfs.PrintDefaults() }
 	cfs.StringVar(&cfgPath, "config", cfgPath, "path to config file")
 	asJSON := false
 	if sub == "show" {
 		cfs.BoolVar(&asJSON, "json", false, "print the effective config as JSON")
 	}
-	if err := cfs.Parse(args[1:]); err != nil || cfs.NArg() > 0 {
+	if err := parseFlags(cfs, args[1:], w); errors.Is(err, flag.ErrHelp) {
+		return err
+	} else if err != nil || cfs.NArg() > 0 {
 		return errors.New(configUsage)
 	}
 	switch sub {

@@ -15,7 +15,7 @@ import (
 )
 
 func TestParseFlagsDefaults(t *testing.T) {
-	o, err := parseFlags(nil, &bytes.Buffer{})
+	o, err := parseFlags(nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestParseFlagsLogging(t *testing.T) {
 		{[]string{"--log-level", "warn"}, "text", slog.LevelWarn},
 		{[]string{"-log-level", "error", "-log-format", "json"}, "json", slog.LevelError},
 	} {
-		o, err := parseFlags(tc.args, &bytes.Buffer{})
+		o, err := parseFlags(tc.args, &bytes.Buffer{}, &bytes.Buffer{})
 		if err != nil {
 			t.Errorf("%q: %v", tc.args, err)
 			continue
@@ -54,21 +54,46 @@ func TestParseFlagsInvalid(t *testing.T) {
 		{"-bogus"},
 		{"extra"},
 	} {
-		if _, err := parseFlags(args, &bytes.Buffer{}); err == nil {
+		if _, err := parseFlags(args, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
 			t.Errorf("%q: want an error", args)
 		}
 	}
 }
 
 func TestHelpDocumentsLogFlags(t *testing.T) {
-	var b bytes.Buffer
-	if _, err := parseFlags([]string{"-h"}, &b); !errors.Is(err, flag.ErrHelp) {
+	var b, errw bytes.Buffer
+	if _, err := parseFlags([]string{"-h"}, &b, &errw); !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("err = %v, want flag.ErrHelp", err)
+	}
+	if errw.Len() != 0 {
+		t.Errorf("-h wrote to stderr: %q", errw.String())
 	}
 	for _, want := range []string{"-log-format", "text or json", "-log-level", "debug, info, warn, or error", "-config"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("help lacks %q:\n%s", want, b.String())
 		}
+	}
+}
+
+// TestHelpGoesToStdout checks that -h and -help print the usage to stdout
+// (main then exits 0), while a bad flag prints the error and the usage to
+// stderr.
+func TestHelpGoesToStdout(t *testing.T) {
+	for _, arg := range []string{"-h", "-help", "--help"} {
+		var out, errw bytes.Buffer
+		if _, err := parseFlags([]string{arg}, &out, &errw); !errors.Is(err, flag.ErrHelp) {
+			t.Fatalf("%s: err = %v, want flag.ErrHelp", arg, err)
+		}
+		if !strings.HasPrefix(out.String(), "Usage: throtd") || !strings.Contains(out.String(), "-version") || errw.Len() != 0 {
+			t.Errorf("%s: stdout %q, stderr %q", arg, out.String(), errw.String())
+		}
+	}
+	var out, errw bytes.Buffer
+	if _, err := parseFlags([]string{"-bogus"}, &out, &errw); err == nil || errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("-bogus: err = %v", err)
+	}
+	if out.Len() != 0 || !strings.Contains(errw.String(), "-bogus") || !strings.Contains(errw.String(), "Usage: throtd") {
+		t.Errorf("-bogus: stdout %q, stderr %q", out.String(), errw.String())
 	}
 }
 

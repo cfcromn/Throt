@@ -9,7 +9,7 @@
 | Monitor | Collects host and process metrics through platform adapters. |
 | Process graph | Parent/child relationships; attributes descendants to a recognized agent session. |
 | Pressure engine | Turns noisy samples into stable pressure states using rolling windows and hysteresis. |
-| Classifier | Labels workloads (interactive, background, build, test, container-build, unknown). Evidence-based and overrideable. |
+| Classifier | Labels processes by exact executable name: agent, build, test, container-build, or unknown (`internal/agent`). The heavy-tool table is built in; config can add agents (`agents`) but cannot relabel or override a class. |
 | Scheduler | Decides whether eligible heavy work runs, waits, or resumes. It never owns the agent's reasoning loop. |
 | Local protocol | Versioned IPC over a Unix domain socket. Ownership checks precede any process-control method. |
 
@@ -84,7 +84,7 @@ Every long-lived goroutine has an owner, a cancellation path (`context.Context`)
 
 ## Events
 
-One structured event model feeds logs, diagnostics, and the TUI timeline: process discovered/lost, attribution changed, pressure transition, workload classified, queued/resumed, policy changed, error/degraded mode.
+One structured event model feeds logs, diagnostics, and the TUI timeline: daemon started/stopped, agent and heavy workload discovered/lost, pressure changes, scheduler decisions and limit changes, control actions (paused, resumed, refused, failed), recovery, leases, stopped processes Throt did not pause, config reloads, and degraded mode.
 
 ## Scheduler
 
@@ -98,15 +98,15 @@ One structured event model feeds logs, diagnostics, and the TUI timeline: proces
 
 **Pressure stall information (Linux):** PSI reports the share of recent wall time in which some task (`some`), or every non-idle task at once (`full`), waited on a resource. Throt uses `avg10 / 100` of each line as a fraction, and window medians of those like any other signal; exit thresholds are half the enter ones (`StallExitRatio` 0.5), since the smallest threshold (5%) leaves no room for the absolute 0.05 margin. Memory: `some` ≥ 10% → elevated, `full` ≥ 5% → high, `full` ≥ 20% → critical (the whole machine losing a fifth of its time to reclaim is thrashing). I/O: `full` ≥ 20% → elevated, ≥ 50% → high, never critical. CPU: `some` ≥ 50% → elevated only, like the other CPU signals. While memory PSI is present in the window it takes precedence over memory used exactly as the macOS verdict does (same `MemoryUsedWhenKernelSignal` switch), because the page cache keeps Linux memory nearly full too; I/O and CPU PSI add to, and never replace, the other signals. On kernels without PSI (before 4.20, or booted with `psi=0`) the three signals are missing and memory used applies.
 
-**Workload states:** `DISCOVERED`, `RUNNING`, `QUEUED`, `PAUSED`, `RESUMING`, `EXITED`, `UNKNOWN`.
+**Workload states:** a heavy workload in `status` is `running`, `QUEUED` (paused by the scheduler, queued or preempted), or `PAUSED` (paused manually); one that exits leaves the table. Pause records have their own states (*pausing*, *paused*, *resuming*; see Control). There are no discovered, resuming or exited workload states.
 
-**Initial policy:**
+**Policy:**
 
 1. Unknown workloads are never automatically controlled.
-2. Interactive/foreground work wins over background work.
+2. Foreground responsiveness is protected through the latency probe, not by classifying processes: there are no interactive or background classes (not implemented).
 3. A configurable number of heavy workloads run concurrently.
 4. Under high pressure, delay new heavy jobs rather than suspend long-running ones.
-5. Under critical pressure, pause an eligible background workload only if explicitly enabled.
+5. Under critical pressure, pause the youngest running heavy workload only if explicitly enabled (`pause_on_critical`).
 6. Queued work ages to prevent starvation.
 7. Resumes use cooldowns to avoid oscillation.
 
@@ -123,7 +123,7 @@ One structured event model feeds logs, diagnostics, and the TUI timeline: proces
 - If a queued workload's top process exits while stopped, its remaining members are resumed (`top_exited`). The scheduler only queues workloads of up to 256 processes.
 - **Reload:** `SIGHUP` or `throt reload` re-reads the config file. `scheduler.*`, `profile` and `agents` apply live; `socket_path`, `sample_interval` and `event_history` keep their running values and are reported as requiring a restart. A file that fails to load or validate changes nothing (`config_reload_failed`); otherwise `config_reloaded` lists the changed keys. Adapters apply at the next sample, and agents still matched by a same-named adapter keep their labels. The new policy is handed to the sampling goroutine through a one-slot channel and applied at its next round, where running workloads count as pre-existing. Leaving `enforce` resumes everything the scheduler queued (`enforce_disabled`), never manual pauses.
 
-**Fairness:** priority combines user override, workload class, queue age, project fairness, and previous preemption count. No project may hold every heavy slot indefinitely.
+**Fairness:** the next queued workload to resume is chosen by, in order: aged past `max_queue_wait` first, then the owning agent with the fewest running heavy workloads (its admission leases included), then the fewest previous preemptions, then the longest queued. `per_agent_limit` keeps one agent from holding every heavy slot. There is no user override, priority by workload class, or per-project fairness (not implemented).
 
 **Explainability:** every decision emits the decision, target, reason code, observed pressure, relevant policy, and timestamp:
 
@@ -197,7 +197,22 @@ Privileged methods also require the caller's uid (from peer credentials) to matc
 
 ## Compatibility
 
-Pre-1.0, CLI/config/protocol may change between minor releases, always documented in the changelog; patch releases don't intentionally break documented behavior. Unknown config keys are errors. Client and daemon negotiate a protocol version and fail with an actionable message on mismatch. `internal/` packages are not a public API.
+Before 1.0, the CLI, config and protocol may change between minor releases, always documented in the changelog; patch releases don't intentionally break documented behavior.
+
+From 1.0, the stable surface is:
+- `throt` and `throtd` commands, subcommands and flags;
+- config keys, their meaning and defaults (unknown keys stay errors);
+- local protocol v1: its methods, params and result fields;
+- `--json` output (`throt stats`, `throt config show`, `throt version`) and the JSON lines of `throt events`;
+- MCP tool names (`throt_status`, `throt_capacity`, `throt_events`, `throt_stats`) and their input and output schemas;
+- exit codes: 0 on success (including `-h`), 1 on an error, and for `throt run` the command's own status, 126 when it cannot be executed (or is found only through `.` in `PATH`) and 127 when it is not found.
+
+Rules:
+- Additive changes are allowed in minor releases: new commands, flags, config keys, protocol methods, optional params, result and JSON fields, MCP tools and optional tool inputs. Clients and scripts must ignore unknown fields.
+- A breaking change (removing or renaming any of the above, changing a meaning, default or type, or making something optional required) needs a new major version. For the protocol it can instead be a protocol bump with negotiation: today a version mismatch is only reported with both versions, so a v2 must add negotiation and keep serving v1 clients.
+- A deprecation lasts at least one minor release, during which the old form keeps working and prints a warning (on stderr, in `throt config check`, or as an event), and the changelog names the replacement.
+
+Not covered: `internal/` packages (not a public API), log text, event message wording (event kinds and attrs are part of the protocol), and the TUI layout. `throt` and `throtd` must be the same release.
 
 ## Decisions
 

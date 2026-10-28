@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -68,9 +69,13 @@ func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) e
 	}
 	flags := flag.NewFlagSet("throt hook", flag.ContinueOnError)
 	flags.SetOutput(errw)
-	flags.Usage = func() { fmt.Fprint(errw, hookUsage); flags.PrintDefaults() }
+	flags.Usage = func() { fmt.Fprint(flags.Output(), hookUsage); flags.PrintDefaults() }
 	maxWait := flags.Duration("max-wait", defaultHookMaxWait, "wait at most this long for capacity (keep it below the hook timeout)")
-	if err := flags.Parse(args[1:]); err != nil || flags.NArg() > 0 || *maxWait < 0 {
+	err := parseFlags(flags, args[1:], out)
+	if errors.Is(err, flag.ErrHelp) {
+		return err
+	}
+	if err != nil || flags.NArg() > 0 || *maxWait < 0 {
 		fmt.Fprintln(errw, "throt hook: bad arguments; not waiting")
 		return nil
 	}

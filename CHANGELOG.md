@@ -22,6 +22,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - macOS: programs that exec in place (`throt`, `env`, `nice`, `nohup`, `timeout`) are re-named every sample, so `throt run -- npm run build` is recognized as `npm` immediately.
 - throtd logs each event at a level that fits it, with its attributes: heavy workloads starting and exiting and admission leases are now `debug` (they come and go with every build), failures, refusals and processes left stopped are `warn`, and the rest stays `info`. The event log is unchanged.
 - macOS: throtd caches process names by PID and start time and asks `ps` only about newly seen processes, with a full names pass every 15th sample, roughly halving the CPU cost of a process sample (about 85 ms to 45 ms with 1,150 processes). The process graph allocates its table once per update instead of once per process.
+- Docs: a compatibility policy for 1.0 (stable surface, additive and breaking changes, deprecations, what is not covered) and supported versions after 1.0; the 1.0 goal is an opt-in scheduler turned on confidently under an explicit profile, not a default; the architecture no longer describes unimplemented classes, workload states and fairness inputs; `socket_path`, `event_history`, the socket path's `XDG_RUNTIME_DIR` fallback, the global `-config` and `-n` flags, `throtd -version`, and the unsigned macOS binaries (Gatekeeper quarantine) are documented. `throt -h` no longer calls `run` advisory.
+
+### Fixed
+- `-h` on `throt`, `throtd`, or a subcommand (`throt config check -h`, `throt run -h`, …) prints the usage to stdout and exits 0, instead of printing `flag: help requested` and exiting 1.
 
 ## [0.7.0-rc.1] - 2026-10-28
 
@@ -118,3 +122,11 @@ First observe-only release candidate. Throt does not control any process.
 - Terminal UI (`throt` / `throt top`) built on Bubble Tea.
 - `throt doctor` sanitized diagnostics.
 - Release automation: macOS/Linux archives, checksums, and SBOMs via GoReleaser.
+
+[Unreleased]: https://github.com/cfcromn/Throt/compare/v0.7.0-rc.1...HEAD
+[0.7.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.6.0-rc.1...v0.7.0-rc.1
+[0.6.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.5.0-rc.1...v0.6.0-rc.1
+[0.5.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.4.0-rc.2...v0.5.0-rc.1
+[0.4.0-rc.2]: https://github.com/cfcromn/Throt/compare/v0.2.0-rc.1...v0.4.0-rc.2
+[0.2.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.1.0-rc.1...v0.2.0-rc.1
+[0.1.0-rc.1]: https://github.com/cfcromn/Throt/releases/tag/v0.1.0-rc.1

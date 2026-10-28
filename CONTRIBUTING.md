@@ -39,7 +39,8 @@ Layout:
 cmd/throt      client (CLI, TUI, MCP server, run, completion)
 cmd/throtd     daemon
 internal/      app, agent, capacity, config, control, doctor, domain, mcp, monitor,
-               platform, pressure, process, scheduler, stats, transport, tui;
+               platform, pressure, process, scheduler, shellwords, stats,
+               transport, tui;
                bench and e2e (Docker/CI only)
 docs/          ARCHITECTURE.md
 ```

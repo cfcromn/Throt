@@ -6,7 +6,7 @@
 
 Include the affected version/commit, impact, reproduction steps, platform, and a suggested mitigation if known. Please don't access data that isn't yours while validating a report.
 
-Before 1.0, fixes target the latest released minor version.
+Before 1.0, fixes target the latest released minor version. From 1.0, security fixes ship as a patch release of the latest minor version of the current major; older minors and majors get no fixes, and upgrading within a major is safe under the compatibility policy in `docs/ARCHITECTURE.md`.
 
 ## Security-sensitive areas
 
@@ -25,6 +25,6 @@ Extra review is required for local IPC, process signaling/control, privilege bou
 
 Throt is local-first. It collects only the metrics needed to operate, keeps them on the machine, and has **no outbound telemetry**. It does not read or store prompts, model responses, source files, command output, or environment variables.
 
-Diagnostic output (`throt doctor`) is produced only on explicit request and redacts home paths, usernames, environment variables, and command arguments likely to contain secrets.
+Diagnostic output (`throt doctor`) is produced only on explicit request. It never collects environment variables or command arguments, names no process except stopped ones throtd did not pause (by executable base name only), and redacts home paths and the user name.
 
 Any future telemetry requires a public proposal, documented fields, opt-in behavior, and retention/deletion instructions.

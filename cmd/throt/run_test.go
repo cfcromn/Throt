@@ -430,7 +430,7 @@ func TestParseRunArgs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
-			got, err := parseRunArgs(tt.args, io.Discard)
+			got, err := parseRunArgs(tt.args, io.Discard, io.Discard)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want %q", err, tt.wantErr)

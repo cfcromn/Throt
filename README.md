@@ -11,7 +11,7 @@ Throt is a local-first Go daemon and terminal UI that observes coding-agent proc
 
 ## Status
 
-**Pre-1.0 (v0.4).** Throt samples host resources and foreground latency, reports a stable pressure level, attributes processes and heavy workloads to coding agents, and shows it all in a TUI and over MCP. Manual pause/resume and an opt-in adaptive heavy-slot scheduler (`observe` / `enforce`) are available. Expect breaking changes before 1.0.
+**Pre-1.0 (v0.7; v0.8 next).** Throt samples host resources, foreground latency and kernel pressure signals, reports a stable pressure level, attributes processes and heavy workloads to coding agents, and shows it all in a TUI and over MCP. Manual pause/resume, an opt-in adaptive heavy-slot scheduler (`observe` / `enforce`), and `throt run` with reserved slots are available. Expect breaking changes before 1.0; the compatibility policy from 1.0 on is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#compatibility).
 
 ## Problem
 
@@ -83,6 +83,8 @@ sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 --ignore-mi
 gh attestation verify throt_<version>_<os>_<arch>.tar.gz --repo cfcromn/Throt
 ```
 
+On macOS the release binaries are not signed or notarized, so Gatekeeper refuses to run them after a browser download. Remove the quarantine attribute once: `xattr -d com.apple.quarantine throt throtd`. Archives fetched with `gh release download` or `curl` don't get that attribute.
+
 Or build from source with the Go version in `go.mod`:
 
 ```bash
@@ -131,7 +133,7 @@ Stop `throtd` (this resumes any paused work), replace both binaries, and start i
 ## Usage
 
 ```bash
-throtd &        # start the daemon
+throtd &        # start the daemon (throtd -version prints its version)
 throt           # terminal UI (same as `throt top`)
 throt ping      # check that the client can reach it
 throt status    # pressure, host resources, agents, heavy workloads, stopped processes
@@ -151,6 +153,10 @@ throt run -- npm run build    # wait for a free heavy slot, then run the command
 throt completion zsh          # shell completion script (bash, zsh, fish)
 ```
 
+Global flags go before the command: `-config PATH` uses another config file (default below), and `-n N` sets how many events `throt events` prints (default 50). `-h` on `throt`, `throtd`, or a subcommand prints its usage and exits 0.
+
+Both programs find `throtd`'s socket the same way: `socket_path` from the config, otherwise `$XDG_RUNTIME_DIR/throt/throtd.sock`, or, without `XDG_RUNTIME_DIR` (as usual on macOS), `throt-UID/throtd.sock` in the OS temp directory (`$TMPDIR`, else `/tmp`). Give both the same config and environment; `throt doctor` prints the path in use.
+
 ### Stopped processes throtd did not pause
 
 A process can be left stopped (SIGSTOP) with no record of it: a `throtd` killed hard before it wrote `paused.json`, a deleted state file, or a stray daemon. A shell job suspended with Ctrl-Z is stopped too, so Throt only reports these processes and never resumes one on its own.
@@ -162,7 +168,7 @@ A process can be left stopped (SIGSTOP) with no record of it: a `throtd` killed 
 
 ### Wait before starting: `throt run`
 
-`throt run [--timeout D] [--no-wait] -- CMD [ARGS...]` is the gentle alternative to being paused: it asks for a heavy slot *before* the command starts, using the same verdict as `throt_capacity`. It polls `throtd` once per second until a heavy job is OK to start (pressure below high, a free heavy slot, nothing queued, and the calling agent within its `per_agent_limit`), printing a notice to stderr at most every 10s. Then it execs the command in its own place, so the PID, signals, and exit status are the command's own. The agent is the nearest agent process among its ancestors. A missing command exits 127.
+`throt run [--timeout D] [--no-wait] -- CMD [ARGS...]` is the gentle alternative to being paused: it asks for a heavy slot *before* the command starts, using the same verdict as `throt_capacity`. It polls `throtd` once per second until a heavy job is OK to start (pressure below high, a free heavy slot, nothing queued, and the calling agent within its `per_agent_limit`), printing a notice to stderr at most every 10s. Then it execs the command in its own place, so the PID, signals, and exit status are the command's own. The agent is the nearest agent process among its ancestors. A missing command exits 127; one that cannot be executed exits 126, and so does one found only through `.` in `PATH`, which `throt run` refuses unlike a shell.
 
 The slot is reserved: `throtd` grants it as a lease, so two `throt run` commands asking at the same moment cannot both take the last slot, and the scheduler does not hand that slot to another newcomer. The lease ends when the command shows up as a heavy workload (which then holds the slot itself), when it exits, or after 60s if it never becomes heavy. A `throt run` inside work that already holds a slot (a line in a make recipe or npm script run under `throt run`, or below a running heavy build) starts at once without reserving another. With `scheduler.mode` off there are no slots, so only pressure makes it wait. `throt status` shows reserved slots (`2 reserved`).
 
@@ -211,7 +217,7 @@ This is advisory admission: the hook exits before the command starts, so it rese
 
 ## Configuration
 
-Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.json`). Unknown keys are errors.
+Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.json`; `-config PATH` on either program overrides it). Unknown keys are errors.
 
 ```json
 {
@@ -229,6 +235,11 @@ Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.js
 }
 ```
 
+Three keys apply only when `throtd` starts; `throt reload` reports a change to them as `requires restart`:
+- `socket_path`: the daemon's Unix socket (default: see [Usage](#usage)).
+- `sample_interval`: how often metrics are sampled (default `2s`, at least `100ms`).
+- `event_history`: how many recent events `throtd` keeps in memory for `throt events` (default 1000, 1 to 100000).
+
 Custom agents can be added with `"agents": [{"name": "myagent", "executables": ["my-agent"]}]`. Generic runtimes such as `node` and build tools such as `go` are refused, because they would match unrelated processes. On Linux, executable names are truncated to 15 characters.
 
 `profile` presets the scheduler; explicit keys override it.
@@ -244,7 +255,7 @@ A profile never turns the scheduler on.
 
 Check a file before `throt reload` or a restart with `throt config check [--config PATH]`. It loads the file exactly as throtd does, prints `ok` and each value that differs from the defaults (marked `file` or `profile`), and exits 1 with the error for an invalid or missing file. It also warns, without failing, about `enforce` with a `heavy_limit` of at least the CPU count, `pause_on_critical` with mode `off` (no effect), and a custom agent executable that shadows a built-in adapter. `throt config show [--json]` prints the effective config (defaults, then the profile, then the file), the profile applied, and the source of every value: `default`, `profile`, or `file`.
 
-throtd logs to stderr. `-log-format text|json` (default `text`) and `-log-level debug|info|warn|error` (default `info`) control it. `info` stays quiet in steady state: daemon lifecycle, agents appearing and leaving, pressure changes, scheduler decisions and control actions. `debug` adds each heavy workload start and exit and each admission lease; failures and processes left stopped are `warn`. The event log (`throt events`) records everything regardless of the log level.
+throtd logs to stderr. Its flags are `-config PATH`, `-version`, `-log-format text|json` (default `text`) and `-log-level debug|info|warn|error` (default `info`). `info` stays quiet in steady state: daemon lifecycle, agents appearing and leaving, pressure changes, scheduler decisions and control actions. `debug` adds each heavy workload start and exit and each admission lease; failures and processes left stopped are `warn`. The event log (`throt events`) records everything regardless of the log level.
 
 ## Roadmap
 
@@ -256,9 +267,13 @@ Outcomes, not dates.
 | v0.2 Control | Reduce overlapping heavy workloads without losing work | manual pause/resume, heavy-slot scheduler (opt-in), audit events, crash recovery | shipped |
 | v0.3 Adaptive | Keep the machine responsive automatically | latency signal, adaptive limit, per-agent budgets, profiles | shipped |
 | v0.4 Ecosystem | Integrate everywhere | Linux, documented local API, MCP server, custom agent adapters | shipped |
-| 1.0 | Safe to enable by default under a profile | real-machine benchmarks, scheduler default decided from evidence | next |
+| v0.5 Accurate pressure | Accurate pressure everywhere, and hardening | cgroup-aware Linux, macOS kernel verdict, evidence-driven CPU policy, hot reload, `throt explain`, fuzzing, pinned supply chain | shipped |
+| v0.6 Cooperative admission | Let agents wait instead of being paused | `throt run`, `throt stats`, Linux PSI, TUI drilldown and sparklines, real-binary e2e tests | shipped |
+| v0.7 Admission leases | Race-free admission, no hidden stopped work | admission leases for `throt run`, reporting of stopped processes Throt did not pause | shipped |
+| v0.8 Integration and readiness | Wait for capacity without being told | Claude Code hook, `throt setup`, `throt config check`/`show`, `throt version --json`, log levels, soak test | next |
+| 1.0 | Turn the scheduler on confidently under an explicit profile | stable compatibility policy, real-machine benchmarks; the scheduler stays opt-in, as the benchmark evidence decided | planned |
 
-**1.0** requires two supported OS families, a stable config/API policy, no known process-loss bug, reproducible benchmarks, and a security review of IPC and process-control boundaries.
+**1.0** means the scheduler is ready to turn on with confidence under an explicit `scheduler.mode` and `profile`; it stays off by default (see "Default decision" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#results)). It requires two supported OS families, the [compatibility policy](docs/ARCHITECTURE.md#compatibility) in force, no known process-loss bug, reproducible benchmarks, and a security review of IPC and process-control boundaries.
 
 ## Non-goals
 

@@ -35,6 +35,7 @@ Flags:
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		// -h printed the usage to stdout; asking for help is not a failure.
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
@@ -51,19 +52,32 @@ type options struct {
 	logLevel   slog.Level
 }
 
-// parseFlags parses args; usage and errors go to out.
-func parseFlags(args []string, out io.Writer) (options, error) {
+// parseFlags parses args. -h prints the usage to stdout and returns
+// flag.ErrHelp, which main treats as success; errors, followed by the
+// usage, go to stderr.
+func parseFlags(args []string, stdout, stderr io.Writer) (options, error) {
 	defPath, _ := config.DefaultPath()
 	var o options
 	var level string
 	fs := flag.NewFlagSet("throtd", flag.ContinueOnError)
-	fs.SetOutput(out)
-	fs.Usage = func() { fmt.Fprint(out, usage); fs.PrintDefaults() }
+	fs.SetOutput(stderr)
+	usageTo := func(w io.Writer) {
+		fs.SetOutput(w)
+		fmt.Fprint(w, usage)
+		fs.PrintDefaults()
+		fs.SetOutput(stderr)
+	}
+	// Parse reports its own error first; the usage follows, below.
+	fs.Usage = func() {}
 	fs.StringVar(&o.configPath, "config", defPath, "path to config file")
 	fs.BoolVar(&o.version, "version", false, "print version and exit")
 	fs.StringVar(&o.logFormat, "log-format", "text", "log format: text or json")
 	fs.StringVar(&level, "log-level", "info", "log level: debug, info, warn, or error")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
+		usageTo(stdout)
+		return o, err
+	} else if err != nil {
+		usageTo(stderr)
 		return o, err
 	}
 	if fs.NArg() > 0 {
@@ -99,7 +113,7 @@ func newLogger(w io.Writer, o options) *slog.Logger {
 }
 
 func run(args []string) error {
-	o, err := parseFlags(args, os.Stderr)
+	o, err := parseFlags(args, os.Stdout, os.Stderr)
 	if err != nil {
 		return err
 	}

@@ -58,14 +58,16 @@ type runOptions struct {
 	argv    []string
 }
 
-func parseRunArgs(args []string, errw io.Writer) (runOptions, error) {
+// parseRunArgs parses the arguments of 'throt run'. Help goes to stdout,
+// errors and usage after an error to errw.
+func parseRunArgs(args []string, stdout, errw io.Writer) (runOptions, error) {
 	var o runOptions
 	flags := flag.NewFlagSet("throt run", flag.ContinueOnError)
 	flags.SetOutput(errw)
-	flags.Usage = func() { fmt.Fprint(errw, runUsage); flags.PrintDefaults() }
+	flags.Usage = func() { fmt.Fprint(flags.Output(), runUsage); flags.PrintDefaults() }
 	flags.DurationVar(&o.timeout, "timeout", defaultRunTimeout, "stop waiting after this long and run anyway (0 waits forever)")
 	flags.BoolVar(&o.noWait, "no-wait", false, "check capacity once, print the verdict, and run regardless")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args, stdout); err != nil {
 		return o, err
 	}
 	if o.timeout < 0 {
@@ -314,7 +316,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // runCommand is `throt run` with the real daemon, process table, and exec.
 func runCommand(args []string, cfgPath string) error {
-	o, err := parseRunArgs(args, os.Stderr)
+	o, err := parseRunArgs(args, os.Stdout, os.Stderr)
 	if err != nil {
 		return err
 	}
