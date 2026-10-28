@@ -45,7 +45,7 @@ type entry struct {
 	linkname string
 }
 
-func makeArchive(t *testing.T, entries []entry) []byte {
+func makeArchive(t testing.TB, entries []entry) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
@@ -77,7 +77,7 @@ func makeArchive(t *testing.T, entries []entry) []byte {
 	return buf.Bytes()
 }
 
-func releaseArchive(t *testing.T, version string) []byte {
+func releaseArchive(t testing.TB, version string) []byte {
 	return makeArchive(t, []entry{
 		{name: "LICENSE", body: []byte("license")},
 		{name: "throt", body: fakeBinary("throt", version)},
