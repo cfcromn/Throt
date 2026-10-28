@@ -487,8 +487,9 @@ func parseStatus(out string) statusView {
 			}
 			continue
 		case "SCHEDULER":
+			// "SCHEDULER enforce, limit 2, 0 queued, 0 reserved"
 			if len(f) > 1 {
-				s.mode = f[1]
+				s.mode = strings.TrimSuffix(f[1], ",")
 			}
 			continue
 		case "AGENT", "OWNER":
@@ -710,7 +711,7 @@ func TestManualControl(t *testing.T) {
 	e.waitRunning(job)
 
 	// PID 1 is rejected as invalid params, the stray build as unattributed.
-	for pid, want := range map[int]string{1: "pid must be > 1", stray.Process.Pid: "refused: unattributed"} {
+	for pid, want := range map[int]string{1: "pid must be > 1", stray.Process.Pid: "refused: no agent owns it"} {
 		if out, err := e.throt("pause", strconv.Itoa(pid)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("pause %d: got %q, %v; want an error containing %q", pid, out, err, want)
 		}
