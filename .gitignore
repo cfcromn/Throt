@@ -1,0 +1,12 @@
+.DS_Store
+.idea/
+.vscode/
+bin/
+dist/
+coverage.out
+*.prof
+*.trace
+*.log
+.env
+.env.*
+!.env.example

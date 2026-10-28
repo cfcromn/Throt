@@ -1,0 +1,63 @@
+# Contributing to Throt
+
+Thanks for helping improve Throt. Be respectful: discuss code and ideas, not people. Harassment is not tolerated, and maintainers may remove content or restrict participation to protect the community.
+
+## Before coding
+
+Small bug fixes: open a PR directly.
+
+Behavior changes, scheduler policy, platform support, protocol changes, or new dependencies: open an issue first and agree on the problem and acceptance criteria. Architectural decisions are recorded in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+Good first contributions: tests, diagnostics, TUI usability, process-classification fixtures, platform capability detection, reproducible bug cases. Please don't start with a scheduler rewrite.
+
+## Development
+
+Requirements: the Go version in `go.mod`, Git, Make. macOS is the primary platform; Linux is supported where noted.
+
+```bash
+make setup   # download modules
+make check   # vet + test + build
+make race    # tests with the race detector
+make ci      # exactly what CI runs
+```
+
+Layout:
+
+```text
+cmd/throt      client (CLI/TUI)
+cmd/throtd     daemon
+internal/      app, config, domain, transport, monitor, platform, pressure, scheduler, agent, tui
+docs/          ARCHITECTURE.md
+```
+
+## Engineering rules
+
+- `gofmt`; errors add context and wrap causes (`%w`);
+- no `panic` for recoverable failures; no package-level mutable state;
+- interfaces live near consumers and stay small;
+- every goroutine has an owner and a cancellation path; channels are bounded;
+- scheduler/pressure tests are deterministic (fake clocks, scripted metrics), table-driven at policy boundaries;
+- OS-specific code lives under `internal/platform` with capability tests;
+- process-control changes need tests for: the positive case, ambiguous ownership, the process exiting mid-action, and shutdown;
+- prefer the standard library; a new dependency must justify maintenance health, license, supply-chain and binary cost.
+
+## Commits and pull requests
+
+Use [Conventional Commits](https://www.conventionalcommits.org/): `feat(tui): add pressure timeline`, `fix(darwin): preserve ancestry after parent exit`.
+
+A PR explains the problem, the approach, trade-offs, tests, user-visible changes, and — for process control — risk and rollback. Scheduler-default changes need benchmark evidence. PRs are squash-merged; CI must pass.
+
+## Review checklist
+
+- Is the change in scope and as small as it can be? Are failure modes explicit?
+- Scheduler: what invariant changes? Can it starve or oscillate? What happens with missing/noisy metrics? Is the decision explainable?
+- Process control: is ownership certain? What if the PID exits or is reused between observation and action? What if signaling fails?
+- Privacy: is new data collected or exported? Are arguments, environment, or secrets exposed?
+
+## AI-assisted code
+
+Welcome, under the same standard as human-written code: don't submit code you can't explain. Agents follow [AGENTS.md](AGENTS.md).
+
+## License
+
+Contributions are accepted under the [MIT License](LICENSE). No CLA.
