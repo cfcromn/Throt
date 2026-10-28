@@ -723,9 +723,13 @@ func TestResumeAll(t *testing.T) {
 	}
 	sig.reset()
 	sig.contErr[21] = boom
+	delete(sig.procs, 11) // exited while paused: not counted as continued
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // shutdown: the context is typically already done
-	errs := c.ResumeAll(ctx)
+	n, errs := c.ResumeAll(ctx)
+	if n != 3 {
+		t.Errorf("continued = %d, want 3 (10, 20, 30)", n)
+	}
 	if len(errs) != 1 || !errors.Is(errs[0], boom) || !strings.Contains(errs[0].Error(), "pid:20") {
 		t.Errorf("errs = %v", errs)
 	}
@@ -750,14 +754,14 @@ func TestResumeAll(t *testing.T) {
 	}
 
 	delete(sig.contErr, 21)
-	if errs := c.ResumeAll(context.Background()); errs != nil {
-		t.Errorf("second ResumeAll = %v", errs)
+	if n, errs := c.ResumeAll(context.Background()); n != 1 || errs != nil {
+		t.Errorf("second ResumeAll = %d, %v", n, errs)
 	}
 	if len(c.Paused()) != 0 || rec.last() != nil {
 		t.Errorf("Paused = %v", c.Paused())
 	}
-	if errs := c.ResumeAll(context.Background()); errs != nil {
-		t.Errorf("empty ResumeAll = %v", errs)
+	if n, errs := c.ResumeAll(context.Background()); n != 0 || errs != nil {
+		t.Errorf("empty ResumeAll = %d, %v", n, errs)
 	}
 }
 

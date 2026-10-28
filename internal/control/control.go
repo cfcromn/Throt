@@ -393,16 +393,22 @@ func validPID(pid int) bool { return pid > 1 }
 // confirmed gone, with one error each. Each call has its own deadline and
 // ignores cancellation: resuming is the fail-open direction.
 func (c *Controller) continueAll(ctx context.Context, keys []domain.ProcessKey) (left []domain.ProcessKey, errs []error) {
-	return c.continueKeys(ctx, keys, false)
+	left, errs, _ = c.continueKeys(ctx, keys, false)
+	return left, errs
 }
 
-// continueKeys resumes keys child-first. With stopOnErr, the first hard
-// error ends the round and every key not yet tried stays left, which bounds
-// how long a retry holds the lock when the OS is failing.
-func (c *Controller) continueKeys(ctx context.Context, keys []domain.ProcessKey, stopOnErr bool) (left []domain.ProcessKey, errs []error) {
+// continueKeys resumes keys child-first and also returns how many it
+// continued (not counting those already gone). With stopOnErr, the first
+// hard error ends the round and every key not yet tried stays left, which
+// bounds how long a retry holds the lock when the OS is failing.
+func (c *Controller) continueKeys(ctx context.Context, keys []domain.ProcessKey, stopOnErr bool) (left []domain.ProcessKey, errs []error, continued int) {
 	for i, k := range slices.Backward(keys) {
 		err := c.cont(ctx, k)
-		if err == nil || errors.Is(err, domain.ErrProcessGone) {
+		if err == nil {
+			continued++
+			continue
+		}
+		if errors.Is(err, domain.ErrProcessGone) {
 			continue
 		}
 		left = append(left, k)
@@ -415,7 +421,7 @@ func (c *Controller) continueKeys(ctx context.Context, keys []domain.ProcessKey,
 		}
 	}
 	slices.Reverse(left)
-	return left, errs
+	return left, errs, continued
 }
 
 // Resume continues the paused workload key, children before parents. Members
@@ -429,37 +435,49 @@ func (c *Controller) Resume(ctx context.Context, key domain.ProcessKey) error {
 	if _, ok := c.paused[key]; !ok {
 		return refuse(ReasonNotPaused)
 	}
-	err := c.resume(ctx, key)
+	_, err := c.resume(ctx, key)
 	c.changed()
 	return err
 }
 
-// resume continues one record's members. The caller holds mu and calls
-// changed afterwards.
-func (c *Controller) resume(ctx context.Context, key domain.ProcessKey) error {
+// resume continues one record's members and returns how many it
+// continued. The caller holds mu and calls changed afterwards.
+func (c *Controller) resume(ctx context.Context, key domain.ProcessKey) (int, error) {
 	return c.resumeKey(ctx, key, false)
 }
 
-func (c *Controller) resumeKey(ctx context.Context, key domain.ProcessKey, stopOnErr bool) error {
+func (c *Controller) resumeKey(ctx context.Context, key domain.ProcessKey, stopOnErr bool) (int, error) {
 	p := c.paused[key]
-	left, errs := c.continueKeys(ctx, p.Members, stopOnErr)
+	left, errs, continued := c.continueKeys(ctx, p.Members, stopOnErr)
 	if len(left) == 0 {
 		delete(c.paused, key)
-		return nil
+		return continued, nil
 	}
 	p.Members, p.State = left, StateResuming
 	c.paused[key] = p
-	return fmt.Errorf("control: resume of %s incomplete, %d processes left to resume: %w",
+	return continued, fmt.Errorf("control: resume of %s incomplete, %d processes left to resume: %w",
 		keyString(key), len(left), errors.Join(errs...))
 }
 
-// ResumeAll resumes every paused workload, in key order, and returns one
+// ResumeAll resumes every paused workload, in key order. It returns how
+// many processes it continued, leaving out members already gone, and one
 // error per workload that did not resume completely; those stay recorded.
 // It is meant for daemon shutdown, so Throt fails open.
-func (c *Controller) ResumeAll(ctx context.Context) []error {
+func (c *Controller) ResumeAll(ctx context.Context) (continued int, errs []error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.resumeWhere(ctx, func(PausedWorkload) bool { return true })
+	records := c.sorted()
+	for _, p := range records {
+		n, err := c.resume(ctx, p.Key)
+		continued += n
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(records) > 0 {
+		c.changed()
+	}
+	return continued, errs
 }
 
 // RetryResumes retries the records in the resuming state, in key order
@@ -495,31 +513,13 @@ func (c *Controller) RetryResumes(ctx context.Context) []error {
 	var errs []error
 	for i := range resuming {
 		p := resuming[(first+i)%len(resuming)]
-		if err := c.resumeKey(ctx, p.Key, true); err != nil {
+		if _, err := c.resumeKey(ctx, p.Key, true); err != nil {
 			errs = append(errs, err)
 			c.retryAfter = p.Key
 			break
 		}
 	}
 	c.changed()
-	return errs
-}
-
-func (c *Controller) resumeWhere(ctx context.Context, match func(PausedWorkload) bool) []error {
-	var errs []error
-	n := 0
-	for _, p := range c.sorted() {
-		if !match(p) {
-			continue
-		}
-		n++
-		if err := c.resume(ctx, p.Key); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if n > 0 {
-		c.changed()
-	}
 	return errs
 }
 
@@ -647,7 +647,7 @@ func (c *Controller) RestoreAndResume(ctx context.Context, data []byte) []error 
 		if c.paused[p.Key].State != StateResuming {
 			continue
 		}
-		if err := c.resume(ctx, p.Key); err != nil {
+		if _, err := c.resume(ctx, p.Key); err != nil {
 			errs = append(errs, fmt.Errorf("control: restore: %w", err))
 		}
 	}

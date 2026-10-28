@@ -467,6 +467,33 @@ func TestResumeOrphanTwice(t *testing.T) {
 	}
 }
 
+// TestShutdownCountsContinued checks that the shutdown count leaves out
+// recorded members that exited while paused: only continued processes
+// count.
+func TestShutdownCountsContinued(t *testing.T) {
+	w := newWorld(
+		domain.ProcessSample{PID: 11, PPID: 1, Name: "go"},
+		domain.ProcessSample{PID: 12, PPID: 11, Name: "compile"},
+		domain.ProcessSample{PID: 13, PPID: 11, Name: "compile"},
+	)
+	d := controlDaemon(t, t.TempDir(), w)
+	tg := process.WorkloadTarget{Key: domain.ProcessKey{PID: 11, Start: time.Unix(11, 0)}, Name: "go", Class: domain.ClassBuild, Owner: "claude-1"}
+	for _, pid := range []int{11, 12, 13} {
+		tg.Members = append(tg.Members, process.Member{Key: domain.ProcessKey{PID: pid, Start: time.Unix(int64(pid), 0)}, UID: d.uid})
+	}
+	if err := d.ctl.Pause(context.Background(), tg); err != nil {
+		t.Fatal(err)
+	}
+	w.exit(12)
+	w.exit(13)
+	if n := d.resumeAll(); n != 1 {
+		t.Errorf("resumeAll = %d, want 1 (two members had exited)", n)
+	}
+	if len(d.ctl.Paused()) != 0 {
+		t.Errorf("Paused = %+v", d.ctl.Paused())
+	}
+}
+
 // TestShutdownReportsResumed checks that the shutdown event says how many
 // paused or queued processes it resumed.
 func TestShutdownReportsResumed(t *testing.T) {
