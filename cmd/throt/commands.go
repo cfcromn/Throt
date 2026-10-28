@@ -30,64 +30,44 @@ type command struct {
 	synopsis string
 	// help describes the command in the usage text, one line per line.
 	help string
-	// brief is the one-line description the completion scripts show.
-	brief string
-	run   func(ctx context.Context, e env, args []string) error
+	run  func(ctx context.Context, e env, args []string) error
 }
 
 // commands returns the command table.
 func commands() []command {
 	return []command{
-		{name: "top", help: "open the terminal UI (the default with no command)",
-			brief: "open the terminal UI", run: cmdTop},
-		{name: "status", help: "show host resources and pressure",
-			brief: "show host resources and pressure", run: cmdStatus},
-		{name: "stats", help: "show per-agent resource usage since throtd started; --json for JSON",
-			brief: "per-agent resource usage since throtd started", run: cmdStats},
-		{name: "ping", help: "check that throtd is reachable",
-			brief: "check that throtd is reachable", run: cmdPing},
-		{name: "events", help: "print recent daemon events as JSON lines; -f keeps printing new ones",
-			brief: "print recent daemon events", run: cmdEvents},
-		{name: "explain", synopsis: "PID", help: "explain why a heavy workload is running, paused, or queued",
-			brief: "explain why a heavy workload is running, paused, or queued", run: cmdExplain},
-		{name: "pause", synopsis: "PID", help: "pause a heavy workload (SIGSTOP) shown in 'status'",
-			brief: "pause a heavy workload", run: cmdPause},
-		{name: "resume", synopsis: "[--force] PID", help: `resume a paused workload (SIGCONT). Also resumes a stopped
+		{name: "top", run: cmdTop, help: "open the terminal UI (the default with no command)"},
+		{name: "status", run: cmdStatus, help: "show host resources and pressure"},
+		{name: "stats", run: cmdStats, help: "show per-agent resource usage since throtd started; --json for JSON"},
+		{name: "ping", run: cmdPing, help: "check that throtd is reachable"},
+		{name: "events", run: cmdEvents, help: "print recent daemon events as JSON lines; -f keeps printing new ones"},
+		{name: "explain", run: cmdExplain, synopsis: "PID", help: "explain why a heavy workload is running, paused, or queued"},
+		{name: "pause", run: cmdPause, synopsis: "PID", help: "pause a heavy workload (SIGSTOP) shown in 'status'"},
+		{name: "resume", run: cmdResume, synopsis: "[--force] PID", help: `resume a paused workload (SIGCONT). Also resumes a stopped
 process throtd did not pause (listed by 'doctor', e.g. one an
 earlier throtd left paused) when it is a heavy workload of an
 agent; --force resumes any other such process of yours too,
-such as a shell job suspended with Ctrl-Z (prefer fg there)`,
-			brief: "resume a paused workload", run: cmdResume},
-		{name: "run", synopsis: "[--timeout D] [--no-wait] -- CMD [ARGS...]", help: `wait until throtd grants a heavy slot, reserved for CMD, then
-exec CMD (runs immediately if throtd is down)`,
-			brief: "wait for heavy-job capacity, then run a command", run: cmdRun},
-		{name: "reload", help: "make throtd re-read its config file",
-			brief: "make throtd re-read its config file", run: cmdReload},
-		{name: "doctor", help: "print a sanitized diagnostic report (safe to share)",
-			brief: "print a sanitized diagnostic report", run: cmdDoctor},
-		{name: "mcp", help: "run a read-only MCP server on stdio for coding agents",
-			brief: "run a read-only MCP server on stdio", run: cmdMCP},
-		{name: "config", synopsis: "check|show", help: `'check' validates the config file as throtd would, lists what
+such as a shell job suspended with Ctrl-Z (prefer fg there)`},
+		{name: "run", run: cmdRun, synopsis: "[--timeout D] [--no-wait] -- CMD [ARGS...]", help: `wait until throtd grants a heavy slot, reserved for CMD, then
+exec CMD (runs immediately if throtd is down)`},
+		{name: "reload", run: cmdReload, help: "make throtd re-read its config file"},
+		{name: "doctor", run: cmdDoctor, help: "print a sanitized diagnostic report (safe to share)"},
+		{name: "mcp", run: cmdMCP, help: "run a read-only MCP server on stdio for coding agents"},
+		{name: "config", run: cmdConfig, synopsis: "check|show", help: `'check' validates the config file as throtd would, lists what
 it changes from the defaults, and warns about risky settings;
 'show [--json]' prints the effective config and the source
-(default, profile, or file) of each value. Both accept --config PATH.`,
-			brief: "check or show the config file", run: cmdConfig},
-		{name: "hook", synopsis: "claude-code [--max-wait D]", help: `Claude Code PreToolUse hook: before a lone heavy Bash command,
+(default, profile, or file) of each value. Both accept --config PATH.`},
+		{name: "hook", run: cmdHook, synopsis: "claude-code [--max-wait D]", help: `Claude Code PreToolUse hook: before a lone heavy Bash command,
 wait up to D (default 50s) for heavy-job capacity; never
-changes or blocks the command (advisory; fails open)`,
-			brief: "Claude Code hook that waits for heavy-job capacity", run: cmdHook},
-		{name: "setup", synopsis: "claude-code|codex", help: "print the configuration to paste into a coding agent",
-			brief: "print the configuration to paste into a coding agent", run: cmdSetup},
-		{name: "completion", synopsis: "bash|zsh|fish", help: "print a shell completion script",
-			brief: "print a shell completion script", run: cmdCompletion},
-		{name: "version", synopsis: "[--json]", help: `print the client version; --json adds the protocol and Go
-versions, and throtd's version when it is reachable`,
-			brief: "print the client version", run: cmdVersion},
-		{name: "update", synopsis: "[--check] [--version vX.Y.Z] [--pre] [--yes]", help: `install the newest GitHub release over throt and throtd after
+changes or blocks the command (advisory; fails open)`},
+		{name: "setup", run: cmdSetup, synopsis: "claude-code|codex", help: "print the configuration to paste into a coding agent"},
+		{name: "completion", run: cmdCompletion, synopsis: "bash|zsh|fish", help: "print a shell completion script"},
+		{name: "version", run: cmdVersion, synopsis: "[--json]", help: `print the client version; --json adds the protocol and Go
+versions, and throtd's version when it is reachable`},
+		{name: "update", run: cmdUpdate, synopsis: "[--check] [--version vX.Y.Z] [--pre] [--yes]", help: `install the newest GitHub release over throt and throtd after
 verifying its SHA-256; --check only reports (exit 0 when up to
 date, 10 when an update is available); the only command that
-uses the network`,
-			brief: "install the newest verified release in place", run: cmdUpdate},
+uses the network`},
 	}
 }
 

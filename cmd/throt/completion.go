@@ -9,6 +9,9 @@ import (
 // The completion scripts complete commands and flags. After pause, resume
 // and explain they offer the heavy-workload PIDs that `throt status` lists,
 // so completing there asks throtd (nothing is offered when it is down).
+// The command lists are written out rather than generated from commands()
+// because each script has its own established order;
+// TestCompletionCoversEveryCommand checks them against the table.
 
 const bashCompletion = `# bash completion for throt. Load with: source <(throt completion bash)
 _throt_pids() {
