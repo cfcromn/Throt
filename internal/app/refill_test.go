@@ -122,16 +122,19 @@ func TestRefillOnExit(t *testing.T) {
 		t.Fatalf("watch = %v, want %v", d.watch, want)
 	}
 
-	var ticks atomic.Int32
+	// finished counts ticks that returned: the exit must come after the
+	// first tick's sample, or that tick sees it and resumes by itself.
+	var ticks, finished atomic.Int32
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		sampleLoop(ctx, time.Hour, time.Millisecond, func(ctx context.Context) func() bool {
 			ticks.Add(1)
+			defer finished.Add(1)
 			return d.tickAndWatch(ctx)
 		})
 	}()
-	waitFor(t, "first loop tick", func() bool { return ticks.Load() == 1 })
+	waitFor(t, "first loop tick", func() bool { return finished.Load() == 1 })
 	w.exit(11)
 	waitFor(t, "pid 12 resumed", func() bool { return strings.HasSuffix(w.signals(), "cont:12") })
 	cancel()
