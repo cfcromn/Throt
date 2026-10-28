@@ -28,6 +28,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - `throt config check` warns about a `heavy_limit` of at least the CPU count only when `adaptive` is off; an adaptive ceiling of every CPU is the `balanced` default.
 - macOS: throtd reads the names of newly seen processes in-process from `sysctl kern.procargs2` instead of running `ps -p` for each, falling back to `ps` only for other users' processes. Names are unchanged (argv[0], as `ps` prints it). A burst of new PIDs no longer costs a full 50 ms `ps` names pass, and a process sample drops from about 60–100 ms to 50–85 ms of CPU on a busy Mac with 1,200 processes. The remaining cost is one `ps -axww` (about 33 ms), which stays because only setuid `ps` can read other users' CPU time. `THROT_OVERHEAD=60s go test ./internal/platform -run Overhead` measures it.
 - README reorganized with a quickstart and troubleshooting.
+- Docs: the README status and roadmap show v0.8.0-rc.1 shipped and v0.9 in progress; `go install` documents `GOPRIVATE='github.com/cfcromn/*'` and the Git credentials a private repository needs; `sample_interval` documents its 10s maximum; the launchd and systemd sections explain why they share the shell's socket path and point to `socket_path` when they don't; the architecture notes that the adaptive limit resets at unknown pressure only after pressure was known once, and lists `orphans` in `status` and the new MCP tools and exit code 10 in the compatibility surface.
 
 ## [0.8.0-rc.1] - 2026-10-28
 

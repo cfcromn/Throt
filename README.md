@@ -32,7 +32,7 @@ Principles:
 
 Throt is not a coding agent, a container orchestrator, or a cloud scheduler, and it never kills processes: it only pauses and resumes them.
 
-**Status: pre-1.0 (v0.8 release candidate).** macOS and Linux (amd64/arm64). Expect breaking changes before 1.0; the policy from 1.0 on is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#compatibility).
+**Status: pre-1.0.** The latest release is v0.8.0-rc.1, a release candidate; v0.9 is in progress. macOS and Linux (amd64/arm64). Expect breaking changes before 1.0; the policy from 1.0 on is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#compatibility).
 
 ## Quickstart
 
@@ -89,12 +89,18 @@ Build provenance for `gh attestation verify` is published only while the reposit
 
 **macOS Gatekeeper.** The binaries are not signed or notarized. After a browser download macOS refuses to open them; remove the quarantine attribute once with `xattr -d com.apple.quarantine throt throtd`. Archives fetched with `gh release download` or `curl`, and binaries installed by `throt update`, don't get that attribute.
 
-To build from source with the Go version in `go.mod` (while the repository is private, Go also needs `GOPRIVATE` and Git access to it):
+To build from source with the Go version in `go.mod`:
 
 ```bash
-GOPRIVATE=github.com/cfcromn/Throt go install github.com/cfcromn/Throt/cmd/throt@latest
-GOPRIVATE=github.com/cfcromn/Throt go install github.com/cfcromn/Throt/cmd/throtd@latest
+GOPRIVATE='github.com/cfcromn/*' go install github.com/cfcromn/Throt/cmd/throt@latest
+GOPRIVATE='github.com/cfcromn/*' go install github.com/cfcromn/Throt/cmd/throtd@latest
 ```
+
+While the repository is private, `go install` needs both of these:
+- `GOPRIVATE='github.com/cfcromn/*'` (or `go env -w GOPRIVATE='github.com/cfcromn/*'` once), so Go fetches the module directly instead of through the public module proxy and checksum database, which cannot see it;
+- Git credentials that can read the repository, because Go fetches it with `git`. With the GitHub CLI logged in, `gh auth setup-git` sets them up.
+
+Without them `go install` fails, typically with `not found` from the proxy or `terminal prompts disabled` from Git.
 
 `throt` and `throtd` must come from the same release.
 
@@ -119,7 +125,7 @@ To update by hand, stop `throtd`, replace both binaries from a verified archive,
 
 `throtd` resumes anything it paused when it gets SIGTERM or SIGINT, so a service manager can stop it safely.
 
-**macOS (launchd):** save as `~/Library/LaunchAgents/dev.throt.throtd.plist`, replace both paths with your own (launchd does not expand `~`), then run `launchctl load ~/Library/LaunchAgents/dev.throt.throtd.plist`:
+**macOS (launchd):** save as `~/Library/LaunchAgents/dev.throt.throtd.plist`, replace both paths with your own (launchd does not expand `~`), then run `launchctl load ~/Library/LaunchAgents/dev.throt.throtd.plist`. The plist needs no environment variables for the socket: a launch agent in your login session gets the same per-user `TMPDIR` as your shell (the `confstr(_CS_DARWIN_USER_TEMP_DIR)` directory under `/var/folders`), and neither sets `XDG_RUNTIME_DIR`, so both use the same default socket.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -136,7 +142,7 @@ To update by hand, stop `throtd`, replace both binaries from a verified archive,
 </plist>
 ```
 
-**Linux (systemd user unit):** save as `~/.config/systemd/user/throtd.service`, then run `systemctl --user enable --now throtd` (logs: `journalctl --user -u throtd`):
+**Linux (systemd user unit):** save as `~/.config/systemd/user/throtd.service`, then run `systemctl --user enable --now throtd` (logs: `journalctl --user -u throtd`). The systemd user manager gives the unit `XDG_RUNTIME_DIR=/run/user/UID`, the value `pam_systemd` also sets for your login sessions, so both use the same socket there.
 
 ```ini
 [Unit]
@@ -149,6 +155,8 @@ Restart=on-failure
 [Install]
 WantedBy=default.target
 ```
+
+If `throt` still cannot reach a `throtd` started at login (your shell sets its own `XDG_RUNTIME_DIR` or `TMPDIR`, or you work over SSH, `su` or `sudo`), set an absolute `socket_path` in the config file rather than more environment variables: `throtd` and every client read the same file, including a `throt mcp` started by an app that never reads your shell's rc files. See ["cannot reach throtd"](#cannot-reach-throtd).
 
 ## Using Throt
 
@@ -176,7 +184,7 @@ WantedBy=default.target
 | `throt hook claude-code [--max-wait D]` | The Claude Code hook. |
 | `throt completion bash\|zsh\|fish` | Shell completion script. |
 
-Global flags go before the command: `-config PATH` uses another config file, and `-n N` sets how many events `throt events` prints. `throt -h` lists every command; `run`, `stats`, `events`, `config`, `update` and `hook claude-code` also accept `-h`. `throtd -h` lists the daemon's flags, and `throtd -version` prints its version.
+Global flags go before the command: `-config PATH` uses another config file, and `-n N` sets how many events `throt events` prints. `throt -h` lists every command, and `-h` after any command prints that command's usage. `throtd -h` lists the daemon's flags, and `throtd -version` prints its version.
 
 Shell completion: add `source <(throt completion zsh)` (or `bash`) to your shell's rc file, or run `throt completion fish | source`. It completes heavy-workload PIDs after `pause`, `resume` and `explain`.
 
@@ -296,9 +304,9 @@ The config file is optional: `~/.config/throt/config.json`, or `$XDG_CONFIG_HOME
 | `scheduler.resume_cooldown` | `10s` | Minimum spacing between resumes (and preemptions). |
 | `scheduler.max_queue_wait` | `5m` | Work queued this long gets the next free slot even under high pressure, so the queue can't starve (at least 1s). |
 | `scheduler.pause_on_critical` | `false` | Under critical pressure, pause the youngest running heavy workload, never the last one. |
-| `agents` | none | Custom agents: `[{"name": "myagent", "executables": ["my-agent"]}]`. Up to 32 agents, 1 to 16 executable base names each. |
+| `agents` | none | Custom agents: `[{"name": "myagent", "executables": ["my-agent"]}]`. Up to 32 agents; `name` is 1 to 32 lowercase letters, digits or dashes, with 1 to 16 executable base names each. |
 | `socket_path` | see below | The daemon's Unix socket. Restart only. |
-| `sample_interval` | `2s` | How often metrics are sampled (at least `100ms`). Restart only. |
+| `sample_interval` | `2s` | How often metrics are sampled, from `100ms` to `10s` (the 30s pressure window must hold at least three samples). Restart only. |
 | `event_history` | `1000` | Events `throtd` keeps in memory for `throt events` (1 to 100000). Restart only. |
 
 Custom `agents` match exact executable names among your own processes. Generic runtimes such as `node` and build tools such as `go` are refused, because they would match unrelated processes. On Linux, executable names are truncated to 15 characters.
@@ -420,7 +428,8 @@ Outcomes, not dates.
 | v0.5 Accurate pressure | Accurate pressure everywhere, and hardening | cgroup-aware Linux, macOS kernel verdict, evidence-driven CPU policy, hot reload, `throt explain`, fuzzing, pinned supply chain | shipped |
 | v0.6 Cooperative admission | Let agents wait instead of being paused | `throt run`, `throt stats`, Linux PSI, TUI drilldown and sparklines, real-binary e2e tests | shipped |
 | v0.7 Admission leases | Race-free admission, no hidden stopped work | admission leases for `throt run`, reporting of stopped processes Throt did not pause | shipped |
-| v0.8 Integration and readiness | Wait for capacity without being told | Claude Code hook, `throt setup`, `throt config check`/`show`, `throt version --json`, log levels, soak test | release candidate |
+| v0.8 Integration and readiness | Wait for capacity without being told | Claude Code hook, `throt setup`, `throt config check`/`show`, `throt version --json`, log levels, soak test | shipped (v0.8.0-rc.1) |
+| v0.9 Evidence and upkeep | Measure on real machines and stay current | `throt update`, real-machine CPU and memory benchmarks, soak on CI runners, an adaptive limit that grows under CPU-only load, `start_limit`, MCP `2026-07-28` with `throt_wait_for_capacity` and `throt_explain`, TUI scheduler line and event filter | in progress |
 | 1.0 | Turn the scheduler on confidently under an explicit profile | stable compatibility policy, real-machine benchmarks; the scheduler stays opt-in, as the benchmark evidence decided | planned |
 
 **1.0** means the scheduler is ready to turn on with confidence under an explicit `scheduler.mode` and `profile`; it stays off by default (see "Default decision" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#results)). It requires two supported OS families, the [compatibility policy](docs/ARCHITECTURE.md#compatibility) in force, no known process-loss bug, reproducible benchmarks, and a security review of IPC and process-control boundaries.
