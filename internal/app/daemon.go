@@ -69,6 +69,11 @@ type StatusResult struct {
 	// Paused lists every paused workload, manual or scheduled.
 	Paused    []control.PausedWorkload `json:"paused"`
 	Scheduler SchedulerStatus          `json:"scheduler"`
+	// Orphans lists stopped processes of the user that no paused record
+	// explains, at most process.MaxOrphans of them; OrphanCount counts them
+	// all. Throt reports them and never resumes one unasked.
+	Orphans     []process.Orphan `json:"orphans,omitempty"`
+	OrphanCount int              `json:"orphan_count,omitempty"`
 }
 
 // StatsResult is returned by the "stats" method: per-agent usage since the
@@ -95,6 +100,8 @@ type Daemon struct {
 	started time.Time
 
 	ctl *control.Controller // safe for concurrent use
+	sig control.Signaler    // resumes orphans, which have no paused record
+	uid uint32              // the daemon's user; only its processes are controlled
 
 	graphMu sync.Mutex // guards graph; held briefly, never while signaling
 	graph   *process.Graph
@@ -105,13 +112,19 @@ type Daemon struct {
 	failing      map[string]bool // sampler name -> currently failing
 	failures     map[string]string
 	retryFailing bool // resume retries are failing
+	// reported holds the orphans an orphan_stopped event already named; it
+	// is pruned to the current orphans each tick, so it stays bounded.
+	reported map[domain.ProcessKey]bool
 
-	// mu guards status and leases together, so an acquire checks and
-	// grants against one consistent view, and a tick replaces the heavy
+	// mu guards status, leases, and stopped together, so an acquire checks
+	// and grants against one consistent view, and a tick replaces the heavy
 	// workloads and drops the leases they supersede in one step.
 	mu     sync.Mutex
 	status StatusResult
 	leases leaseTable
+	// stopped is the latest snapshot's stopped processes, for resuming an
+	// orphan beyond the MaxOrphans that status lists.
+	stopped []process.StoppedView
 
 	statsMu sync.Mutex // guards acct; held briefly
 	acct    *stats.Accountant
@@ -141,17 +154,20 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		events: domain.NewEventLog(cfg.EventHistory, strconv.FormatInt(time.Now().UnixNano(), 36)),
 		host:   host,
 		procs:  procs,
-		graph: process.NewGraph(adapters(cfg.Agents),
+		graph: process.NewGraph(Adapters(cfg.Agents),
 			process.WithCPUCount(runtime.NumCPU()), process.WithAgentUID(uint32(os.Getuid()))),
 		engine:   pressure.New(pressure.DefaultWindow, pressure.DefaultThresholds()),
 		sched:    newScheduler(cfg.Scheduler),
 		failing:  map[string]bool{},
 		failures: map[string]string{},
 		acct:     stats.New(),
+		sig:      sig,
+		uid:      uint32(os.Getuid()),
+		reported: map[domain.ProcessKey]bool{},
 		live:     cfg,
 		policyCh: make(chan scheduler.Policy, 1),
 	}
-	d.ctl = control.New(sig, uint32(os.Getuid()), time.Now, d.saveState)
+	d.ctl = control.New(sig, d.uid, time.Now, d.saveState)
 	return d
 }
 
@@ -219,6 +235,9 @@ func (d *Daemon) tick(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
 	defer cancel()
 	latency, latencyOK := monitor.ProbeLatency(ctx, latencyProbe)
+	// Records from before and after the process sample: a workload paused
+	// or resumed while ps runs is in one of them, so it is not an orphan.
+	pausedBefore := d.ctl.Paused()
 	host, herr := d.host.SampleHost(ctx)
 	host.Latency = latency
 	if !latencyOK {
@@ -236,6 +255,9 @@ func (d *Daemon) tick(parent context.Context) {
 	d.track("processes", perr)
 
 	var snap process.Snapshot
+	var orphans []process.Orphan
+	var orphanCount int
+	var stoppedOrphans []domain.ProcessKey
 	if perr == nil {
 		d.graphMu.Lock()
 		changes := d.graph.Update(now, procs)
@@ -243,6 +265,15 @@ func (d *Daemon) tick(parent context.Context) {
 		d.graphMu.Unlock()
 		for _, c := range changes {
 			d.emitChange(c)
+		}
+		// Before anything below resumes a record and drops it.
+		recorded := recordedKeys(pausedBefore, d.ctl.Paused())
+		orphans, orphanCount = process.FindOrphans(snap.Stopped, d.uid, func(k domain.ProcessKey) bool { return recorded[k] })
+		d.reportOrphans(now, orphans)
+		for _, s := range snap.Stopped {
+			if s.UID == d.uid && !recorded[s.Key] {
+				stoppedOrphans = append(stoppedOrphans, s.Key)
+			}
 		}
 		d.forgetExited(ctx, procs)
 	}
@@ -268,6 +299,8 @@ func (d *Daemon) tick(parent context.Context) {
 	var ended []leaseEnd
 	if perr == nil {
 		d.status.Agents, d.status.Heavy = snap.Agents, snap.Heavy
+		d.status.Orphans, d.status.OrphanCount = orphans, orphanCount
+		d.stopped = snap.Stopped
 		ended = d.leases.observe(sampled, now, procs, snap.Heavy)
 	} else {
 		ended = d.leases.expire(now)
@@ -284,7 +317,7 @@ func (d *Daemon) tick(parent context.Context) {
 	if perr == nil {
 		// Only schedule on a fresh process snapshot: acting on stale data
 		// could queue a workload that already finished.
-		d.schedule(parent, now, level, snap.Heavy, reserved, admitted(ended))
+		d.schedule(parent, now, level, snap.Heavy, reserved, admitted(ended), stoppedOrphans)
 		d.account(now, snap)
 	}
 	sched := d.schedulerStatus()
@@ -443,8 +476,9 @@ func listen(path string) (net.Listener, error) {
 	return l, nil
 }
 
-// adapters puts custom agents first, so they win over built-in names.
-func adapters(custom []config.Agent) []agent.Adapter {
+// Adapters returns the agent adapters for a config: custom agents first, so
+// they win over built-in names.
+func Adapters(custom []config.Agent) []agent.Adapter {
 	var out []agent.Adapter
 	for _, a := range custom {
 		out = append(out, agent.NewNameAdapter(a.Name, a.Executables...))

@@ -17,8 +17,9 @@ import (
 )
 
 // psStatColumns has no free-text column, so every record is unambiguous and
-// the set of PIDs it lists is authoritative.
-const psStatColumns = "pid=,ppid=,uid=,rss=,time=,lstart="
+// the set of PIDs it lists is authoritative. state is one token of a state
+// letter and flag characters (e.g. "Ss+"), never containing a space.
+const psStatColumns = "pid=,ppid=,uid=,rss=,state=,time=,lstart="
 
 // psNameColumns lists executable names. comm may contain spaces or even
 // newlines, so this pass is parsed defensively. args/command are never
@@ -101,20 +102,22 @@ func psName(comm string) string {
 	return base
 }
 
-// parsePSStatLine parses one psStatColumns line: pid ppid uid rss time
-// lstart (5 fields). Lines with any other number of fields are rejected.
+// parsePSStatLine parses one psStatColumns line: pid ppid uid rss state
+// time lstart (11 fields, lstart being 5). Lines with any other number of
+// fields are rejected.
 func parsePSStatLine(line string, loc *time.Location) (domain.ProcessSample, bool) {
 	fields := strings.Fields(line)
-	if len(fields) != 10 {
+	if len(fields) != 11 {
 		return domain.ProcessSample{}, false
 	}
 	pid, err1 := strconv.Atoi(fields[0])
 	ppid, err2 := strconv.Atoi(fields[1])
 	uid, err3 := strconv.ParseUint(fields[2], 10, 32)
 	rssKiB, err4 := strconv.ParseUint(fields[3], 10, 64)
-	cpu, err5 := parsePSTime(fields[4])
-	start, err6 := time.ParseInLocation(psLstartLayout, strings.Join(fields[5:10], " "), loc)
-	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil || err6 != nil || pid <= 0 || ppid < 0 {
+	state, ok := psState(fields[4])
+	cpu, err5 := parsePSTime(fields[5])
+	start, err6 := time.ParseInLocation(psLstartLayout, strings.Join(fields[6:11], " "), loc)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil || err6 != nil || !ok || pid <= 0 || ppid < 0 {
 		return domain.ProcessSample{}, false
 	}
 	return domain.ProcessSample{
@@ -124,7 +127,29 @@ func parsePSStatLine(line string, loc *time.Location) (domain.ProcessSample, boo
 		Start:   start,
 		CPUTime: cpu,
 		RSS:     rssKiB * 1024, // macOS ps reports RSS in KiB
+		State:   state,
 	}, true
+}
+
+// psState maps a macOS ps state token, a state letter followed by flag
+// characters (e.g. "Ss+", "T", "U<"), to a ProcessState. A token that does
+// not start with an upper-case letter is malformed. macOS ps has no letter
+// for traced processes; T is a stopped process.
+func psState(tok string) (domain.ProcessState, bool) {
+	if tok == "" || tok[0] < 'A' || tok[0] > 'Z' {
+		return "", false
+	}
+	switch tok[0] {
+	case 'R':
+		return domain.StateRunning, true
+	case 'S', 'I', 'U':
+		return domain.StateSleeping, true
+	case 'T':
+		return domain.StateStopped, true
+	case 'Z':
+		return domain.StateZombie, true
+	}
+	return domain.StateOther, true
 }
 
 // psIdentityColumns reports one process's identity. Like psStatColumns it has

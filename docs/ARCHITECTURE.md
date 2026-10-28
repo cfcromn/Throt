@@ -56,6 +56,7 @@ Records are written atomically to `paused.json` in the private socket directory 
 ## Failure behavior
 
 - daemon crash: paused processes stay stopped until throtd starts again and resumes them from `paused.json`, or until the user runs `kill -CONT PID`. A clean shutdown resumes them;
+- stopped processes no paused record explains (a daemon killed before it wrote `paused.json`, a deleted state file, a stray daemon, or a Ctrl-Z shell job): reported, never resumed automatically. The sampler reads each process's state (`ps state` on macOS, `/proc/<pid>/stat` field 3 on Linux; `T` is stopped, traced `t` is not). Each tick lists the user's stopped, unrecorded processes (at most 50) in `status` and `throt doctor`, with a hint: a parent shell outside any agent means likely job control, an agent's process or a heavy workload means likely left by an earlier throtd. A newly found attributed heavy one, stopped in two consecutive samples, gets one `orphan_stopped` event. The scheduler holds orphans like manual pauses, so it never queues and later resumes one. `throt resume PID` resumes an attributed heavy orphan (identity-verified SIGCONT, children first, with an event); anything else needs `--force`;
 - TUI crash: daemon continues;
 - metrics unavailable: degrade to observe-only;
 - attribution uncertain: mark unknown, never guess ownership for control;

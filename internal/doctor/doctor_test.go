@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/domain"
@@ -73,5 +74,84 @@ func TestCollectDaemonDown(t *testing.T) {
 	})
 	if r.Daemon.Reachable || r.Daemon.Error == "" || r.Status != nil || r.Host.OK || r.Config != "unknown field" {
 		t.Errorf("report = %+v", r)
+	}
+}
+
+type stoppedProcs struct{}
+
+func (stoppedProcs) SampleProcesses(context.Context) ([]domain.ProcessSample, error) {
+	return []domain.ProcessSample{
+		{PID: 10, PPID: 1, UID: 501, Name: "claude"},
+		{PID: 11, PPID: 10, UID: 501, Name: "make", State: domain.StateStopped},
+		{PID: 20, PPID: 1, UID: 501, Name: "zsh"},
+		{PID: 21, PPID: 20, UID: 501, Name: "vim", State: domain.StateStopped},
+		{PID: 30, PPID: 1, UID: 502, Name: "make", State: domain.StateStopped}, // another user's
+	}, nil
+}
+
+func TestCollectOrphansFromDaemon(t *testing.T) {
+	now := time.Now()
+	r := Collect(context.Background(), Inputs{
+		Ping: func(context.Context) (app.PingResult, error) { return app.PingResult{Version: "v1"}, nil },
+		Status: func(context.Context) (app.StatusResult, error) {
+			return app.StatusResult{OrphanCount: 51, Orphans: []process.Orphan{
+				{Key: domain.ProcessKey{PID: 11}, Name: "make", Owner: "claude-1", Hint: "likely left paused", Since: now.Add(-90 * time.Second)},
+				{Key: domain.ProcessKey{PID: 12}, Name: "alice-tool", Hint: "likely job control (Ctrl-Z)"},
+			}}, nil
+		},
+		Host:      fakeHost{},
+		Processes: stoppedProcs{},
+	})
+	r = redact(r, redactor{pairs: []string{"alice", "<user>"}})
+	o := r.Orphans
+	if o.Source != "throtd" || o.Count != 51 || len(o.Entries) != 2 {
+		t.Fatalf("orphans = %+v", o)
+	}
+	if e := o.Entries[0]; e.PID != 11 || e.Name != "make" || e.Owner != "claude-1" || e.Hint != "likely left paused" || e.StoppedFor != "1m30s" {
+		t.Errorf("entry 0 = %+v", e)
+	}
+	if e := o.Entries[1]; e.Name != "<user>-tool" || e.StoppedFor != "" {
+		t.Errorf("entry 1 = %+v, want a redacted name and no duration", e)
+	}
+}
+
+func TestCollectOrphansLocal(t *testing.T) {
+	r := Collect(context.Background(), Inputs{
+		Ping: func(context.Context) (app.PingResult, error) {
+			return app.PingResult{}, errors.New("connection refused")
+		},
+		Status:    func(context.Context) (app.StatusResult, error) { return app.StatusResult{}, nil },
+		Host:      fakeHost{},
+		Processes: stoppedProcs{},
+		Adapters:  app.Adapters(nil),
+		UID:       501,
+	})
+	o := r.Orphans
+	if o.Source != "local" || o.Count != 2 || len(o.Entries) != 2 {
+		t.Fatalf("orphans = %+v, want make and vim of uid 501", o)
+	}
+	if e := o.Entries[0]; e.PID != 11 || e.Owner != "claude-1" || !strings.Contains(e.Hint, "left paused by an earlier throtd") {
+		t.Errorf("entry 0 = %+v", e)
+	}
+	if e := o.Entries[1]; e.PID != 21 || e.Owner != "" || !strings.Contains(e.Hint, "job control") {
+		t.Errorf("entry 1 = %+v", e)
+	}
+	b, _ := json.Marshal(r.Orphans)
+	for _, f := range []string{`"pid"`, `"name"`, `"hint"`, `"count"`} {
+		if !strings.Contains(string(b), f) {
+			t.Errorf("orphans JSON lacks %s: %s", f, b)
+		}
+	}
+}
+
+func TestCollectNoOrphans(t *testing.T) {
+	r := Collect(context.Background(), Inputs{
+		Ping:      func(context.Context) (app.PingResult, error) { return app.PingResult{}, errors.New("down") },
+		Host:      fakeHost{},
+		Processes: fakeProcs{},
+	})
+	b, _ := json.Marshal(r)
+	if r.Orphans.Count != 0 || !strings.Contains(string(b), `"orphans":{"source":"local","count":0}`) {
+		t.Errorf("report = %s", b)
 	}
 }

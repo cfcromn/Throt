@@ -51,15 +51,18 @@ const maxQueueMembers = 256
 // enforce mode, executes its decisions through the verified controller.
 // Every decision is an event, so nothing the scheduler does is hidden.
 // reserved holds the agent of each active admission lease, and admitted the
-// workloads that took over a lease this round.
-func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.PressureLevel, heavy []process.WorkloadView, reserved []string, admitted []domain.ProcessKey) {
+// workloads that took over a lease this round. Orphans (stopped processes
+// no record explains) are held like manual pauses: the scheduler must never
+// queue one and later resume it, since Throt only reports orphans.
+func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.PressureLevel, heavy []process.WorkloadView, reserved []string, admitted []domain.ProcessKey, orphans []domain.ProcessKey) {
 	// The controller records who paused what, so a manual hold is never
 	// mistaken for scheduler queueing, even across restarts.
 	inSnapshot := make(map[domain.ProcessKey]bool, len(heavy))
 	for _, h := range heavy {
 		inSnapshot[h.Key] = true
 	}
-	var ours, held []domain.ProcessKey
+	var ours []domain.ProcessKey
+	held := orphans
 	for _, p := range d.ctl.Paused() {
 		switch {
 		case p.By != control.OriginScheduler:

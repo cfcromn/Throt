@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cfcromn/Throt/internal/domain"
 )
 
 // Fuzz targets for the ps and procfs parsers. Their input comes from other
@@ -13,16 +15,17 @@ import (
 // Seeds are the unit-test fixtures.
 
 func FuzzParsePS(f *testing.F) {
-	f.Add("    1     0     0   7584  90:36.83 Sun Oct 18 11:06:02 2026\n"+
-		"  412     1   501  20480   0:01.50 Mon Oct  5 09:00:00 2026\n"+
-		"\t421\t1\t501\t8\t1-02:03:04\tTue Oct  6 10:00:00 2026\n",
+	f.Add("    1     0     0   7584 Ss   90:36.83 Sun Oct 18 11:06:02 2026\n"+
+		"  412     1   501  20480 R+    0:01.50 Mon Oct  5 09:00:00 2026\n"+
+		"\t421\t1\t501\t8\tT\t1-02:03:04\tTue Oct  6 10:00:00 2026\n",
 		"    1 /sbin/launchd\n"+
 			"  412 /System/Library/Input Methods/KoreanIM.app/Contents/MacOS/Korean IM\n"+
 			"  421 /usr/local/go/bin/go\n")
-	f.Add("  500   1 501 100 0:00.00 Mon Oct  5 09:00:00 2026\n",
+	f.Add("  500   1 501 100 S 0:00.00 Mon Oct  5 09:00:00 2026\n",
 		"  500 /tmp/evil\n    1 claude\n    1 /sbin/launchd\n")
-	f.Add("  413     1   501      0   0:00.00 Mon Oct  5 09:00:00 2026\n", "  413 Core Audio Driver (Parrot.driver)\nbad line\n")
-	f.Add("    0     0     0   1  0:00.00 Sun Oct 18 11:06:02 2026\n", "    0 kernel_task\n")
+	f.Add("  413     1   501      0 T    0:00.00 Mon Oct  5 09:00:00 2026\n", "  413 Core Audio Driver (Parrot.driver)\nbad line\n")
+	f.Add("    0     0     0   1 Ss  0:00.00 Sun Oct 18 11:06:02 2026\n", "    0 kernel_task\n")
+	f.Add("  424     1   501  8 0:00.00 Tue Oct  6 10:00:00 2026\n  425 1 501 8 s 0:00.00 Tue Oct  6 10:00:00 2026\n", "  424 x\n")
 	f.Fuzz(func(t *testing.T, stats, names string) {
 		got, err := parsePS(strings.NewReader(stats), strings.NewReader(names), time.UTC)
 		if err != nil {
@@ -42,6 +45,11 @@ func FuzzParsePS(f *testing.F) {
 			}
 			if p.CPUTime < 0 {
 				t.Errorf("negative cpu time %v", p.CPUTime)
+			}
+			switch p.State {
+			case domain.StateRunning, domain.StateSleeping, domain.StateStopped, domain.StateZombie, domain.StateOther:
+			default:
+				t.Errorf("pid %d: state %q", p.PID, p.State)
 			}
 		}
 	})
@@ -161,6 +169,9 @@ func FuzzParsePIDStat(f *testing.F) {
 	}
 	f.Add([]byte("x (bash) S 1 42 42 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 1 0 12345 1000000 300"))
 	f.Add([]byte("42 bash) S 1"))
+	for _, st := range []string{"T", "t", "Z", "D", "R", "X", "TT", "?"} {
+		f.Add([]byte(strings.Replace(statLine("bash"), ") S ", ") "+st+" ", 1)))
+	}
 	f.Add([]byte("42 (x) S 18446744073709551615 42 42 0 -1 4194560 100 0 0 0 18446744073709551615 50 0 0 20 0 1 0 18446744073709551615 1000000 300"))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		s, err := parsePIDStat(b)
@@ -178,6 +189,9 @@ func FuzzParsePIDStat(f *testing.F) {
 		}
 		if d := ticksToDuration(s.StartTime); d < 0 {
 			t.Errorf("parsePIDStat(%q): start offset %v", b, d)
+		}
+		if s.State == "" {
+			t.Errorf("parsePIDStat(%q): no state", b)
 		}
 	})
 }

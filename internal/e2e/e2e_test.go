@@ -654,6 +654,72 @@ func TestCrashRecovery(t *testing.T) {
 	e.waitRunning(job)
 }
 
+// TestOrphanStopped stops an agent's job behind throtd's back, as a throtd
+// killed before it wrote paused.json would leave it. throtd must report it
+// without resuming it, and throt resume must resume it on request.
+func TestOrphanStopped(t *testing.T) {
+	e := newEnv(t, `{`+baseConfig+`}`)
+	a := e.startAgent()
+	job := a.job("sleep")
+	e.waitOwned(job, agentLabel)
+	if err := syscall.Kill(job, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStopped(job)
+
+	type entry struct {
+		PID   int    `json:"pid"`
+		Name  string `json:"name"`
+		Owner string `json:"owner"`
+		Hint  string `json:"hint"`
+	}
+	var listed entry
+	e.waitFor(fmt.Sprintf("throt doctor to list pid %d", job), func() bool {
+		out, err := e.throt("doctor")
+		if err != nil {
+			return false
+		}
+		var r struct {
+			Orphans struct {
+				Source  string  `json:"source"`
+				Count   int     `json:"count"`
+				Entries []entry `json:"entries"`
+			} `json:"orphans"`
+		}
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			t.Fatalf("doctor is not JSON: %v\n%s", err, out)
+		}
+		for _, en := range r.Orphans.Entries {
+			if en.PID == job && r.Orphans.Source == "throtd" && r.Orphans.Count >= 1 {
+				listed = en
+				return true
+			}
+		}
+		return false
+	})
+	if listed.Name != "make" || listed.Owner != agentLabel || !strings.Contains(listed.Hint, "left paused by an earlier throtd") {
+		t.Errorf("doctor entry = %+v, want make of %s left paused", listed, agentLabel)
+	}
+	if out := e.mustThrot("status"); !strings.Contains(out, "STOPPED ") || !strings.Contains(out, "not paused by throtd (see throt doctor)") {
+		t.Errorf("status has no STOPPED line:\n%s", out)
+	}
+	e.waitFor("an orphan_stopped event", func() bool {
+		out, err := e.throt("events", "-n", "1000")
+		return err == nil && strings.Contains(out, `"orphan_stopped"`) && strings.Contains(out, strconv.Itoa(job))
+	})
+	// Reported, never resumed on its own.
+	if s := procState(job); s != 'T' {
+		t.Fatalf("job state %c after being reported, want T", s)
+	}
+
+	e.mustThrot("resume", strconv.Itoa(job))
+	e.waitRunning(job)
+	e.waitFor("the STOPPED line to clear", func() bool {
+		out, err := e.throt("status")
+		return err == nil && !strings.Contains(out, "STOPPED ")
+	})
+}
+
 func TestGracefulShutdownResumes(t *testing.T) {
 	e := newEnv(t, `{`+baseConfig+`}`)
 	a := e.startAgent()

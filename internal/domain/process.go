@@ -17,7 +17,23 @@ type ProcessSample struct {
 	CPUTime time.Duration `json:"cpu_time"`
 	// RSS is resident memory in bytes.
 	RSS uint64 `json:"rss"`
+	// State is the scheduling state; "" when the platform does not report it.
+	State ProcessState `json:"state,omitempty"`
 }
+
+// ProcessState is a process's scheduling state, reduced to what Throt acts
+// on. Only StateStopped matters for control: a process stopped by a signal
+// (SIGSTOP, or SIGTSTP from Ctrl-Z). A traced process (Linux "t") is
+// StateOther, never StateStopped.
+type ProcessState string
+
+const (
+	StateRunning  ProcessState = "running"
+	StateSleeping ProcessState = "sleeping"
+	StateStopped  ProcessState = "stopped"
+	StateZombie   ProcessState = "zombie"
+	StateOther    ProcessState = "other"
+)
 
 // ProcessKey identifies one process instance; a reused PID has a new Start.
 type ProcessKey struct {
@@ -50,4 +66,7 @@ const (
 	EventProcessLost       EventKind = "process_lost"
 	EventAgentDiscovered   EventKind = "agent_discovered"
 	EventAgentLost         EventKind = "agent_lost"
+	// EventOrphanStopped reports a stopped, attributed heavy workload that
+	// no paused record explains, e.g. one left by a throtd killed hard.
+	EventOrphanStopped EventKind = "orphan_stopped"
 )

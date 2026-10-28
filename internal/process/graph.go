@@ -68,6 +68,9 @@ type Snapshot struct {
 	Agents []AgentView `json:"agents"`
 	// Heavy is sorted by CPU descending, then PID ascending.
 	Heavy []WorkloadView `json:"heavy"`
+	// Stopped lists every stopped process (domain.StateStopped) by PID, for
+	// FindOrphans. It is bounded by the process table.
+	Stopped []StoppedView `json:"stopped,omitempty"`
 	// TotalCPU is the busy fraction of all CPUs across observed processes
 	// since the previous Update, 0..1. Valid only when HasCPU is true.
 	TotalCPU float64 `json:"total_cpu"`
@@ -113,6 +116,9 @@ type proc struct {
 	label   string // agent instance label, agents only
 	parent  *proc  // nil when the parent is missing or ambiguous
 	owner   *proc  // nearest agent at or above this process, or nil
+	// stoppedSince is when an Update first saw this process stopped in the
+	// current run of stopped samples; zero while it is not stopped.
+	stoppedSince time.Time
 }
 
 // Graph tracks processes across full snapshots. It is not safe for
@@ -180,10 +186,17 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 			continue
 		}
 		p := &proc{s: s}
-		if old, ok := g.procs[s.Key()]; ok && rates && s.CPUTime >= old.s.CPUTime {
+		old, ok := g.procs[s.Key()]
+		if ok && rates && s.CPUTime >= old.s.CPUTime {
 			d := (s.CPUTime - old.s.CPUTime).Seconds()
 			p.cpu, p.hasCPU = d/dt, true
 			busy += d
+		}
+		if s.State == domain.StateStopped {
+			p.stoppedSince = now
+			if ok && !old.stoppedSince.IsZero() {
+				p.stoppedSince = old.stoppedSince
+			}
 		}
 		next[s.Key()], byPID[s.PID] = p, p
 		order = append(order, p)
@@ -395,6 +408,21 @@ func (g *Graph) build(order []*proc, busy, dt float64, rates bool) Snapshot {
 		v.RSS += p.s.RSS
 	}
 
+	for _, p := range order { // already sorted by PID
+		if p.s.State != domain.StateStopped {
+			continue
+		}
+		v := StoppedView{Key: p.s.Key(), UID: p.s.UID, Name: p.s.Name, Class: p.class, Since: p.stoppedSince}
+		if p.owner != nil {
+			v.Owner = p.owner.label
+		}
+		if q := p.parent; q != nil {
+			v.Parent = q.s.Name
+			v.ParentOwned = q.owner != nil
+		}
+		snap.Stopped = append(snap.Stopped, v)
+	}
+
 	slices.SortFunc(snap.Agents, func(a, b AgentView) int {
 		return cmp.Or(cmp.Compare(b.CPU, a.CPU), cmp.Compare(a.Key.PID, b.Key.PID))
 	})
@@ -424,6 +452,7 @@ func (g *Graph) Snapshot() Snapshot {
 	s := g.snap
 	s.Agents = slices.Clone(s.Agents)
 	s.Heavy = slices.Clone(s.Heavy)
+	s.Stopped = slices.Clone(s.Stopped)
 	return s
 }
 

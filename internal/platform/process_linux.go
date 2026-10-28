@@ -216,5 +216,6 @@ func readLinuxProcess(dir string, boot time.Time, pageSize uint64) (domain.Proce
 		Name:    st.Comm,
 		CPUTime: ticksToDuration(st.CPUTicks),
 		RSS:     st.RSSPages * pageSize,
+		State:   st.State,
 	}, nil
 }

@@ -65,3 +65,41 @@ func TestPrintStatusReserved(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintStatusStopped(t *testing.T) {
+	for n, want := range map[int]string{
+		0: "",
+		1: "STOPPED   1 process not paused by throtd (see throt doctor)\n",
+		3: "STOPPED   3 processes not paused by throtd (see throt doctor)\n",
+	} {
+		var buf bytes.Buffer
+		printStatus(&buf, app.StatusResult{OrphanCount: n})
+		out := buf.String()
+		if want == "" && strings.Contains(out, "STOPPED") || want != "" && !strings.Contains(out, want) {
+			t.Errorf("count %d: output\n%s\nwant %q", n, out, want)
+		}
+	}
+}
+
+func TestParseResumeArgs(t *testing.T) {
+	for _, tt := range []struct {
+		args  []string
+		pid   string
+		force bool
+		ok    bool
+	}{
+		{args: []string{"42"}, pid: "42", ok: true},
+		{args: []string{"--force", "42"}, pid: "42", force: true, ok: true},
+		{args: []string{"42", "--force"}, pid: "42", force: true, ok: true},
+		{args: []string{"-force", "42"}, pid: "42", force: true, ok: true},
+		{args: nil},
+		{args: []string{"--force"}},
+		{args: []string{"42", "43"}},
+		{args: []string{"--forced", "42"}},
+	} {
+		pid, force, err := parseResumeArgs(tt.args)
+		if (err == nil) != tt.ok || pid != tt.pid || force != tt.force {
+			t.Errorf("parseResumeArgs(%q) = %q, %v, %v", tt.args, pid, force, err)
+		}
+	}
+}
