@@ -81,6 +81,9 @@ type Daemon struct {
 	failing      map[string]bool // sampler name -> currently failing
 	failures     map[string]string
 	retryFailing bool // resume retries are failing
+	// wouldQueue holds the workloads the latest observe-mode round would
+	// have queued; bounded by the snapshot.
+	wouldQueue []domain.ProcessKey
 	// reported holds the orphans an orphan_stopped event already named; it
 	// is pruned to the current orphans each tick, so it stays bounded.
 	reported map[domain.ProcessKey]bool

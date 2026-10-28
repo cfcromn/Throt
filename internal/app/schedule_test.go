@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/process"
+	"github.com/cfcromn/Throt/internal/scheduler"
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
@@ -257,5 +260,34 @@ func TestDaemonStats(t *testing.T) {
 	}
 	if r.Total.HeavyStarted != 2 || r.Total.QueuedSeconds != a.QueuedSeconds || r.Unattributed.HeavyStarted != 1 {
 		t.Fatalf("total = %+v, unattributed = %+v", r.Total, r.Unattributed)
+	}
+}
+
+// TestObserveWouldQueue checks that observe mode exposes the workloads the
+// last round would have queued, and that enforce mode never does.
+func TestObserveWouldQueue(t *testing.T) {
+	a := process.WorkloadView{Key: domain.ProcessKey{PID: 11, Start: time.Unix(11, 0)}, Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	b := process.WorkloadView{Key: domain.ProcessKey{PID: 21, Start: time.Unix(21, 0)}, Name: "make", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	d := controlDaemon(t, t.TempDir(), &fakeSignaler{})
+	c := config.Default().Scheduler
+	c.Mode, c.HeavyLimit, c.Adaptive = "observe", 1, false
+	d.sched = newScheduler(c)
+	now := time.Now()
+	round := func(heavy ...process.WorkloadView) []domain.ProcessKey {
+		now = now.Add(time.Second)
+		d.schedule(context.Background(), scheduler.Input{Now: now, Pressure: domain.PressureNormal, Heavy: heavy}, nil)
+		return d.schedulerStatus().WouldQueue
+	}
+	if got := round(a); len(got) != 0 {
+		t.Fatalf("first round would queue %v, want nothing", got)
+	}
+	if got := round(a, b); !reflect.DeepEqual(got, []domain.ProcessKey{b.Key}) {
+		t.Fatalf("would queue %v, want %v", got, b.Key)
+	}
+	if got := round(a, b); got == nil || len(got) != 0 {
+		t.Fatalf("next round would queue %v, want an empty list", got)
+	}
+	if st := d.schedulerStatus(); len(st.Queued) != 0 {
+		t.Errorf("observe mode queued %v", st.Queued)
 	}
 }

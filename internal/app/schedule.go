@@ -27,6 +27,9 @@ type SchedulerStatus struct {
 	PerAgentLimit int `json:"per_agent_limit"`
 	// Queued lists workloads the scheduler paused (queued or preempted).
 	Queued []domain.ProcessKey `json:"queued"`
+	// WouldQueue lists, in observe mode, the workloads the latest round
+	// would have queued; they keep running. Empty in the other modes.
+	WouldQueue []domain.ProcessKey `json:"would_queue"`
 	// Leases lists the active admission leases: heavy slots reserved for
 	// `throt run` commands that are not heavy workloads yet. They count as
 	// running heavy work.
@@ -83,6 +86,7 @@ func (d *Daemon) schedule(parent context.Context, in scheduler.Input, orphans []
 	}
 
 	decisions := d.sched.Decide(in)
+	d.wouldQueue = d.wouldQueue[:0]
 	for _, c := range d.sched.Changes() {
 		d.emit(domain.EventSchedulerLimit, fmt.Sprintf("heavy limit %d -> %d: %s", c.From, c.To, c.Reason),
 			map[string]string{"from": strconv.Itoa(c.From), "to": strconv.Itoa(c.To), "reason": c.Reason})
@@ -90,6 +94,9 @@ func (d *Daemon) schedule(parent context.Context, in scheduler.Input, orphans []
 	for _, dec := range decisions {
 		d.emitDecision(dec)
 		if dec.Observed {
+			if dec.Action == scheduler.ActionQueue {
+				d.wouldQueue = append(d.wouldQueue, dec.Key)
+			}
 			continue
 		}
 		switch dec.Action {
@@ -173,7 +180,13 @@ func (d *Daemon) schedulerQueued() []domain.ProcessKey {
 // empty: the status handlers fill them in under d.mu.
 func (d *Daemon) schedulerStatus() SchedulerStatus {
 	p := d.sched.Policy()
-	st := SchedulerStatus{Mode: p.Mode, HeavyLimit: d.sched.Limit(), PerAgentLimit: p.PerOwnerLimit, Queued: d.schedulerQueued(), Leases: []Lease{}}
+	st := SchedulerStatus{
+		Mode: p.Mode, HeavyLimit: d.sched.Limit(), PerAgentLimit: p.PerOwnerLimit,
+		Queued: d.schedulerQueued(), WouldQueue: []domain.ProcessKey{}, Leases: []Lease{},
+	}
+	if p.Mode == scheduler.ModeObserve {
+		st.WouldQueue = append(st.WouldQueue, d.wouldQueue...)
+	}
 	if p.Adaptive {
 		st.Adaptive, st.StartLimit, st.MaxLimit = true, p.StartLimit, p.HeavyLimit
 	}

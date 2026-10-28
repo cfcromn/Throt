@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -132,6 +133,8 @@ func printStatus(w io.Writer, st app.StatusResult) {
 			state = "QUEUED"
 		case paused[h.Key.PID]:
 			state = "PAUSED"
+		case slices.ContainsFunc(st.Scheduler.WouldQueue, func(k domain.ProcessKey) bool { return k.PID == h.Key.PID }):
+			state = "running (would queue)"
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.0f%%\t%s\t%s\n", owner, h.Key.PID, h.Name, h.Class, h.CPU*100, gib(h.RSS), state)
 	}
