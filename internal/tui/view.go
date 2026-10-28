@@ -381,7 +381,7 @@ func (m Model) helpLines() []string {
 // the key hints.
 func (m Model) footer() string {
 	if a := m.confirm; a != nil {
-		return titleStyle.Render(truncate(fmt.Sprintf("%s %s (pid %d)? y/n", a.verb, a.name, a.pid), m.width))
+		return titleStyle.Render(truncate(fmt.Sprintf("%s %s (pid %d)? y/n", a.verb, a.name, a.key.PID), m.width))
 	}
 	if m.notice != "" {
 		return truncate(m.notice, m.width)

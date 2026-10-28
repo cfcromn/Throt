@@ -27,11 +27,14 @@ const (
 type Event struct {
 	// Seq is assigned by EventLog.Append: 1 for a daemon's first event, then
 	// one more for each event. It starts over when the daemon restarts.
-	Seq     uint64            `json:"seq"`
-	Time    time.Time         `json:"time"`
-	Kind    EventKind         `json:"kind"`
-	Message string            `json:"message,omitempty"`
-	Attrs   map[string]string `json:"attrs,omitempty"`
+	Seq uint64 `json:"seq"`
+	// Instance identifies the daemon run that logged the event. A change
+	// means throtd restarted, even if the new run already passed the old Seq.
+	Instance string            `json:"instance,omitempty"`
+	Time     time.Time         `json:"time"`
+	Kind     EventKind         `json:"kind"`
+	Message  string            `json:"message,omitempty"`
+	Attrs    map[string]string `json:"attrs,omitempty"`
 }
 
 // EventLog is a fixed-capacity ring of recent events, safe for concurrent use.
@@ -42,11 +45,14 @@ type EventLog struct {
 	next  int
 	count int
 	seq   uint64 // Seq of the newest event
+
+	instance string
 }
 
-// NewEventLog returns a log retaining at most capacity events (minimum 1).
-func NewEventLog(capacity int) *EventLog {
-	return &EventLog{buf: make([]Event, max(capacity, 1))}
+// NewEventLog returns a log retaining at most capacity events (minimum 1),
+// stamping each with instance.
+func NewEventLog(capacity int, instance string) *EventLog {
+	return &EventLog{buf: make([]Event, max(capacity, 1)), instance: instance}
 }
 
 // Append records e under the next sequence number, replacing any Seq it
@@ -55,7 +61,7 @@ func (l *EventLog) Append(e Event) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.seq++
-	e.Seq = l.seq
+	e.Seq, e.Instance = l.seq, l.instance
 	l.buf[l.next] = e
 	l.next = (l.next + 1) % len(l.buf)
 	l.count = min(l.count+1, len(l.buf))

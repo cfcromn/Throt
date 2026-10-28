@@ -31,6 +31,7 @@ type fakeClient struct {
 	sinces []uint64
 	// calls records pause and resume requests as "pause 2000".
 	calls      []string
+	keys       []domain.ProcessKey // full keys sent with those requests
 	controlErr error
 }
 
@@ -59,13 +60,15 @@ func (f *fakeClient) EventsSince(_ context.Context, seq uint64, limit int) ([]do
 	return nil, nil
 }
 
-func (f *fakeClient) Pause(_ context.Context, pid int) error {
-	f.calls = append(f.calls, fmt.Sprint("pause ", pid))
+func (f *fakeClient) Pause(_ context.Context, k domain.ProcessKey) error {
+	f.calls = append(f.calls, fmt.Sprint("pause ", k.PID))
+	f.keys = append(f.keys, k)
 	return f.controlErr
 }
 
-func (f *fakeClient) Resume(_ context.Context, pid int) error {
-	f.calls = append(f.calls, fmt.Sprint("resume ", pid))
+func (f *fakeClient) Resume(_ context.Context, k domain.ProcessKey) error {
+	f.calls = append(f.calls, fmt.Sprint("resume ", k.PID))
+	f.keys = append(f.keys, k)
 	return f.controlErr
 }
 
@@ -569,4 +572,18 @@ func TestControlKeysNeedHeavyFocus(t *testing.T) {
 	}
 	m = press(t, m, "?")
 	assertContains(t, view(m), "p / r", "pause / resume the selected heavy workload")
+}
+
+func TestTimelineResetsOnDaemonRestart(t *testing.T) {
+	m := Model{}
+	m.addEvents([]domain.Event{{Seq: 1, Instance: "a"}, {Seq: 2, Instance: "a"}})
+	// The new daemon is already past seq 2, so only the instance shows it.
+	m.addEvents([]domain.Event{{Seq: 3, Instance: "b"}})
+	if m.lastSeq != 0 || len(m.events) != 0 || m.instance != "b" {
+		t.Fatalf("after restart: lastSeq %d, %d events, instance %q; want a reset to b", m.lastSeq, len(m.events), m.instance)
+	}
+	m.addEvents([]domain.Event{{Seq: 1, Instance: "b"}, {Seq: 2, Instance: "b"}, {Seq: 3, Instance: "b"}})
+	if m.lastSeq != 3 || len(m.events) != 3 {
+		t.Fatalf("after refetch: lastSeq %d, %d events", m.lastSeq, len(m.events))
+	}
 }

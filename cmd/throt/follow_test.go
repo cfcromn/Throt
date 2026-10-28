@@ -107,3 +107,35 @@ func TestFollowErrors(t *testing.T) {
 		t.Errorf("unnumbered events error = %v, want upgrade hint", err)
 	}
 }
+
+func TestFollowDetectsRestartPastLastSeq(t *testing.T) {
+	run := func(inst string, from, to uint64) []domain.Event {
+		es := seqs(from, to)
+		for i := range es {
+			es[i].Instance = inst
+		}
+		return es
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &scriptedFetch{cancel: cancel, results: []fetchResult{
+		{events: run("a", 1, 3)},
+		// A new daemon already logged 5 events, so since=3 returns 4..5:
+		// only the instance shows the restart.
+		{events: run("b", 4, 5)},
+		{events: run("b", 1, 5)},
+		{}, // interrupted during this poll
+	}}
+	var out, errw strings.Builder
+	if err := follow(ctx, s.fetch, &out, &errw, time.Millisecond, 50); err != nil {
+		t.Fatal(err)
+	}
+	if want := "[0 3 0 5]"; jsonSeqs(s.sinces) != want {
+		t.Errorf("since values %s, want %s", jsonSeqs(s.sinces), want)
+	}
+	if !strings.Contains(errw.String(), "throtd restarted") {
+		t.Errorf("no restart notice:\n%s", errw.String())
+	}
+	if n := strings.Count(out.String(), `"instance":"b"`); n != 5 {
+		t.Errorf("printed %d events of the new daemon, want all 5:\n%s", n, out.String())
+	}
+}

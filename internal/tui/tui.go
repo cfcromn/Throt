@@ -24,8 +24,10 @@ type Client interface {
 	// oldest first, or the newest limit events when seq is 0.
 	EventsSince(ctx context.Context, seq uint64, limit int) ([]domain.Event, error)
 	// Pause and Resume send the privileged pause and resume methods.
-	Pause(ctx context.Context, pid int) error
-	Resume(ctx context.Context, pid int) error
+	// Pause and Resume send the key, not just the PID, so a stale view never
+	// acts on a process that reused the PID.
+	Pause(ctx context.Context, key domain.ProcessKey) error
+	Resume(ctx context.Context, key domain.ProcessKey) error
 }
 
 const (
@@ -43,7 +45,7 @@ const (
 // action is a pause or resume the user asked for, awaiting y/n.
 type action struct {
 	verb string // "pause" or "resume"
-	pid  int
+	key  domain.ProcessKey
 	name string
 }
 
@@ -94,6 +96,8 @@ type Model struct {
 	// lastSeq is the seq of the newest event held; polls ask only for
 	// newer ones. 0 means fetch the newest eventLimit.
 	lastSeq uint64
+	// instance is the daemon run lastSeq belongs to.
+	instance string
 
 	// confirm is the action awaiting y/n, or nil.
 	confirm *action
@@ -147,9 +151,9 @@ func (m Model) send(a action) tea.Cmd {
 		defer cancel()
 		var err error
 		if a.verb == "pause" {
-			err = c.Pause(ctx, a.pid)
+			err = c.Pause(ctx, a.key)
 		} else {
-			err = c.Resume(ctx, a.pid)
+			err = c.Resume(ctx, a.key)
 		}
 		return controlMsg{action: a, err: err}
 	}
@@ -181,7 +185,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		cmd = m.handleKey(msg)
 	case controlMsg:
-		target := fmt.Sprintf("%s (pid %d)", msg.name, msg.pid)
+		target := fmt.Sprintf("%s (pid %d)", msg.name, msg.key.PID)
 		if msg.err != nil {
 			cmd = m.setNotice(msg.verb + " " + target + " failed: " + msg.err.Error())
 		} else {
@@ -229,6 +233,12 @@ func (m *Model) addEvents(events []domain.Event) {
 	if len(events) == 0 {
 		return
 	}
+	if m.instance != "" && events[0].Instance != m.instance {
+		// throtd restarted; the next poll fetches the new run's newest events.
+		m.instance, m.lastSeq, m.events = events[0].Instance, 0, nil
+		return
+	}
+	m.instance = events[0].Instance
 	if m.lastSeq == 0 || events[0].Seq <= m.lastSeq {
 		m.events = slices.Clone(events)
 	} else {
@@ -264,7 +274,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		if k.String() == "r" {
 			verb = "resume"
 		}
-		m.confirm = &action{verb: verb, pid: h.Key.PID, name: h.Name}
+		m.confirm = &action{verb: verb, key: h.Key, name: h.Name}
 	case "?":
 		m.help = !m.help
 	case "esc":

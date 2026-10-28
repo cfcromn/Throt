@@ -51,13 +51,14 @@ func (d *Daemon) Reload() (ReloadResult, error) {
 	if d.cfgPath == "" {
 		return ReloadResult{}, d.reloadFailed(errors.New("config path unknown"))
 	}
+	// Load under the lock so two racing reloads can't apply an older file
+	// after a newer one.
+	d.reloadMu.Lock()
+	defer d.reloadMu.Unlock()
 	next, err := config.Load(d.cfgPath)
 	if err != nil {
 		return ReloadResult{}, d.reloadFailed(err)
 	}
-
-	d.reloadMu.Lock()
-	defer d.reloadMu.Unlock()
 	res := ReloadResult{Changed: []string{}, RequiresRestart: []string{}}
 	var restart []string
 	agentsChanged := false
@@ -77,7 +78,9 @@ func (d *Daemon) Reload() (ReloadResult, error) {
 		d.graph.SetAdapters(adapters(next.Agents))
 		d.graphMu.Unlock()
 	}
-	if next.Scheduler != d.live.Scheduler {
+	// New adapters can split a workload into new keys; re-sending the
+	// policy rebaselines the scheduler so running work is never queued.
+	if next.Scheduler != d.live.Scheduler || agentsChanged {
 		select {
 		case <-d.policyCh: // superseded before the tick took it
 		default:

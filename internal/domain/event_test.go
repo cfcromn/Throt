@@ -6,7 +6,7 @@ import (
 )
 
 func TestEventLogBounded(t *testing.T) {
-	log := NewEventLog(3)
+	log := NewEventLog(3, "run-1")
 	if got := log.Recent(0); len(got) != 0 {
 		t.Fatalf("empty log returned %d events", len(got))
 	}
@@ -35,7 +35,7 @@ func TestEventLogBounded(t *testing.T) {
 }
 
 func TestEventLogSince(t *testing.T) {
-	log := NewEventLog(3)
+	log := NewEventLog(3, "run-1")
 	if got := log.Since(0, 0); len(got) != 0 {
 		t.Fatalf("empty log returned %d events", len(got))
 	}

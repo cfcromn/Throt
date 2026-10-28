@@ -334,3 +334,22 @@ func TestReloadIsPrivileged(t *testing.T) {
 		t.Fatalf("privileged methods = %v, want reload included", privilegedMethods())
 	}
 }
+
+func TestReloadAgentsRebaselinesScheduler(t *testing.T) {
+	// New adapters can split a workload into new keys; the scheduler must
+	// treat them as pre-existing, so an agents-only change re-sends the policy.
+	path := filepath.Join(t.TempDir(), "config.json")
+	d := NewDaemon(config.Default(), fakeSampler{}, fakeSampler{}, &fakeSignaler{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d.SetConfigPath(path)
+	if err := os.WriteFile(path, []byte(`{"agents":[{"name":"myagent","executables":["my-agent"]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-d.policyCh:
+	default:
+		t.Fatal("agents-only reload did not hand the tick a policy to rebaseline")
+	}
+}

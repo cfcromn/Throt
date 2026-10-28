@@ -400,3 +400,30 @@ func TestDaemonEventsSince(t *testing.T) {
 		t.Fatalf("since %d limit 1 = %+v, want seq %d", all[0].Seq, after, all[1].Seq)
 	}
 }
+
+func TestControlRefusesStaleStart(t *testing.T) {
+	sock := filepath.Join(shortTempDir(t), "throtd.sock")
+	sig := &fakeSignaler{}
+	stop := startDaemonWith(t, sock, sig)
+	defer stop()
+	ctx := context.Background()
+	var st StatusResult
+	waitFor(t, "heavy workload", func() bool {
+		st = StatusResult{}
+		return transport.Call(ctx, sock, "status", nil, &st) == nil && len(st.Heavy) == 1
+	})
+	stale := ControlParams{PID: st.Heavy[0].Key.PID, Start: st.Heavy[0].Key.Start.Add(-time.Hour)}
+	if err := transport.Call(ctx, sock, "pause", stale, nil); err == nil || !strings.Contains(err.Error(), "PID reused") {
+		t.Fatalf("stale pause err = %v", err)
+	}
+	if sig.signals() != "" {
+		t.Fatalf("signals sent: %q", sig.signals())
+	}
+	fresh := ControlParams{PID: st.Heavy[0].Key.PID, Start: st.Heavy[0].Key.Start}
+	if err := transport.Call(ctx, sock, "pause", fresh, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.Call(ctx, sock, "resume", fresh, nil); err != nil {
+		t.Fatal(err)
+	}
+}

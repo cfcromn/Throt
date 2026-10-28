@@ -126,7 +126,7 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 	d := &Daemon{
 		cfg:    cfg,
 		log:    log,
-		events: domain.NewEventLog(cfg.EventHistory),
+		events: domain.NewEventLog(cfg.EventHistory, strconv.FormatInt(time.Now().UnixNano(), 36)),
 		host:   host,
 		procs:  procs,
 		graph: process.NewGraph(adapters(cfg.Agents),

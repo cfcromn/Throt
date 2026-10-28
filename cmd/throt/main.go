@@ -215,12 +215,12 @@ func (c daemonClient) EventsSince(ctx context.Context, seq uint64, limit int) ([
 	return events, err
 }
 
-func (c daemonClient) Pause(ctx context.Context, pid int) error {
-	return transport.Call(ctx, c.socket, "pause", app.ControlParams{PID: pid}, nil)
+func (c daemonClient) Pause(ctx context.Context, k domain.ProcessKey) error {
+	return transport.Call(ctx, c.socket, "pause", app.ControlParams{PID: k.PID, Start: k.Start}, nil)
 }
 
-func (c daemonClient) Resume(ctx context.Context, pid int) error {
-	return transport.Call(ctx, c.socket, "resume", app.ControlParams{PID: pid}, nil)
+func (c daemonClient) Resume(ctx context.Context, k domain.ProcessKey) error {
+	return transport.Call(ctx, c.socket, "resume", app.ControlParams{PID: k.PID, Start: k.Start}, nil)
 }
 
 func printStatus(w io.Writer, st app.StatusResult) {

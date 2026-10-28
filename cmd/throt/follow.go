@@ -29,6 +29,7 @@ type fetchEvents func(ctx context.Context, since uint64, limit int) ([]domain.Ev
 func follow(ctx context.Context, fetch fetchEvents, out, errw io.Writer, interval time.Duration, limit int) error {
 	enc := json.NewEncoder(out)
 	var last uint64
+	var instance string
 	first, failing := true, false
 	for {
 		n := limit
@@ -58,6 +59,14 @@ func follow(ctx context.Context, fetch fetchEvents, out, errw io.Writer, interva
 				if events[0].Seq == 0 {
 					return errors.New("throtd does not number its events; upgrade throtd to use -f")
 				}
+				if instance != "" && events[0].Instance != instance {
+					// The new daemon may already be past last; start over from
+					// its newest events instead of skipping its first ones.
+					fmt.Fprintln(errw, "throt: throtd restarted; following the new daemon")
+					instance, last, first = events[0].Instance, 0, true
+					continue
+				}
+				instance = events[0].Instance
 				switch {
 				case last != 0 && events[0].Seq <= last:
 					fmt.Fprintf(errw, "throt: event sequence went back from %d to %d: throtd restarted; following the new daemon\n", last, events[0].Seq)
