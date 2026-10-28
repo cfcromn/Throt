@@ -11,7 +11,7 @@ Throt is a local-first Go daemon and terminal UI that observes coding-agent proc
 
 ## Status
 
-**Pre-alpha.** The daemon samples host resources, reports a pressure level, and attributes processes and heavy workloads to coding agents. The TUI and scheduling are under active development. Expect breaking changes before 1.0.
+**Pre-alpha (v0.1 Observe).** Throt samples host resources, reports a stable pressure level, attributes processes and heavy workloads to coding agents, and shows it all in a TUI. It does not control any process yet; scheduling is next. Expect breaking changes before 1.0.
 
 ## Problem
 
@@ -63,19 +63,24 @@ q quit  tab focus  j/k move  enter details  ? help
 
 CPU is a percentage of one core, so a process using two cores shows 200%. Keys: `tab` switches between the agents and heavy-workload tables, `j`/`k` or the arrow keys move the selection, `enter` shows details for the selected row, `?` shows help, `q` quits. Metrics the platform cannot provide show as `n/a`, and if `throtd` is not running the TUI says so and reconnects when it starts. Narrow terminals (down to 40×12) drop low-value columns and truncate names.
 
-## Usage
+## Install
 
-Requires Go (see `go.mod`) on macOS or Linux.
+Download a release archive for macOS or Linux (amd64/arm64) from [Releases](https://github.com/cfcromn/Throt/releases), verify it against `checksums.txt`, and put `throt` and `throtd` on your `PATH`. Or build from source with the Go version in `go.mod`:
 
 ```bash
 go install github.com/cfcromn/Throt/cmd/throt@latest
 go install github.com/cfcromn/Throt/cmd/throtd@latest
+```
 
+## Usage
+
+```bash
 throtd &        # start the daemon
 throt           # terminal UI (same as `throt top`)
 throt ping      # check that the client can reach it
 throt status    # pressure, host resources, agents, heavy workloads
 throt events    # recent daemon events as JSON lines
+throt doctor    # sanitized diagnostics to paste into a bug report
 ```
 
 ## Roadmap
