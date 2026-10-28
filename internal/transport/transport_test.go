@@ -13,6 +13,11 @@ import (
 
 func startServer(t *testing.T, handlers map[string]Handler) string {
 	t.Helper()
+	return serve(t, NewServer(handlers))
+}
+
+func serve(t *testing.T, s *Server) string {
+	t.Helper()
 	sock := filepath.Join(t.TempDir(), "t.sock")
 	l, err := net.Listen("unix", sock)
 	if err != nil {
@@ -20,7 +25,7 @@ func startServer(t *testing.T, handlers map[string]Handler) string {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- NewServer(handlers).Serve(ctx, l) }()
+	go func() { done <- s.Serve(ctx, l) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {

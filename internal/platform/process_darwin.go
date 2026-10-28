@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/domain"
@@ -52,10 +53,52 @@ func (darwinProcessSampler) SampleProcesses(ctx context.Context) ([]domain.Proce
 	return procs, nil
 }
 
+// NewProcessController returns a process controller for the current OS. On
+// macOS Identity runs /bin/ps for the one PID.
+func NewProcessController() ProcessController { return darwinProcessController{} }
+
+// NewProcessTools returns a sampler and a controller whose identities agree.
+// On macOS both derive Start from ps lstart, so they share no state.
+func NewProcessTools() (ProcessSampler, ProcessController) {
+	return NewProcessSampler(), NewProcessController()
+}
+
+type darwinProcessController struct{ unixSignaler }
+
+func (darwinProcessController) Identity(ctx context.Context, pid int) (time.Time, uint32, error) {
+	if err := checkIdentityPID(pid); err != nil {
+		return time.Time{}, 0, err
+	}
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, err)
+	}
+	out, err := execPS(ctx, "-o", psIdentityColumns, "-p", strconv.Itoa(pid))
+	// ps exits 1 with no output when the PID does not exist. A context error
+	// comes back with no output too, so only an exit status counts as gone.
+	var exitErr *exec.ExitError
+	if len(bytes.TrimSpace(out)) == 0 && (err == nil || errors.As(err, &exitErr)) {
+		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, domain.ErrProcessGone)
+	}
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, err)
+	}
+	start, uid, err := parsePSIdentity(out, time.Local)
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, err)
+	}
+	return start, uid, nil
+}
+
 // runPS runs ps for all processes with the given -o columns and returns its
 // bounded output.
 func runPS(ctx context.Context, columns string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, psPath, "-axww", "-o", columns)
+	return execPS(ctx, "-axww", "-o", columns)
+}
+
+// execPS runs ps with args and returns its bounded output. When ps exits
+// non-zero, its output is returned along with the error.
+func execPS(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, psPath, args...)
 	// The C locale fixes the lstart format; TZ is kept so ps and Go agree on
 	// local time. Nothing else from the environment is passed on.
 	cmd.Env = []string{"LC_ALL=C"}
@@ -84,7 +127,7 @@ func runPS(ctx context.Context, columns string) ([]byte, error) {
 	case readErr != nil:
 		return nil, fmt.Errorf("read ps output: %w", readErr)
 	case waitErr != nil:
-		return nil, fmt.Errorf("ps: %w", waitErr)
+		return out, fmt.Errorf("ps: %w", waitErr)
 	}
 	return out, nil
 }
