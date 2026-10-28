@@ -226,10 +226,19 @@ func (m Model) heavyPane(rows int) []string {
 		{title: "CLASS", width: 15, drop: 2},
 		{title: "CPU", width: 6, right: true},
 		{title: "MEM", width: 9, right: true},
+		{title: "STATE", width: 6, drop: 1},
+	}
+	paused := make(map[domain.ProcessKey]bool, len(m.status.Paused))
+	for _, p := range m.status.Paused {
+		paused[p.Key] = true
 	}
 	cells := make([][]string, len(m.status.Heavy))
 	for i, h := range m.status.Heavy {
-		cells[i] = []string{owner(h.Owner), fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS)}
+		state := ""
+		if paused[h.Key] {
+			state = "PAUSED"
+		}
+		cells[i] = []string{owner(h.Owner), fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), state}
 	}
 	return m.table(paneHeavy, "HEAVY WORKLOADS", "(no heavy workloads)", cols, cells, rows)
 }

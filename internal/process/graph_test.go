@@ -19,6 +19,7 @@ type ps struct {
 	start     int
 	cpu       float64
 	rss       uint64
+	uid       uint32
 }
 
 func (p ps) sample() domain.ProcessSample {
@@ -29,6 +30,7 @@ func (p ps) sample() domain.ProcessSample {
 		Name:    p.name,
 		CPUTime: time.Duration(p.cpu * float64(time.Second)),
 		RSS:     p.rss << 20,
+		UID:     p.uid,
 	}
 }
 

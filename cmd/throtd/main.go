@@ -39,5 +39,6 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	return app.NewDaemon(cfg, platform.NewHostSampler(), platform.NewProcessSampler(), log).Run(ctx)
+	procs, ctl := platform.NewProcessTools()
+	return app.NewDaemon(cfg, platform.NewHostSampler(), procs, ctl, log).Run(ctx)
 }

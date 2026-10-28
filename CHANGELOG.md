@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Added
+- `throt pause PID` / `throt resume PID`: identity-verified SIGSTOP/SIGCONT of agent-owned heavy workloads, with audit events, peer-uid authorization, resume on shutdown, and crash recovery.
+- Paused state in `throt status` and the TUI.
+
 ## [0.1.0-rc.1] - 2026-10-28
 
 First observe-only release candidate. Throt does not control any process.

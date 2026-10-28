@@ -416,3 +416,62 @@ func (g *Graph) Snapshot() Snapshot {
 	s.Heavy = slices.Clone(s.Heavy)
 	return s
 }
+
+// Member is one process of a workload, as observed in the latest Update.
+type Member struct {
+	Key domain.ProcessKey
+	UID uint32
+}
+
+// WorkloadTarget describes one top-level heavy workload and the processes
+// that make it up, for callers that may act on it (e.g. process control).
+type WorkloadTarget struct {
+	Key   domain.ProcessKey
+	Name  string
+	Class domain.WorkloadClass
+	// Owner is the owning agent instance label, or "" when unattributed.
+	Owner string
+	// Members are the workload's top process followed by every descendant
+	// with the same owner, parents before children (siblings by PID). A
+	// subtree owned by a nested agent is excluded.
+	Members []Member
+}
+
+// Workload returns the top-level heavy workload whose top process is key,
+// as of the latest Update. It reports false when key is not a live process,
+// is not heavy, or was collapsed into a same-name heavy ancestor. The result
+// shares no memory with the graph.
+func (g *Graph) Workload(key domain.ProcessKey) (WorkloadTarget, bool) {
+	r := g.procs[key]
+	if r == nil || r.track != trackHeavy || collapseRoot(r) != r {
+		return WorkloadTarget{}, false
+	}
+	children := map[*proc][]*proc{}
+	for _, p := range g.procs {
+		if p.parent != nil {
+			children[p.parent] = append(children[p.parent], p)
+		}
+	}
+	t := WorkloadTarget{Key: key, Name: r.s.Name, Class: r.class}
+	if r.owner != nil {
+		t.Owner = r.owner.label
+	}
+	// Breadth-first from the root, so every parent precedes its children.
+	// Links are acyclic (see link), so the walk terminates.
+	queue := []*proc{r}
+	for len(queue) > 0 {
+		p := queue[0]
+		queue = queue[1:]
+		t.Members = append(t.Members, Member{Key: p.s.Key(), UID: p.s.UID})
+		kids := children[p]
+		slices.SortFunc(kids, func(a, b *proc) int { return cmp.Compare(a.s.PID, b.s.PID) })
+		for _, c := range kids {
+			// A process with another owner (a nested agent, or anything it
+			// owns) is not part of this workload, and neither is its subtree.
+			if c.owner == r.owner {
+				queue = append(queue, c)
+			}
+		}
+	}
+	return t, true
+}
