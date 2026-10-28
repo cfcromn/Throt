@@ -157,8 +157,10 @@ func DefaultThresholds() Thresholds {
 // point is the part of a sample the engine retains. It copies values so the
 // engine never holds on to the caller's Missing slice.
 type point struct {
-	t                                            time.Time
-	cpu, load, mem                               float64
+	t              time.Time
+	cpu, load, mem float64
+	// commit is the share of RAM and swap together in use.
+	commit                                       float64
 	latency                                      time.Duration
 	swap                                         uint64
 	kernel                                       domain.MemoryPressure
@@ -172,6 +174,7 @@ type point struct {
 type stats struct {
 	// latency is in nanoseconds; kernel is the median verdict ordinal.
 	mem, swap, cpu, load, latency, kernel        float64
+	commit                                       float64
 	memSome, memFull, ioFull, cpuSome            float64
 	hasMem, hasSwap, hasCPU, hasLoad, hasLatency bool
 	hasKernel                                    bool
@@ -356,6 +359,11 @@ func (e *Engine) add(s domain.HostSample) {
 	if p.hasMem {
 		avail := min(s.MemAvailable, s.MemTotal)
 		p.mem = 1 - float64(avail)/float64(s.MemTotal)
+		p.commit = p.mem
+		if p.hasSwap && s.SwapTotal > 0 {
+			used := float64(s.MemTotal-avail) + float64(min(s.SwapUsed, s.SwapTotal))
+			p.commit = used / (float64(s.MemTotal) + float64(s.SwapTotal))
+		}
 	}
 	if len(e.samples) == MaxSamples {
 		e.samples = append(e.samples[:0], e.samples[1:]...)
@@ -377,6 +385,7 @@ func (e *Engine) add(s domain.HostSample) {
 func (e *Engine) stats() stats {
 	var st stats
 	st.mem, st.hasMem = e.median(func(p point) (float64, bool) { return p.mem, p.hasMem })
+	st.commit, _ = e.median(func(p point) (float64, bool) { return p.commit, p.hasMem })
 	st.cpu, st.hasCPU = e.median(func(p point) (float64, bool) { return p.cpu, p.hasCPU })
 	st.load, st.hasLoad = e.median(func(p point) (float64, bool) { return p.load, p.hasLoad })
 	st.latency, st.hasLatency = e.median(func(p point) (float64, bool) { return float64(p.latency), p.hasLatency })
@@ -444,14 +453,22 @@ func medianOf(vals []float64) float64 {
 // some), which saturate during any build without hurting the machine.
 //
 // A kernel memory signal in the window (the macOS verdict or Linux memory
-// PSI) takes precedence over memory used for elevated and high unless
-// MemoryUsedWhenKernelSignal is set. Memory used still counts toward
-// critical: without swap, memory can fill with little reclaim stall until
-// the OOM killer acts, so near-exhaustion must stay visible. The macOS
-// verdict never reaches critical on its own.
+// PSI) takes precedence over memory used unless MemoryUsedWhenKernelSignal
+// is set. With memory PSI, near-exhaustion still counts toward critical:
+// without swap, memory can fill with little reclaim stall until the OOM
+// killer acts. It is measured as RAM and swap together in use
+// (memory_and_swap_used, against the critical MemoryUsed threshold), so
+// RAM full of idle pages while swap has room, such as workloads the
+// scheduler paused, is left to PSI: counting RAM alone would hold critical,
+// and block every resume, until the paused work exits. Without swap it is
+// memory used. The macOS verdict never reaches critical on its own, and
+// memory used does not count beside it: macOS grows swap on demand, so
+// there is no fixed size to measure exhaustion against, and critical
+// needs swap growth.
 func (e *Engine) classify(st stats, exit, skipThroughput bool) (domain.PressureLevel, string) {
 	kernelMem := st.hasKernel || st.hasMemStall
 	useMem := st.hasMem && (!kernelMem || e.th.MemoryUsedWhenKernelSignal)
+	exhaustion := st.hasMem && st.hasMemStall && !useMem
 	levels := [...]struct {
 		l  domain.PressureLevel
 		th LevelThresholds
@@ -471,7 +488,8 @@ func (e *Engine) classify(st stats, exit, skipThroughput bool) (domain.PressureL
 			{"kernel_memory_pressure", st.kernel, float64(lv.th.KernelMemory), st.hasKernel && lv.l != domain.PressureCritical, kindVerdict, false},
 			{"memory_stall_full", st.memFull, lv.th.MemoryStallFull, st.hasMemStall, kindStall, false},
 			{"memory_stall_some", st.memSome, lv.th.MemoryStallSome, st.hasMemStall, kindStall, false},
-			{"memory_used", st.mem, lv.th.MemoryUsed, useMem || (st.hasMem && lv.l == domain.PressureCritical), kindFraction, false},
+			{"memory_used", st.mem, lv.th.MemoryUsed, useMem, kindFraction, false},
+			{"memory_and_swap_used", st.commit, lv.th.MemoryUsed, exhaustion && lv.l == domain.PressureCritical, kindFraction, false},
 			{"swap_growth", st.swap, lv.th.SwapGrowth, st.hasSwap, kindRate, false},
 			{"io_stall_full", st.ioFull, lv.th.IOStallFull, st.hasIOStall, kindStall, false},
 			{"load", st.load, lv.th.Load, st.hasLoad, kindFraction, true},

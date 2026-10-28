@@ -89,14 +89,6 @@ func TestStallSignals(t *testing.T) {
 			final:  N,
 		},
 		{
-			// Without swap, memory fills with little reclaim stall until the
-			// OOM killer acts, so near-exhaustion still reaches critical.
-			name:   "memory PSI present: near-exhausted memory still critical",
-			script: series(0, 20, memStall(0.97, steady(stall(0, 0)))),
-			want:   []transition{{level: C, reason: "memory_used>=0.95"}},
-			final:  C,
-		},
-		{
 			name:    "memory used kept when MemoryUsedWhenKernelSignal is set",
 			memUsed: true,
 			script:  series(0, 20, memStall(0.93, steady(stall(0, 0)))),
@@ -244,5 +236,101 @@ func TestStallExitRatioDegenerate(t *testing.T) {
 	want := []transition{{sec: 2, level: domain.PressureHigh}, {sec: 23, level: domain.PressureNormal}}
 	if len(got) != len(want) || got[0].level != want[0].level || got[1].level != want[1].level || got[1].sec != want[1].sec {
 		t.Fatalf("transitions = %+v, want %+v", got, want)
+	}
+}
+
+// TestMemoryExhaustion covers near-exhausted memory beside a kernel memory
+// signal: with PSI it reaches critical only when RAM and swap together are
+// nearly used, and beside the macOS verdict memory used never counts.
+func TestMemoryExhaustion(t *testing.T) {
+	const gib = 1 << 30
+	N, H, C := domain.PressureNormal, domain.PressureHigh, domain.PressureCritical
+	type host struct {
+		availMiB, swapTotalGiB, swapUsedMiB uint64
+		noSwap                              bool // swap metric missing
+		psi                                 *domain.Stall
+		verdict                             domain.MemoryPressure
+	}
+	tests := []struct {
+		name   string
+		h      host
+		final  domain.PressureLevel
+		reason string
+	}{
+		{
+			// The memory bench with every job queued: RAM full of stopped
+			// pages, swap 70% used, nobody stalled. Critical here held
+			// every resume back until max_queue_wait.
+			name:  "PSI calm, RAM full, swap has room: PSI decides",
+			h:     host{availMiB: 3, swapTotalGiB: 1, swapUsedMiB: 713, psi: stall(0, 0)},
+			final: N, reason: "below_thresholds",
+		},
+		{
+			name:  "PSI calm, RAM and swap both nearly full: critical",
+			h:     host{availMiB: 3, swapTotalGiB: 1, swapUsedMiB: 1000, psi: stall(0, 0)},
+			final: C, reason: "memory_and_swap_used>=0.95",
+		},
+		{
+			name:  "PSI calm, no swap configured: RAM alone is exhaustion",
+			h:     host{availMiB: 20, psi: stall(0, 0)},
+			final: C, reason: "memory_and_swap_used>=0.95",
+		},
+		{
+			name:  "PSI calm, swap unreadable: RAM alone is exhaustion",
+			h:     host{availMiB: 20, swapTotalGiB: 1, noSwap: true, psi: stall(0, 0)},
+			final: C, reason: "memory_and_swap_used>=0.95",
+		},
+		{
+			name:  "PSI stalled with swap room: PSI still reaches critical",
+			h:     host{availMiB: 3, swapTotalGiB: 1, swapUsedMiB: 500, psi: stall(0.6, 0.3)},
+			final: C, reason: "memory_stall_full>=0.2",
+		},
+		{
+			name:  "macOS verdict normal, RAM full: memory used ignored",
+			h:     host{availMiB: 3, swapTotalGiB: 1, swapUsedMiB: 1020, verdict: domain.MemoryPressureNormal},
+			final: N, reason: "below_thresholds",
+		},
+		{
+			name:  "macOS verdict critical, RAM full: high, never critical",
+			h:     host{availMiB: 3, swapTotalGiB: 1, swapUsedMiB: 1020, verdict: domain.MemoryPressureCritical},
+			final: H, reason: "kernel_memory_pressure>=critical",
+		},
+		{
+			name:  "no kernel signal: memory used applies as before",
+			h:     host{availMiB: 3, swapTotalGiB: 1},
+			final: C, reason: "memory_used>=0.95",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := New(5*time.Second, DefaultThresholds())
+			var level domain.PressureLevel
+			var reason string
+			for i := range 20 {
+				s := domain.HostSample{
+					Time:           epoch.Add(time.Duration(i) * time.Second),
+					MemTotal:       gib,
+					MemAvailable:   tc.h.availMiB * mib,
+					SwapTotal:      tc.h.swapTotalGiB * gib,
+					SwapUsed:       tc.h.swapUsedMiB * mib,
+					MemoryStall:    tc.h.psi,
+					MemoryPressure: tc.h.verdict,
+					Missing:        []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricLatency},
+				}
+				if tc.h.noSwap {
+					s.Missing = append(s.Missing, domain.MetricSwap)
+				}
+				if tc.h.psi == nil {
+					s.Missing = append(s.Missing, domain.MetricMemoryStall)
+				}
+				if !tc.h.verdict.Known() {
+					s.Missing = append(s.Missing, domain.MetricMemoryPressure)
+				}
+				level, _, reason = e.Observe(s)
+			}
+			if level != tc.final || reason != tc.reason {
+				t.Fatalf("level %v (%s), want %v (%s)", level, reason, tc.final, tc.reason)
+			}
+		})
 	}
 }
