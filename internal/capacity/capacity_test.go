@@ -52,6 +52,14 @@ func TestWorkloadStates(t *testing.T) {
 func TestAssess(t *testing.T) {
 	perAgent := sampleStatus(domain.PressureNormal, scheduler.ModeEnforce, 3)
 	perAgent.Scheduler.PerAgentLimit = 1
+	// Admission leases count as running heavy work, overall and per agent.
+	leased := sampleStatus(domain.PressureNormal, scheduler.ModeEnforce, 3)
+	leased.Scheduler.Leases = []app.Lease{{ID: "1", Process: key(400), Agent: "codex-1"}}
+	leasedAgent := sampleStatus(domain.PressureNormal, scheduler.ModeEnforce, 4)
+	leasedAgent.Scheduler.PerAgentLimit = 2
+	leasedAgent.Scheduler.Leases = leased.Scheduler.Leases
+	leasedFree := sampleStatus(domain.PressureNormal, scheduler.ModeEnforce, 4)
+	leasedFree.Scheduler.Leases = leased.Scheduler.Leases
 	tests := []struct {
 		name           string
 		status         app.StatusResult
@@ -87,6 +95,12 @@ func TestAssess(t *testing.T) {
 			reason: "1 heavy jobs are already queued", suggst: "queue behind waiting ones"},
 		{name: "agent at its budget", status: perAgent, agent: "claude-1",
 			wantAgent: ptr(1), reason: "per-agent limit 1", suggst: "budget"},
+		{name: "leases fill the last slot", status: leased,
+			reason: "all heavy slots are in use (2 running, 1 reserved, limit 3)", suggst: "queued (paused) by throtd"},
+		{name: "leases count toward the agent budget", status: leasedAgent, agent: "codex-1",
+			wantAgent: ptr(1), reason: "codex-1 already runs 2 heavy jobs, 1 of them reserved (per-agent limit 2)", suggst: "budget"},
+		{name: "slot free beside a lease", status: leasedFree,
+			wantOK: true, reason: "3 of 4 heavy slots in use (1 reserved)", suggst: "ok to start"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -94,7 +108,8 @@ func TestAssess(t *testing.T) {
 				tt.status.Scheduler.Queued = nil
 			}
 			v := Assess(tt.status, tt.agent)
-			if v.OKToStart != tt.wantOK || v.RunningHeavy != 2 || v.HeavyLimit != tt.status.Scheduler.HeavyLimit {
+			if v.OKToStart != tt.wantOK || v.RunningHeavy != 2 || v.HeavyLimit != tt.status.Scheduler.HeavyLimit ||
+				v.Reserved != len(tt.status.Scheduler.Leases) {
 				t.Errorf("got %+v", v)
 			}
 			if !strings.Contains(v.Reason, tt.reason) || !strings.Contains(v.Suggestion, tt.suggst) {

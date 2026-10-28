@@ -111,6 +111,31 @@ func (darwinProcessController) identity(ctx context.Context, pid int) (time.Time
 	return start, uid, nil
 }
 
+// Identify runs ps -o uid=,ppid=,lstart= for pid. Start and UID match what
+// the sampler reports; Name is left empty.
+func (darwinProcessController) Identify(ctx context.Context, pid int) (domain.ProcessSample, error) {
+	if err := checkIdentityPID(pid); err != nil {
+		return domain.ProcessSample{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, err)
+	}
+	out, err := execPS(ctx, "-o", psIdentifyColumns, "-p", strconv.Itoa(pid))
+	var exitErr *exec.ExitError
+	if len(bytes.TrimSpace(out)) == 0 && (err == nil || errors.As(err, &exitErr)) {
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, domain.ErrProcessGone)
+	}
+	if err != nil {
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, err)
+	}
+	p, err := parsePSIdentify(out, time.Local)
+	if err != nil {
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, err)
+	}
+	p.PID = pid
+	return p, nil
+}
+
 // runPS runs ps for all processes with the given -o columns and returns its
 // bounded output.
 func runPS(ctx context.Context, columns string) ([]byte, error) {

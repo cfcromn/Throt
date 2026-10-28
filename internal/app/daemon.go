@@ -69,6 +69,11 @@ type StatusResult struct {
 	// Paused lists every paused workload, manual or scheduled.
 	Paused    []control.PausedWorkload `json:"paused"`
 	Scheduler SchedulerStatus          `json:"scheduler"`
+	// Orphans lists stopped processes of the user that no paused record
+	// explains, at most process.MaxOrphans of them; OrphanCount counts them
+	// all. Throt reports them and never resumes one unasked.
+	Orphans     []process.Orphan `json:"orphans,omitempty"`
+	OrphanCount int              `json:"orphan_count,omitempty"`
 }
 
 // StatsResult is returned by the "stats" method: per-agent usage since the
@@ -95,6 +100,11 @@ type Daemon struct {
 	started time.Time
 
 	ctl *control.Controller // safe for concurrent use
+	sig control.Signaler    // resumes orphans, which have no paused record
+	uid uint32              // the daemon's user; only its processes are controlled
+	// ident resolves acquire callers; nil when sig cannot identify
+	// processes, and then acquire is refused.
+	ident ProcessIdentifier
 
 	graphMu sync.Mutex // guards graph; held briefly, never while signaling
 	graph   *process.Graph
@@ -105,9 +115,19 @@ type Daemon struct {
 	failing      map[string]bool // sampler name -> currently failing
 	failures     map[string]string
 	retryFailing bool // resume retries are failing
+	// reported holds the orphans an orphan_stopped event already named; it
+	// is pruned to the current orphans each tick, so it stays bounded.
+	reported map[domain.ProcessKey]bool
 
-	mu     sync.Mutex // guards status
+	// mu guards status, leases, and stopped together, so an acquire checks
+	// and grants against one consistent view, and a tick replaces the heavy
+	// workloads and drops the leases they supersede in one step.
+	mu     sync.Mutex
 	status StatusResult
+	leases leaseTable
+	// stopped is the latest snapshot's stopped processes, for resuming an
+	// orphan beyond the MaxOrphans that status lists.
+	stopped []process.StoppedView
 
 	statsMu sync.Mutex // guards acct; held briefly
 	acct    *stats.Accountant
@@ -137,17 +157,21 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		events: domain.NewEventLog(cfg.EventHistory, strconv.FormatInt(time.Now().UnixNano(), 36)),
 		host:   host,
 		procs:  procs,
-		graph: process.NewGraph(adapters(cfg.Agents),
+		graph: process.NewGraph(Adapters(cfg.Agents),
 			process.WithCPUCount(runtime.NumCPU()), process.WithAgentUID(uint32(os.Getuid()))),
 		engine:   pressure.New(pressure.DefaultWindow, pressure.DefaultThresholds()),
 		sched:    newScheduler(cfg.Scheduler),
 		failing:  map[string]bool{},
 		failures: map[string]string{},
 		acct:     stats.New(),
+		sig:      sig,
+		uid:      uint32(os.Getuid()),
+		reported: map[domain.ProcessKey]bool{},
 		live:     cfg,
 		policyCh: make(chan scheduler.Policy, 1),
 	}
-	d.ctl = control.New(sig, uint32(os.Getuid()), time.Now, d.saveState)
+	d.ctl = control.New(sig, d.uid, time.Now, d.saveState)
+	d.ident, _ = sig.(ProcessIdentifier)
 	return d
 }
 
@@ -169,13 +193,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.emit(domain.EventDaemonStarted, "listening on "+d.cfg.SocketPath, nil)
 	d.recoverPaused(ctx)
 	srv := transport.NewServer(map[string]transport.Handler{
-		"ping":   d.ping,
-		"events": d.recentEvents,
-		"status": d.currentStatus,
-		"stats":  d.currentStats,
-		"pause":  d.pause,
-		"resume": d.resume,
-		"reload": d.reload,
+		"ping":    d.ping,
+		"events":  d.recentEvents,
+		"status":  d.currentStatus,
+		"stats":   d.currentStats,
+		"pause":   d.pause,
+		"resume":  d.resume,
+		"reload":  d.reload,
+		"acquire": d.acquire,
 	}, transport.WithPrivileged(privilegedMethods()...))
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -194,8 +219,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 // privilegedMethods may only be called by the user running the daemon: they
-// signal processes or change its configuration.
-func privilegedMethods() []string { return []string{"pause", "resume", "reload"} }
+// signal processes, change its configuration, or reserve heavy slots.
+func privilegedMethods() []string { return []string{"pause", "resume", "reload", "acquire"} }
 
 // allMissing marks every host metric unavailable. A failed host sample still
 // reaches the pressure engine this way, so stale readings age out of the
@@ -214,11 +239,17 @@ func (d *Daemon) tick(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
 	defer cancel()
 	latency, latencyOK := monitor.ProbeLatency(ctx, latencyProbe)
+	// Records from before and after the process sample: a workload paused
+	// or resumed while ps runs is in one of them, so it is not an orphan.
+	pausedBefore := d.ctl.Paused()
 	host, herr := d.host.SampleHost(ctx)
 	host.Latency = latency
 	if !latencyOK {
 		host.Missing = append(slices.Clone(host.Missing), domain.MetricLatency)
 	}
+	// A lease granted after this instant may belong to a process the
+	// sample below does not show yet.
+	sampled := time.Now()
 	procs, perr := d.procs.SampleProcesses(ctx)
 	if parent.Err() != nil {
 		return // shutting down; partial samples are meaningless
@@ -228,6 +259,9 @@ func (d *Daemon) tick(parent context.Context) {
 	d.track("processes", perr)
 
 	var snap process.Snapshot
+	var orphans []process.Orphan
+	var orphanCount int
+	var stoppedOrphans []domain.ProcessKey
 	if perr == nil {
 		d.graphMu.Lock()
 		changes := d.graph.Update(now, procs)
@@ -235,6 +269,15 @@ func (d *Daemon) tick(parent context.Context) {
 		d.graphMu.Unlock()
 		for _, c := range changes {
 			d.emitChange(c)
+		}
+		// Before anything below resumes a record and drops it.
+		recorded := recordedKeys(pausedBefore, d.ctl.Paused())
+		orphans, orphanCount = process.FindOrphans(snap.Stopped, d.uid, func(k domain.ProcessKey) bool { return recorded[k] })
+		d.reportOrphans(now, orphans)
+		for _, s := range snap.Stopped {
+			if s.UID == d.uid && !recorded[s.Key] {
+				stoppedOrphans = append(stoppedOrphans, s.Key)
+			}
 		}
 		d.forgetExited(ctx, procs)
 	}
@@ -257,10 +300,18 @@ func (d *Daemon) tick(parent context.Context) {
 	if herr == nil {
 		d.status.Host = &host
 	}
+	var ended []leaseEnd
 	if perr == nil {
 		d.status.Agents, d.status.Heavy = snap.Agents, snap.Heavy
+		d.status.Orphans, d.status.OrphanCount = orphans, orphanCount
+		d.stopped = snap.Stopped
+		ended = d.leases.observe(sampled, now, procs, snap.Heavy)
+	} else {
+		ended = d.leases.expire(now)
 	}
+	reserved := d.leases.owners()
 	d.mu.Unlock()
+	d.emitLeaseEnds(ended)
 
 	if changed {
 		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
@@ -270,7 +321,7 @@ func (d *Daemon) tick(parent context.Context) {
 	if perr == nil {
 		// Only schedule on a fresh process snapshot: acting on stale data
 		// could queue a workload that already finished.
-		d.schedule(parent, now, level, snap.Heavy)
+		d.schedule(parent, now, level, snap.Heavy, reserved, admitted(ended), stoppedOrphans)
 		d.account(now, snap)
 	}
 	sched := d.schedulerStatus()
@@ -320,6 +371,7 @@ func (d *Daemon) emitChange(c process.Change) {
 func (d *Daemon) currentStatus(context.Context, json.RawMessage) (any, error) {
 	d.mu.Lock()
 	st := d.status
+	st.Scheduler.Leases = d.leases.views()
 	d.mu.Unlock()
 	st.Paused = d.ctl.Paused()
 	return st, nil
@@ -428,8 +480,9 @@ func listen(path string) (net.Listener, error) {
 	return l, nil
 }
 
-// adapters puts custom agents first, so they win over built-in names.
-func adapters(custom []config.Agent) []agent.Adapter {
+// Adapters returns the agent adapters for a config: custom agents first, so
+// they win over built-in names.
+func Adapters(custom []config.Agent) []agent.Adapter {
 	var out []agent.Adapter
 	for _, a := range custom {
 		out = append(out, agent.NewNameAdapter(a.Name, a.Executables...))

@@ -127,27 +127,39 @@ Stop `throtd` (this resumes any paused work), replace both binaries, and start i
 throtd &        # start the daemon
 throt           # terminal UI (same as `throt top`)
 throt ping      # check that the client can reach it
-throt status    # pressure, host resources, agents, heavy workloads
+throt status    # pressure, host resources, agents, heavy workloads, stopped processes
 throt stats     # per-agent CPU time, peak memory, heavy jobs, time queued since throtd started (--json)
 throt events    # recent daemon events as JSON lines
 throt events -f # keep printing new events until interrupted
 throt explain PID # why a heavy workload is running, paused, or queued
-throt doctor    # sanitized diagnostics to paste into a bug report
+throt doctor    # sanitized diagnostics to paste into a bug report, incl. stopped processes
 throt pause PID # pause a heavy workload owned by one of your agents
-throt resume PID
+throt resume PID          # resume it; also an agent's job left stopped (see below)
+throt resume --force PID  # resume any other stopped process of yours, e.g. a Ctrl-Z job
 throt reload    # re-read the config without restarting (or send throtd SIGHUP)
 throt run -- npm run build    # wait for a free heavy slot, then run the command
 throt completion zsh          # shell completion script (bash, zsh, fish)
 ```
 
+### Stopped processes throtd did not pause
+
+A process can be left stopped (SIGSTOP) with no record of it: a `throtd` killed hard before it wrote `paused.json`, a deleted state file, or a stray daemon. A shell job suspended with Ctrl-Z is stopped too, so Throt only reports these processes and never resumes one on its own.
+
+- `throt status` prints `STOPPED   3 processes not paused by throtd (see throt doctor)` when there are any.
+- `throt doctor` has an `orphans` section with their count and, for up to 50 of them, the PID, executable base name (never arguments or paths), owning agent, how long they have been observed stopped, and a hint: `likely job control (Ctrl-Z)` when the parent is your shell (`zsh`, `bash`, `fish`, `sh`), or `likely left paused by an earlier throtd` for an agent's process or a heavy workload. With `throtd` down, `doctor` looks for them itself.
+- `throtd` logs one `orphan_stopped` event when a heavy workload of an agent is newly found stopped this way. Shell jobs get no event.
+- `throt resume PID` resumes such a workload (its stopped processes, children first, each verified as with any resume). Anything else, a shell job included, needs `throt resume --force PID`; for a shell job, `fg` in that shell is usually better. `kill -CONT PID` always works too.
+
 ### Wait before starting: `throt run`
 
-`throt run [--timeout D] [--no-wait] -- CMD [ARGS...]` is the gentle alternative to being paused: it checks capacity *before* the command starts, using the same verdict as `throt_capacity`. It polls `throtd` once per second until a heavy job is OK to start (pressure below high, a free heavy slot, nothing queued, and the calling agent within its `per_agent_limit`), printing a notice to stderr at most every 10s. Then it execs the command in its own place, so the PID, signals, and exit status are the command's own. The agent is the nearest agent process among its ancestors. A missing command exits 127.
+`throt run [--timeout D] [--no-wait] -- CMD [ARGS...]` is the gentle alternative to being paused: it asks for a heavy slot *before* the command starts, using the same verdict as `throt_capacity`. It polls `throtd` once per second until a heavy job is OK to start (pressure below high, a free heavy slot, nothing queued, and the calling agent within its `per_agent_limit`), printing a notice to stderr at most every 10s. Then it execs the command in its own place, so the PID, signals, and exit status are the command's own. The agent is the nearest agent process among its ancestors. A missing command exits 127.
 
-- `--timeout D` stops waiting after `D` and runs the command anyway (the default, 0, waits forever).
-- `--no-wait` checks once, prints the verdict, and runs regardless.
+The slot is reserved: `throtd` grants it as a lease, so two `throt run` commands asking at the same moment cannot both take the last slot, and the scheduler does not hand that slot to another newcomer. The lease ends when the command shows up as a heavy workload (which then holds the slot itself), when it exits, or after 60s if it never becomes heavy. A `throt run` inside work that already holds a slot (a line in a make recipe or npm script run under `throt run`, or below a running heavy build) starts at once without reserving another. With `scheduler.mode` off there are no slots, so only pressure makes it wait. `throt status` shows reserved slots (`2 reserved`).
 
-It fails open: if `throtd` is unreachable, it prints one notice and runs immediately, so a stopped daemon never blocks your work. It never pauses anything. It is also advisory: nothing is reserved, so two `throt run` commands that check at the same moment can both start. With `scheduler.mode` set to `enforce`, `throtd` still queues the extra one.
+- `--timeout D` stops waiting after `D` and runs the command anyway (default 5m; 0 waits forever).
+- `--no-wait` asks once (taking the slot if one is free), prints the verdict, and runs regardless.
+
+It fails open: if `throtd` is unreachable, it prints one notice and runs immediately, so a stopped daemon never blocks your work. It never pauses anything. Against an older `throtd` without leases it falls back to advice only, where two commands checking at the same moment can both start.
 
 To have coding agents use it, add a line such as this to your `AGENTS.md` or `CLAUDE.md`:
 

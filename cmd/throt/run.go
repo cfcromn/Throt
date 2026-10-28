@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,10 +38,12 @@ const (
 
 const runUsage = `Usage: throt run [--timeout D] [--no-wait] [--] CMD [ARGS...]
 
-Wait until throtd reports capacity for a heavy job, then exec CMD in place
-of throt (same PID, signals, and exit status). Advisory: it never pauses
-anything, and two commands checking at the same moment can both start. If
-throtd is unreachable, CMD runs immediately. By default it waits at most 5m
+Wait until throtd grants a heavy slot, then exec CMD in place of throt
+(same PID, signals, and exit status). The slot is reserved for CMD until it
+shows up as a heavy workload, exits, or 60s pass, so two commands asking at
+the same moment cannot both take the last slot. It never pauses anything. If
+throtd is unreachable, CMD runs immediately; an older throtd without slot
+reservation is only asked for advice. By default it waits at most 5m
 (the scheduler's default max_queue_wait) and then runs anyway, so a stuck
 queue never hangs a build; --timeout 0 waits forever. Unlike a shell, CMD
 found only through "." in PATH is refused (exit 126).
@@ -86,6 +89,10 @@ func (e exitError) Error() string { return e.msg }
 
 // runner holds the dependencies of `throt run`, injected for tests.
 type runner struct {
+	// acquire asks throtd for an admission lease for this process. When it
+	// is nil, or the daemon does not know the method, the runner only asks
+	// for advice through status.
+	acquire func(ctx context.Context) (app.AcquireResult, error)
 	// status fetches a daemon snapshot.
 	status func(ctx context.Context) (app.StatusResult, error)
 	// ppid is the parent of this process.
@@ -103,20 +110,23 @@ type runner struct {
 	stderr io.Writer
 }
 
+// checkFunc asks throtd once whether the command may start now. ok means
+// it may (and, with a lease, that its slot is reserved).
+type checkFunc func(ctx context.Context) (ok bool, v capacity.Verdict, err error)
+
 // run waits for capacity as o asks, then execs the command. It never
 // blocks the command because of a throtd failure: an unreachable daemon
 // means run now.
 func (r runner) run(ctx context.Context, o runOptions) error {
-	agents := agentResolver(r.ppid, r.ancestors)
-	st, err := r.callStatus(ctx)
+	check := r.checker()
+	ok, v, err := check(ctx)
 	if err != nil {
 		fmt.Fprintf(r.stderr, "throt: throtd is not reachable (%v); running without waiting\n", err)
 		return r.execute(o.argv)
 	}
 	if o.noWait {
-		v := capacity.Assess(st, agents(ctx, st))
 		verdict := "no"
-		if v.OKToStart {
+		if ok {
 			verdict = "yes"
 		}
 		fmt.Fprintf(r.stderr, "throt: ok to start a heavy job: %s (%s); running now (--no-wait)\n", verdict, v.Reason)
@@ -126,8 +136,7 @@ func (r runner) run(ctx context.Context, o runOptions) error {
 	var lastNotice time.Time
 	waited := false
 	for {
-		v := capacity.Assess(st, agents(ctx, st))
-		if v.OKToStart {
+		if ok {
 			if waited {
 				fmt.Fprintf(r.stderr, "throt: capacity available after %s; starting\n", r.now().Sub(start).Round(time.Second))
 			}
@@ -150,10 +159,56 @@ func (r runner) run(ctx context.Context, o runOptions) error {
 		if err := r.sleep(ctx, d); err != nil {
 			return err
 		}
-		if st, err = r.callStatus(ctx); err != nil {
+		if ok, v, err = check(ctx); err != nil {
 			fmt.Fprintf(r.stderr, "throt: lost throtd (%v); running without waiting\n", err)
 			return r.execute(o.argv)
 		}
+	}
+}
+
+// checker returns the check run uses: acquire a lease, or, against a
+// throtd that predates leases, the advisory status verdict.
+func (r runner) checker() checkFunc {
+	advisory := r.advisoryCheck()
+	if r.acquire == nil {
+		return advisory
+	}
+	legacy := false
+	return func(ctx context.Context) (bool, capacity.Verdict, error) {
+		if !legacy {
+			ctx, cancel := context.WithTimeout(ctx, runCallTimeout)
+			res, err := r.acquire(ctx)
+			cancel()
+			if err == nil {
+				v := res.Verdict
+				v.OKToStart, v.Reason = res.Granted, res.Reason
+				return res.Granted, v, nil
+			}
+			if !isUnknownMethod(err) {
+				return false, capacity.Verdict{}, err
+			}
+			legacy = true
+		}
+		return advisory(ctx)
+	}
+}
+
+// isUnknownMethod reports a throtd too old to know the acquire method.
+func isUnknownMethod(err error) bool {
+	return strings.Contains(err.Error(), "unknown method: acquire")
+}
+
+// advisoryCheck assesses a status snapshot for the nearest agent ancestor.
+// It reserves nothing, so two callers checking at once can both start.
+func (r runner) advisoryCheck() checkFunc {
+	agents := agentResolver(r.ppid, r.ancestors)
+	return func(ctx context.Context) (bool, capacity.Verdict, error) {
+		st, err := r.callStatus(ctx)
+		if err != nil {
+			return false, capacity.Verdict{}, err
+		}
+		v := capacity.Assess(st, agents(ctx, st))
+		return v.OKToStart, v, nil
 	}
 }
 
@@ -164,12 +219,16 @@ func (r runner) callStatus(ctx context.Context) (app.StatusResult, error) {
 }
 
 // slotSummary is the short state shown while waiting, e.g.
-// "2/2 running, pressure elevated".
+// "2/2 running, 1 reserved, pressure elevated".
 func slotSummary(v capacity.Verdict) string {
-	if v.SchedulerMode == "off" {
-		return fmt.Sprintf("%d running, pressure %s", v.RunningHeavy, v.Pressure)
+	reserved := ""
+	if v.Reserved > 0 {
+		reserved = fmt.Sprintf(", %d reserved", v.Reserved)
 	}
-	return fmt.Sprintf("%d/%d running, pressure %s", v.RunningHeavy, v.HeavyLimit, v.Pressure)
+	if v.SchedulerMode == "off" {
+		return fmt.Sprintf("%d running%s, pressure %s", v.RunningHeavy, reserved, v.Pressure)
+	}
+	return fmt.Sprintf("%d/%d running%s, pressure %s", v.RunningHeavy, v.HeavyLimit, reserved, v.Pressure)
 }
 
 // execute replaces this process with argv. Like a shell, it exits 127 when
@@ -274,7 +333,11 @@ func runCommand(args []string, cfgPath string) error {
 		// Fail open: a broken config must not hold the command back.
 		r.status = func(context.Context) (app.StatusResult, error) { return app.StatusResult{}, err }
 	} else {
-		r.status = daemonClient{socket: cfg.SocketPath}.Status
+		c := daemonClient{socket: cfg.SocketPath}
+		r.status = c.Status
+		// throtd resolves this process's identity and parent itself.
+		self := app.AcquireParams{PID: os.Getpid()}
+		r.acquire = func(ctx context.Context) (app.AcquireResult, error) { return c.Acquire(ctx, self) }
 	}
 	return r.run(context.Background(), o)
 }

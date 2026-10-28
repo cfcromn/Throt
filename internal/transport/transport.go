@@ -50,6 +50,8 @@ type Server struct {
 	// peerUID reports the caller's uid; tests replace it to simulate a
 	// foreign caller.
 	peerUID func(net.Conn) (uint32, error)
+	// peerPID reports the caller's PID; tests replace it.
+	peerPID func(net.Conn) (int, error)
 }
 
 // ServerOption configures a Server.
@@ -68,7 +70,7 @@ func WithPrivileged(methods ...string) ServerOption {
 
 // NewServer returns a server for the given method table.
 func NewServer(handlers map[string]Handler, opts ...ServerOption) *Server {
-	s := &Server{handlers: handlers, privileged: make(map[string]bool), peerUID: PeerUID}
+	s := &Server{handlers: handlers, privileged: make(map[string]bool), peerUID: PeerUID, peerPID: PeerPID}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -89,6 +91,36 @@ func (s *Server) authorize(conn net.Conn, method string) error {
 		return fmt.Errorf("permission denied: caller uid %d does not own throtd", uid)
 	}
 	return nil
+}
+
+// peerPIDKey is the context key of a privileged caller's PID.
+type peerPIDKey struct{}
+
+// WithPeerPID returns ctx carrying pid as the caller's kernel-verified PID.
+// The server sets it for privileged methods; tests use it directly.
+func WithPeerPID(ctx context.Context, pid int) context.Context {
+	return context.WithValue(ctx, peerPIDKey{}, pid)
+}
+
+// PeerPIDFrom returns the caller's PID as verified by the kernel. It is
+// set only for privileged methods, and only where the OS reports it (Linux
+// SO_PEERCRED, macOS LOCAL_PEERPID) for a peer in the daemon's PID
+// namespace; otherwise ok is false and handlers must not rely on it.
+func PeerPIDFrom(ctx context.Context) (pid int, ok bool) {
+	pid, ok = ctx.Value(peerPIDKey{}).(int)
+	return pid, ok
+}
+
+// withPeer adds the caller's PID to ctx for a privileged method, when the
+// kernel reports one. A PID of 0 means the peer is in another PID namespace.
+func (s *Server) withPeer(ctx context.Context, conn net.Conn, method string) context.Context {
+	if !s.privileged[method] {
+		return ctx
+	}
+	if pid, err := s.peerPID(conn); err == nil && pid > 0 {
+		return WithPeerPID(ctx, pid)
+	}
+	return ctx
 }
 
 // Serve accepts connections until ctx is cancelled, then closes l and waits
@@ -143,7 +175,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		resp.Error = "unknown method: " + req.Method
 	} else if err := s.authorize(conn, req.Method); err != nil {
 		resp.Error = err.Error()
-	} else if v, err := h(ctx, req.Params); err != nil {
+	} else if v, err := h(s.withPeer(ctx, conn, req.Method), req.Params); err != nil {
 		resp.Error = err.Error()
 	} else if resp.Result, err = json.Marshal(v); err != nil {
 		resp.Error = "encode result: " + err.Error()

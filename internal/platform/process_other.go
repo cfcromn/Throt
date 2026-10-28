@@ -43,6 +43,10 @@ func (unsupportedProcessController) Continue(context.Context, domain.ProcessKey,
 	return fmt.Errorf("continue process on %s: %w", runtime.GOOS, errors.ErrUnsupported)
 }
 
+func (unsupportedProcessController) Identify(context.Context, int) (domain.ProcessSample, error) {
+	return domain.ProcessSample{}, fmt.Errorf("process lookup on %s: %w", runtime.GOOS, errors.ErrUnsupported)
+}
+
 func (unsupportedProcessController) Gone(context.Context, domain.ProcessKey) (bool, error) {
 	return false, fmt.Errorf("process lookup on %s: %w", runtime.GOOS, errors.ErrUnsupported)
 }

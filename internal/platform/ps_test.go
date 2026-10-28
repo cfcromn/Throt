@@ -40,22 +40,26 @@ func TestParsePSTime(t *testing.T) {
 func TestParsePS(t *testing.T) {
 	loc := time.FixedZone("test", 9*3600)
 	stats := strings.Join([]string{
-		"    1     0     0   7584  90:36.83 Sun Oct 18 11:06:02 2026",
-		"  412     1   501  20480   0:01.50 Mon Oct  5 09:00:00 2026",
-		"  413     1   501      0   0:00.00 Mon Oct  5 09:00:00 2026",
+		"    1     0     0   7584 Ss   90:36.83 Sun Oct 18 11:06:02 2026",
+		"  412     1   501  20480 R+    0:01.50 Mon Oct  5 09:00:00 2026",
+		"  413     1   501      0 T     0:00.00 Mon Oct  5 09:00:00 2026",
 		"",
 		"garbage",
-		"  414     1   501  100 0:00.00 Mon Oct  5 09:00:00 2026 extra", // wrong field count
-		"  415     x   501  100 0:00.00 Mon Oct  5 09:00:00 2026",
-		"  416     1   501  -1 0:00.00 Mon Oct  5 09:00:00 2026",
-		"  417     1   501  100 nope Mon Oct  5 09:00:00 2026",
-		"  418     1   501  100 0:00.00 Mon Oct 45 09:00:00 2026",
-		"  419     1  4294967296  100 0:00.00 Mon Oct  5 09:00:00 2026",
-		"  420     1   501  100 0:00.00 lun. 5 oct. 09:00:00 2026",
-		"\t421\t1\t501\t8\t1-02:03:04\tTue Oct  6 10:00:00 2026",
-		"  422     1   501  8 0:00.00 Tue Oct  6 10:00:00 2026", // exited before the names pass
-		"    0     0     0  8 0:00.00 Tue Oct  6 10:00:00 2026", // pid 0 is not a process
-		"  423     1   501  8 4294967295-00:00:00 Tue Oct  6 10:00:00 2026",
+		"  414     1   501  100 S 0:00.00 Mon Oct  5 09:00:00 2026 extra", // wrong field count
+		"  415     x   501  100 S 0:00.00 Mon Oct  5 09:00:00 2026",
+		"  416     1   501  -1 S 0:00.00 Mon Oct  5 09:00:00 2026",
+		"  417     1   501  100 S nope Mon Oct  5 09:00:00 2026",
+		"  418     1   501  100 S 0:00.00 Mon Oct 45 09:00:00 2026",
+		"  419     1  4294967296  100 S 0:00.00 Mon Oct  5 09:00:00 2026",
+		"  420     1   501  100 S 0:00.00 lun. 5 oct. 09:00:00 2026",
+		"\t421\t1\t501\t8\tZ\t1-02:03:04\tTue Oct  6 10:00:00 2026",
+		"  422     1   501  8 U< 0:00.00 Tue Oct  6 10:00:00 2026", // exited before the names pass
+		"    0     0     0  8 S 0:00.00 Tue Oct  6 10:00:00 2026",  // pid 0 is not a process
+		"  423     1   501  8 S 4294967295-00:00:00 Tue Oct  6 10:00:00 2026",
+		"  424     1   501  8 0:00.00 Tue Oct  6 10:00:00 2026",   // no state: the old column set
+		"  425     1   501  8 s 0:00.00 Tue Oct  6 10:00:00 2026", // state must start upper-case
+		"  426     1   501  8 + 0:00.00 Tue Oct  6 10:00:00 2026",
+		"  427     1   501  8 Xs 0:00.00 Tue Oct  6 10:00:00 2026", // unknown letter: other
 	}, "\n")
 	names := strings.Join([]string{
 		"    1 /sbin/launchd",
@@ -71,13 +75,14 @@ func TestParsePS(t *testing.T) {
 	}
 	want := []domain.ProcessSample{
 		{PID: 1, PPID: 0, UID: 0, Start: time.Date(2026, 10, 18, 11, 6, 2, 0, loc), Name: "launchd",
-			CPUTime: 90*time.Minute + 36830*time.Millisecond, RSS: 7584 * 1024},
+			CPUTime: 90*time.Minute + 36830*time.Millisecond, RSS: 7584 * 1024, State: domain.StateSleeping},
 		{PID: 412, PPID: 1, UID: 501, Start: time.Date(2026, 10, 5, 9, 0, 0, 0, loc), Name: "Korean",
-			CPUTime: 1500 * time.Millisecond, RSS: 20480 * 1024},
-		{PID: 413, PPID: 1, UID: 501, Start: time.Date(2026, 10, 5, 9, 0, 0, 0, loc), Name: "Core"},
+			CPUTime: 1500 * time.Millisecond, RSS: 20480 * 1024, State: domain.StateRunning},
+		{PID: 413, PPID: 1, UID: 501, Start: time.Date(2026, 10, 5, 9, 0, 0, 0, loc), Name: "Core", State: domain.StateStopped},
 		{PID: 421, PPID: 1, UID: 501, Start: time.Date(2026, 10, 6, 10, 0, 0, 0, loc), Name: "go",
-			CPUTime: 26*time.Hour + 3*time.Minute + 4*time.Second, RSS: 8 * 1024},
-		{PID: 422, PPID: 1, UID: 501, Start: time.Date(2026, 10, 6, 10, 0, 0, 0, loc), RSS: 8 * 1024},
+			CPUTime: 26*time.Hour + 3*time.Minute + 4*time.Second, RSS: 8 * 1024, State: domain.StateZombie},
+		{PID: 422, PPID: 1, UID: 501, Start: time.Date(2026, 10, 6, 10, 0, 0, 0, loc), RSS: 8 * 1024, State: domain.StateSleeping},
+		{PID: 427, PPID: 1, UID: 501, Start: time.Date(2026, 10, 6, 10, 0, 0, 0, loc), RSS: 8 * 1024, State: domain.StateOther},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d samples, want %d: %+v", len(got), len(want), got)
@@ -113,8 +118,8 @@ func TestPSName(t *testing.T) {
 func TestParsePSForgedNameLine(t *testing.T) {
 	// The executable "/tmp/evil\n    1 claude" forges a name line for PID 1.
 	// Both processes must survive; PID 1 merely loses its (ambiguous) name.
-	stats := "  500   1 501 100 0:00.00 Mon Oct  5 09:00:00 2026\n" +
-		"    1   0   0 100 0:00.00 Sun Oct 18 11:06:02 2026\n"
+	stats := "  500   1 501 100 S 0:00.00 Mon Oct  5 09:00:00 2026\n" +
+		"    1   0   0 100 Ss 0:00.00 Sun Oct 18 11:06:02 2026\n"
 	names := "  500 /tmp/evil\n    1 claude\n    1 /sbin/launchd\n"
 	got, err := parsePS(strings.NewReader(stats), strings.NewReader(names), time.UTC)
 	if err != nil {
@@ -135,6 +140,28 @@ func TestParsePSReadError(t *testing.T) {
 	}
 }
 
+func TestParsePSIdentify(t *testing.T) {
+	loc := time.FixedZone("test", 9*3600)
+	p, err := parsePSIdentify([]byte("  501   77 Sun Oct  4 11:06:02 2026    \n"), loc)
+	want := time.Date(2026, 10, 4, 11, 6, 2, 0, loc)
+	if err != nil || p.UID != 501 || p.PPID != 77 || !p.Start.Equal(want) {
+		t.Fatalf("got %+v err %v, want uid 501 ppid 77 start %v", p, err, want)
+	}
+	for _, bad := range []string{
+		"",
+		"501 77",
+		"501 Sun Oct 4 11:06:02 2026",
+		"501 -1 Sun Oct 4 11:06:02 2026",
+		"501 x Sun Oct 4 11:06:02 2026",
+		"501 77 Sun Oct 4 11:06:02 2026 extra",
+		"501 77 Sun Oct 4 11:06:02 2026\n502 1 Sun Oct 4 11:06:02 2026",
+	} {
+		if _, err := parsePSIdentify([]byte(bad), loc); err == nil {
+			t.Errorf("parsePSIdentify(%q) succeeded", bad)
+		}
+	}
+}
+
 func TestParsePSIdentity(t *testing.T) {
 	loc := time.FixedZone("test", 9*3600)
 	start, uid, err := parsePSIdentity([]byte("  501 Sun Oct  4 11:06:02 2026    \n"), loc)
@@ -143,7 +170,7 @@ func TestParsePSIdentity(t *testing.T) {
 		t.Fatalf("got %v uid %d err %v, want %v uid 501", start, uid, err, want)
 	}
 	// Identity must match what the sampler parses for the same lstart.
-	p, ok := parsePSStatLine("7 1 501 10 0:00.01 Sun Oct  4 11:06:02 2026", loc)
+	p, ok := parsePSStatLine("7 1 501 10 S 0:00.01 Sun Oct  4 11:06:02 2026", loc)
 	if !ok || !p.Start.Equal(start) {
 		t.Fatalf("sampler start %v, identity start %v", p.Start, start)
 	}
@@ -158,6 +185,23 @@ func TestParsePSIdentity(t *testing.T) {
 	} {
 		if _, _, err := parsePSIdentity([]byte(bad), loc); err == nil {
 			t.Errorf("parsePSIdentity(%q) succeeded", bad)
+		}
+	}
+}
+
+func TestPSState(t *testing.T) {
+	for tok, want := range map[string]domain.ProcessState{
+		"R": domain.StateRunning, "R+": domain.StateRunning, "Ss": domain.StateSleeping, "S<": domain.StateSleeping,
+		"I": domain.StateSleeping, "U": domain.StateSleeping, "T": domain.StateStopped, "T+": domain.StateStopped,
+		"Ts": domain.StateStopped, "Z": domain.StateZombie, "X": domain.StateOther,
+	} {
+		if got, ok := psState(tok); !ok || got != want {
+			t.Errorf("psState(%q) = %q, %v; want %q", tok, got, ok, want)
+		}
+	}
+	for _, tok := range []string{"", "s", "+", "1", "<"} {
+		if got, ok := psState(tok); ok {
+			t.Errorf("psState(%q) = %q, want rejection", tok, got)
 		}
 	}
 }

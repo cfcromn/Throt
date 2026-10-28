@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cfcromn/Throt/internal/domain"
 )
 
 // clockTicks is USER_HZ, the unit of /proc/<pid>/stat times.
@@ -33,6 +35,7 @@ func ticksToDuration(ticks uint64) time.Duration {
 type pidStat struct {
 	PID       int
 	Comm      string
+	State     domain.ProcessState
 	PPID      int
 	CPUTicks  uint64 // utime + stime
 	StartTime uint64 // clock ticks after boot
@@ -61,6 +64,9 @@ func parsePIDStat(b []byte) (pidStat, error) {
 	rest := strings.Fields(string(b[end+1:]))
 	if len(rest) < 22 {
 		return pidStat{}, fmt.Errorf("parse stat: %d fields after comm, want >= 22", len(rest))
+	}
+	if s.State, err = statState(rest[0]); err != nil {
+		return pidStat{}, err
 	}
 	field := func(n int) (uint64, error) {
 		v, err := strconv.ParseUint(rest[n-3], 10, 64)
@@ -96,6 +102,26 @@ func parsePIDStat(b []byte) (pidStat, error) {
 	}
 	s.PPID, s.CPUTicks = int(ppid), utime+stime
 	return s, nil
+}
+
+// statState maps field 3 of /proc/<pid>/stat, one state letter, to a
+// ProcessState. T is stopped by a signal; t is stopped by a tracer
+// (ptrace), which a debugger owns, so it is StateOther.
+func statState(f string) (domain.ProcessState, error) {
+	if len(f) != 1 {
+		return "", fmt.Errorf("parse stat: state %q is not one letter", f)
+	}
+	switch f[0] {
+	case 'R':
+		return domain.StateRunning, nil
+	case 'S', 'D', 'I':
+		return domain.StateSleeping, nil
+	case 'T':
+		return domain.StateStopped, nil
+	case 'Z':
+		return domain.StateZombie, nil
+	}
+	return domain.StateOther, nil
 }
 
 // parseStatusUID returns the real uid from the "Uid:" line of

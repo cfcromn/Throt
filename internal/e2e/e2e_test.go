@@ -64,9 +64,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 func main() {
+	// As a job of an interactive shell: its own process group, which
+	// Ctrl-Z (SIGTSTP to the group) stops as a whole.
+	if os.Getenv("THROT_E2E_SETPGID") == "1" {
+		syscall.Setpgid(0, 0)
+	}
 	self, _ := os.Executable()
 	job := filepath.Join(filepath.Dir(self), "make")
 	in := bufio.NewScanner(os.Stdin)
@@ -491,7 +497,21 @@ type agent struct {
 
 func (e *env) startAgent() *agent {
 	e.t.Helper()
-	cmd := exec.Command(filepath.Join(binDir, agentExe))
+	return e.startAgentCmd(exec.Command(filepath.Join(binDir, agentExe)))
+}
+
+// startShellAgent runs the stub agent as a job of sh, in its own process
+// group as an interactive shell would put it. The returned agent's pid is
+// the shell's; the agent's own PID is its process group.
+func (e *env) startShellAgent() *agent {
+	e.t.Helper()
+	cmd := exec.Command("/bin/sh", "-c", `"$0"; :`, filepath.Join(binDir, agentExe))
+	cmd.Env = append(os.Environ(), "THROT_E2E_SETPGID=1")
+	return e.startAgentCmd(cmd)
+}
+
+func (e *env) startAgentCmd(cmd *exec.Cmd) *agent {
+	e.t.Helper()
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -654,6 +674,135 @@ func TestCrashRecovery(t *testing.T) {
 	e.waitRunning(job)
 }
 
+// TestOrphanStopped stops an agent's job behind throtd's back, as a throtd
+// killed before it wrote paused.json would leave it. throtd must report it
+// without resuming it, and throt resume must resume it on request.
+func TestOrphanStopped(t *testing.T) {
+	e := newEnv(t, `{`+baseConfig+`}`)
+	a := e.startAgent()
+	job := a.job("sleep")
+	e.waitOwned(job, agentLabel)
+	if err := syscall.Kill(job, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStopped(job)
+
+	type entry struct {
+		PID   int    `json:"pid"`
+		Name  string `json:"name"`
+		Owner string `json:"owner"`
+		Hint  string `json:"hint"`
+	}
+	var listed entry
+	e.waitFor(fmt.Sprintf("throt doctor to list pid %d", job), func() bool {
+		out, err := e.throt("doctor")
+		if err != nil {
+			return false
+		}
+		var r struct {
+			Orphans struct {
+				Source  string  `json:"source"`
+				Count   int     `json:"count"`
+				Entries []entry `json:"entries"`
+			} `json:"orphans"`
+		}
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			t.Fatalf("doctor is not JSON: %v\n%s", err, out)
+		}
+		for _, en := range r.Orphans.Entries {
+			if en.PID == job && r.Orphans.Source == "throtd" && r.Orphans.Count >= 1 {
+				listed = en
+				return true
+			}
+		}
+		return false
+	})
+	if listed.Name != "make" || listed.Owner != agentLabel || !strings.Contains(listed.Hint, "left paused by an earlier throtd") {
+		t.Errorf("doctor entry = %+v, want make of %s left paused", listed, agentLabel)
+	}
+	if out := e.mustThrot("status"); !strings.Contains(out, "STOPPED ") || !strings.Contains(out, "not paused by throtd (see throt doctor)") {
+		t.Errorf("status has no STOPPED line:\n%s", out)
+	}
+	e.waitFor("an orphan_stopped event", func() bool {
+		out, err := e.throt("events", "-n", "1000")
+		return err == nil && strings.Contains(out, `"orphan_stopped"`) && strings.Contains(out, strconv.Itoa(job))
+	})
+	// Reported, never resumed on its own.
+	if s := procState(job); s != 'T' {
+		t.Fatalf("job state %c after being reported, want T", s)
+	}
+
+	e.mustThrot("resume", strconv.Itoa(job))
+	e.waitRunning(job)
+	e.waitFor("the STOPPED line to clear", func() bool {
+		out, err := e.throt("status")
+		return err == nil && !strings.Contains(out, "STOPPED ")
+	})
+}
+
+// TestCtrlZJob suspends an agent run from a shell the way Ctrl-Z does:
+// SIGTSTP to its process group, which stops the agent and its job. Every
+// member is job control, so doctor says so, no orphan_stopped event is
+// logged, and resume without --force is refused.
+func TestCtrlZJob(t *testing.T) {
+	e := newEnv(t, `{`+baseConfig+`}`)
+	a := e.startShellAgent()
+	job := a.job("sleep")
+	e.waitOwned(job, agentLabel)
+	st, _ := e.status()
+	agentPID := st.agents[agentLabel]
+	if agentPID == 0 || agentPID == a.pid {
+		t.Fatalf("agent pid %d (shell %d), want the stub under the shell", agentPID, a.pid)
+	}
+	t.Cleanup(func() {
+		syscall.Kill(-agentPID, syscall.SIGCONT)
+		syscall.Kill(-agentPID, syscall.SIGKILL)
+	})
+	if err := syscall.Kill(-agentPID, syscall.SIGTSTP); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStopped(agentPID)
+	e.waitStopped(job)
+
+	e.waitFor("throt doctor to list the agent and its job as job control", func() bool {
+		out, err := e.throt("doctor")
+		if err != nil {
+			return false
+		}
+		var r struct {
+			Orphans struct {
+				Entries []struct {
+					PID  int    `json:"pid"`
+					Hint string `json:"hint"`
+				} `json:"entries"`
+			} `json:"orphans"`
+		}
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			t.Fatalf("doctor is not JSON: %v\n%s", err, out)
+		}
+		seen := 0
+		for _, en := range r.Orphans.Entries {
+			if en.PID != agentPID && en.PID != job {
+				continue
+			}
+			if !strings.Contains(en.Hint, "job control (Ctrl-Z)") {
+				t.Fatalf("pid %d hint %q, want job control", en.PID, en.Hint)
+			}
+			seen++
+		}
+		return seen == 2
+	})
+	if _, err := e.throt("resume", strconv.Itoa(job)); err == nil || !strings.Contains(err.Error(), "Ctrl-Z") {
+		t.Errorf("resume of a Ctrl-Z'd job: err = %v, want a Ctrl-Z refusal", err)
+	}
+	if s := procState(job); s != 'T' {
+		t.Errorf("job state %c after the refused resume, want T", s)
+	}
+	if out := e.mustThrot("events", "-n", "1000"); strings.Contains(out, `"orphan_stopped"`) {
+		t.Errorf("orphan_stopped event for a shell job:\n%s", out)
+	}
+}
+
 func TestGracefulShutdownResumes(t *testing.T) {
 	e := newEnv(t, `{`+baseConfig+`}`)
 	a := e.startAgent()
@@ -723,6 +872,121 @@ func TestEnforceScheduler(t *testing.T) {
 		t.Errorf("reload output does not mention scheduler.mode:\n%s", out)
 	}
 	e.waitRunning(third)
+}
+
+// comm returns the command name of pid from /proc, or "" if it is gone.
+func comm(pid int) string {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// leaseEvents returns the lease events in the daemon's log, oldest first.
+func (e *env) leaseEvents() []map[string]string {
+	e.t.Helper()
+	var out []map[string]string
+	for line := range strings.SplitSeq(strings.TrimSpace(e.mustThrot("events", "-n", "1000")), "\n") {
+		var ev struct {
+			Kind  string            `json:"kind"`
+			Attrs map[string]string `json:"attrs"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			e.t.Fatalf("events line %q: %v", line, err)
+		}
+		if strings.HasPrefix(ev.Kind, "lease_") {
+			ev.Attrs["kind"] = ev.Kind
+			out = append(out, ev.Attrs)
+		}
+	}
+	return out
+}
+
+func TestRunLease(t *testing.T) {
+	// Adaptive is off so the limit cannot grow during the test.
+	const policy = `"heavy_limit":%d,"resume_cooldown":"0s","adaptive":false`
+	e := newEnv(t, `{`+baseConfig+`,"scheduler":{"mode":"off",`+fmt.Sprintf(policy, 1)+`}}`)
+	e.waitStartable()
+	// Unattributed heavy workloads take slots too, so leave exactly one free.
+	st, _ := e.status()
+	e.writeConfig(`{` + baseConfig + `,"scheduler":{"mode":"enforce",` + fmt.Sprintf(policy, 1+len(st.heavy)) + `}}`)
+	e.mustThrot("reload")
+	e.waitFor("scheduler mode enforce", func() bool {
+		st, ok := e.status()
+		return ok && st.mode == "enforce"
+	})
+	e.waitStartable()
+
+	// Two `throt run` commands start together and race for the one slot.
+	type run struct {
+		cmd    *exec.Cmd
+		stderr *lockedBuffer
+	}
+	runs := make([]run, 2)
+	for i := range runs {
+		cmd := exec.Command(filepath.Join(binDir, "throt"), "run", "--timeout", "5m", "--", filepath.Join(binDir, "make"), "sleep")
+		cmd.Env = e.vars
+		runs[i] = run{cmd: cmd, stderr: &lockedBuffer{}}
+		cmd.Stderr = runs[i].stderr
+	}
+	for _, r := range runs {
+		startGroup(t, r.cmd)
+	}
+	// throt run execs in place, so a started command keeps its PID and its
+	// comm becomes make.
+	started := func() (pids []int) {
+		for _, r := range runs {
+			if comm(r.cmd.Process.Pid) == "make" {
+				pids = append(pids, r.cmd.Process.Pid)
+			}
+		}
+		return pids
+	}
+	e.waitFor("one throt run to start its command", func() bool { return len(started()) > 0 })
+	first := started()[0]
+	var winner, waiting run
+	for _, r := range runs {
+		if r.cmd.Process.Pid == first {
+			winner = r
+		} else {
+			waiting = r
+		}
+	}
+	// The winner's lease ends once its command is a running heavy workload,
+	// which then holds the slot itself.
+	if row := e.waitOwned(first, "-"); row.state != "running" {
+		t.Fatalf("first command state %s, want running", row.state)
+	}
+	e.waitFor("lease_released (became_workload)", func() bool {
+		for _, ev := range e.leaseEvents() {
+			if ev["kind"] == "lease_released" && ev["pid"] == strconv.Itoa(first) && ev["reason"] == "became_workload" {
+				return true
+			}
+		}
+		return false
+	})
+	// The other keeps waiting: it was never granted a slot.
+	e.waitFor("the other throt run to report waiting", func() bool {
+		return strings.Contains(waiting.stderr.String(), "waiting for a heavy slot")
+	})
+	time.Sleep(2 * time.Second) // several sample intervals
+	if got := started(); len(got) != 1 {
+		t.Fatalf("started commands %v, want exactly one; stderr:\n%s", got, waiting.stderr.String())
+	}
+	for _, ev := range e.leaseEvents() {
+		if ev["kind"] == "lease_granted" && ev["pid"] == strconv.Itoa(waiting.cmd.Process.Pid) {
+			t.Fatalf("waiting command was granted a lease: %v", ev)
+		}
+	}
+
+	// The winner finishes; the waiting command gets the slot and starts.
+	syscall.Kill(-first, syscall.SIGKILL)
+	winner.cmd.Wait() // reap it, or its zombie would keep the slot
+	e.waitFor("the waiting command to start", func() bool { return comm(waiting.cmd.Process.Pid) == "make" })
+	if out := waiting.stderr.String(); !strings.Contains(out, "capacity available after") {
+		t.Errorf("waiting command stderr:\n%s", out)
+	}
 }
 
 func TestMCP(t *testing.T) {

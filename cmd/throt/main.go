@@ -40,7 +40,12 @@ Commands:
   explain PID
              explain why a heavy workload is running, paused, or queued
   pause PID  pause a heavy workload (SIGSTOP) shown in 'status'
-  resume PID resume a paused workload (SIGCONT)
+  resume [--force] PID
+             resume a paused workload (SIGCONT). Also resumes a stopped
+             process throtd did not pause (listed by 'doctor', e.g. one an
+             earlier throtd left paused) when it is a heavy workload of an
+             agent; --force resumes any other such process of yours too,
+             such as a shell job suspended with Ctrl-Z (prefer fg there)
   run [--timeout D] [--no-wait] -- CMD [ARGS...]
              wait for heavy-job capacity, then exec CMD (advisory; runs
              immediately if throtd is down)
@@ -83,8 +88,14 @@ func run(args []string) error {
 		return runCommand(fs.Args()[1:], *cfgPath)
 	}
 	// 'events' takes its own flags after the command: throt events -f.
-	followEvents, statsJSON := false, false
+	followEvents, statsJSON, resumeForce := false, false, false
+	pidArg := fs.Arg(1)
 	switch {
+	case cmd == "resume":
+		var err error
+		if pidArg, resumeForce, err = parseResumeArgs(fs.Args()[1:]); err != nil {
+			return err
+		}
 	case cmd == "stats":
 		sfs := flag.NewFlagSet("throt stats", flag.ContinueOnError)
 		sfs.BoolVar(&statsJSON, "json", false, "print the stats as JSON")
@@ -175,11 +186,11 @@ func run(args []string) error {
 		}
 		printStats(os.Stdout, r, time.Now())
 	case "pause", "resume":
-		pid, err := strconv.Atoi(fs.Arg(1))
+		pid, err := strconv.Atoi(pidArg)
 		if err != nil {
 			return fmt.Errorf("usage: throt %s PID", cmd)
 		}
-		if err := transport.Call(ctx, cfg.SocketPath, cmd, app.ControlParams{PID: pid}, nil); err != nil {
+		if err := transport.Call(ctx, cfg.SocketPath, cmd, app.ControlParams{PID: pid, Force: resumeForce}, nil); err != nil {
 			return err
 		}
 		fmt.Printf("%sd pid %d\n", cmd, pid)
@@ -219,6 +230,24 @@ func run(args []string) error {
 	return nil
 }
 
+// parseResumeArgs accepts "PID" with an optional --force before or after it.
+func parseResumeArgs(args []string) (pid string, force bool, err error) {
+	for _, a := range args {
+		switch {
+		case a == "--force" || a == "-force":
+			force = true
+		case pid == "" && !strings.HasPrefix(a, "-"):
+			pid = a
+		default:
+			return "", false, fmt.Errorf("usage: throt resume [--force] PID")
+		}
+	}
+	if pid == "" {
+		return "", false, fmt.Errorf("usage: throt resume [--force] PID")
+	}
+	return pid, force, nil
+}
+
 // daemonClient implements tui.Client and mcp.Client over the local protocol.
 type daemonClient struct{ socket string }
 
@@ -226,6 +255,13 @@ func (c daemonClient) Status(ctx context.Context) (app.StatusResult, error) {
 	var st app.StatusResult
 	err := transport.Call(ctx, c.socket, "status", nil, &st)
 	return st, err
+}
+
+// Acquire asks for an admission lease for the process p names.
+func (c daemonClient) Acquire(ctx context.Context, p app.AcquireParams) (app.AcquireResult, error) {
+	var r app.AcquireResult
+	err := transport.Call(ctx, c.socket, "acquire", p, &r)
+	return r, err
 }
 
 func (c daemonClient) Events(ctx context.Context, limit int) ([]domain.Event, error) {
@@ -277,6 +313,13 @@ func printStatus(w io.Writer, st app.StatusResult) {
 	if st.Degraded != "" {
 		fmt.Fprintln(w, "DEGRADED  "+st.Degraded)
 	}
+	if n := st.OrphanCount; n > 0 {
+		noun := "processes"
+		if n == 1 {
+			noun = "process"
+		}
+		fmt.Fprintf(w, "STOPPED   %d %s not paused by throtd (see throt doctor)\n", n, noun)
+	}
 	h := st.Host
 	if h == nil {
 		fmt.Fprintln(w, "no host sample yet")
@@ -314,7 +357,19 @@ func printStatus(w io.Writer, st app.StatusResult) {
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%.0f%%\t%s\t%d\n", a.Agent, a.Key.PID, a.CPU*100, gib(a.RSS), a.Children)
 	}
-	fmt.Fprintf(w, "SCHEDULER %s (heavy limit %d, %d queued)\n", st.Scheduler.Mode, st.Scheduler.HeavyLimit, len(st.Scheduler.Queued))
+	fmt.Fprintf(w, "SCHEDULER %s (heavy limit %d, %d queued, %d reserved)\n", st.Scheduler.Mode, st.Scheduler.HeavyLimit, len(st.Scheduler.Queued), len(st.Scheduler.Leases))
+	const maxLeases = 5
+	for i, l := range st.Scheduler.Leases {
+		if i == maxLeases {
+			fmt.Fprintf(w, "RESERVED  ... and %d more\n", len(st.Scheduler.Leases)-maxLeases)
+			break
+		}
+		agent := l.Agent
+		if agent == "" {
+			agent = "-"
+		}
+		fmt.Fprintf(w, "RESERVED  pid %d (%s) since %s\n", l.Process.PID, agent, l.Granted.Format(time.TimeOnly))
+	}
 	paused := make(map[int]bool, len(st.Paused))
 	for _, p := range st.Paused {
 		paused[p.Key.PID] = true
@@ -393,6 +448,8 @@ func runDoctor(cfgPath string) error {
 		Status:    c.Status,
 		Host:      platform.NewHostSampler(),
 		Processes: platform.NewProcessSampler(),
+		Adapters:  app.Adapters(cfg.Agents),
+		UID:       uint32(os.Getuid()),
 	})
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")

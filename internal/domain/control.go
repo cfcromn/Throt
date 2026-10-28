@@ -16,4 +16,9 @@ const (
 	EventSchedulerDecision EventKind = "scheduler_decision"
 	// EventSchedulerLimit records adaptive changes to the heavy limit.
 	EventSchedulerLimit EventKind = "scheduler_limit"
+	// EventLeaseGranted records an admission lease granted to `throt run`;
+	// EventLeaseReleased records its end, with a reason: exited,
+	// became_workload, or expired.
+	EventLeaseGranted  EventKind = "lease_granted"
+	EventLeaseReleased EventKind = "lease_released"
 )

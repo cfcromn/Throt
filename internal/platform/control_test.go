@@ -184,6 +184,37 @@ func testLifecycle(t *testing.T, sampler ProcessSampler, ctl ProcessController) 
 	}
 }
 
+func TestProcessControllerIdentify(t *testing.T) {
+	skipUnlessControl(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sampler, ctl := NewProcessTools()
+	id, ok := ctl.(ProcessIdentifier)
+	if !ok {
+		t.Fatalf("%T does not implement ProcessIdentifier", ctl)
+	}
+	got, err := id.Identify(ctx, os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	procs, err := sampler.SampleProcesses(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range procs {
+		if p.PID == os.Getpid() {
+			if got.PID != p.PID || got.PPID != os.Getppid() || got.PPID != p.PPID || !got.Start.Equal(p.Start) || got.UID != p.UID {
+				t.Fatalf("Identify = %+v, sample = %+v", got, p)
+			}
+			if _, err := id.Identify(ctx, 1<<30); !errors.Is(err, domain.ErrProcessGone) && err == nil {
+				t.Errorf("Identify(missing) succeeded")
+			}
+			return
+		}
+	}
+	t.Fatal("this process is not in the sample")
+}
+
 func TestProcessControllerIdentitySelf(t *testing.T) {
 	skipUnlessControl(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

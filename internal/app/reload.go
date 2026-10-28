@@ -75,7 +75,7 @@ func (d *Daemon) Reload() (ReloadResult, error) {
 
 	if agentsChanged {
 		d.graphMu.Lock()
-		d.graph.SetAdapters(adapters(next.Agents))
+		d.graph.SetAdapters(Adapters(next.Agents))
 		d.graphMu.Unlock()
 	}
 	// New adapters can split a workload into new keys; re-sending the

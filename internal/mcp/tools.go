@@ -334,11 +334,11 @@ func (s *Server) capacity(ctx context.Context, agent string) toolResult {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "ok to start a heavy job: %s\nreason: %s\n", verdict, c.Reason)
-	fmt.Fprintf(&b, "running heavy: %d (limit %d, scheduler %s)\n", c.RunningHeavy, c.HeavyLimit, c.SchedulerMode)
+	fmt.Fprintf(&b, "running heavy: %d, reserved: %d (limit %d, scheduler %s)\n", c.RunningHeavy, c.Reserved, c.HeavyLimit, c.SchedulerMode)
 	if c.AgentRunningHeavy != nil {
 		fmt.Fprintf(&b, "running heavy for %s: %d\n", c.Agent, *c.AgentRunningHeavy)
 	}
-	fmt.Fprintf(&b, "suggestion: %s\n(advisory only: throt reserves nothing for you)", c.Suggestion)
+	fmt.Fprintf(&b, "suggestion: %s\n(advisory only: this check reserves nothing; reserved slots are held by `throt run` commands about to start, and `throt run -- CMD` waits for and reserves one)", c.Suggestion)
 	return textResult(b.String(), c)
 }
 

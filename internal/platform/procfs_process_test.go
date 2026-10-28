@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cfcromn/Throt/internal/domain"
 )
 
 // statLine builds a /proc/<pid>/stat line with the given comm and the
@@ -19,7 +21,7 @@ func TestParsePIDStat(t *testing.T) {
 			t.Errorf("comm %q: %v", comm, err)
 			continue
 		}
-		want := pidStat{PID: 42, Comm: comm, PPID: 1, CPUTicks: 300, StartTime: 12345, RSSPages: 300}
+		want := pidStat{PID: 42, Comm: comm, State: domain.StateSleeping, PPID: 1, CPUTicks: 300, StartTime: 12345, RSSPages: 300}
 		if got != want {
 			t.Errorf("comm %q: got %+v, want %+v", comm, got, want)
 		}
@@ -34,6 +36,23 @@ func TestParsePIDStatControlCharsInComm(t *testing.T) {
 	}
 }
 
+func TestParsePIDStatState(t *testing.T) {
+	for st, want := range map[string]domain.ProcessState{
+		"R": domain.StateRunning, "S": domain.StateSleeping, "D": domain.StateSleeping, "I": domain.StateSleeping,
+		"T": domain.StateStopped, "t": domain.StateOther, "Z": domain.StateZombie, "X": domain.StateOther, "W": domain.StateOther,
+	} {
+		in := strings.Replace(statLine("my prog"), ") S ", ") "+st+" ", 1)
+		got, err := parsePIDStat([]byte(in))
+		if err != nil || got.State != want {
+			t.Errorf("state %q: got %q, %v; want %q", st, got.State, err, want)
+		}
+	}
+	// A comm that looks like a state cannot change it: comm ends at the last ')'.
+	if got, err := parsePIDStat([]byte(statLine("x) T 9"))); err != nil || got.State != domain.StateSleeping {
+		t.Errorf("forged comm: got %+v, %v; want sleeping", got, err)
+	}
+}
+
 func TestParsePIDStatErrors(t *testing.T) {
 	tests := map[string]string{
 		"empty":        "",
@@ -43,6 +62,7 @@ func TestParsePIDStatErrors(t *testing.T) {
 		"bad ppid":     strings.Replace(statLine("bash"), "S 1 ", "S x ", 1),
 		"negative rss": strings.Replace(statLine("bash"), " 300 ", " -1 ", 1),
 		"only close":   "42 bash) S 1",
+		"long state":   strings.Replace(statLine("bash"), ") S ", ") TS ", 1),
 		// Found by FuzzParsePIDStat.
 		"pid 0":          strings.Replace(statLine("bash"), "42 ", "0 ", 1),
 		"negative pid":   strings.Replace(statLine("bash"), "42 ", "-42 ", 1),

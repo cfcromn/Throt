@@ -79,6 +79,16 @@ func (w *world) Continue(_ context.Context, k domain.ProcessKey, uid uint32) err
 	return w.signal("cont", k, uid)
 }
 
+func (w *world) Identify(_ context.Context, pid int) (domain.ProcessSample, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	p, ok := w.procs[pid]
+	if !ok {
+		return domain.ProcessSample{}, domain.ErrProcessGone
+	}
+	return p, nil
+}
+
 func (w *world) Gone(_ context.Context, k domain.ProcessKey) (bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

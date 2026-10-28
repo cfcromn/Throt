@@ -18,15 +18,27 @@ Requirements: the Go version in `go.mod`, Git, Make. macOS is the primary platfo
 make setup   # download modules
 make check   # vet + test + build
 make race    # tests with the race detector
-make ci      # exactly what CI runs
+make ci      # the unit-test part of CI (gofmt, vet, race tests, build)
+make bench   # real-kernel benchmark, in Docker only
 ```
+
+**Never run an enforce-mode `throtd`, the e2e suite, or the benchmark on a machine with real agents.** It pauses their real builds. The e2e suite and the benchmark refuse to run outside CI or a container. Run them in Docker, building the test binary first, because under `go test` the `go` process would own every job:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src golang:1.26.10-alpine sh -c \
+  'go test -c -o /tmp/e2e.test ./internal/e2e && THROT_E2E=1 /tmp/e2e.test -test.v'
+```
+
+Fuzz targets run their seeds in `go test`; to fuzz one, use `go test -run='^$' -fuzz='^FuzzParsePS$' -fuzztime=60s ./internal/platform`. Don't commit generated `testdata/fuzz` corpora: turn a crasher into a table test instead.
 
 Layout:
 
 ```text
-cmd/throt      client (CLI/TUI)
+cmd/throt      client (CLI, TUI, MCP server, run, completion)
 cmd/throtd     daemon
-internal/      app, config, domain, transport, monitor, platform, pressure, scheduler, agent, tui
+internal/      app, agent, capacity, config, control, doctor, domain, mcp, monitor,
+               platform, pressure, process, scheduler, stats, transport, tui;
+               bench and e2e (Docker/CI only)
 docs/          ARCHITECTURE.md
 ```
 

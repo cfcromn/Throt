@@ -535,3 +535,50 @@ func TestAgedResumesUnderSustainedHighWithAdaptive(t *testing.T) {
 	expect(t, s.Decide(Input{Now: now, Pressure: domain.PressureHigh, Heavy: heavy, Paused: keys(100)}),
 		brief{ActionResume, 100, ReasonAged})
 }
+
+func TestReservedSlotsCountAsRunning(t *testing.T) {
+	s := New(enforce(2))
+	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "a")}})
+	// One slot runs, the other is promised to a lease: a newcomer queues.
+	heavy := []process.WorkloadView{wv(1, "a"), wv(2, "b")}
+	got := s.Decide(Input{Now: at(1), Pressure: domain.PressureNormal, Heavy: heavy, Reserved: []string{"c"}})
+	expect(t, got, brief{ActionQueue, 2, ReasonSlotsExhausted})
+	if got[0].RunningHeavy != 2 {
+		t.Fatalf("RunningHeavy = %d, want 2", got[0].RunningHeavy)
+	}
+	// While the lease holds the slot, the queued workload is not resumed.
+	expect(t, s.Decide(Input{Now: at(2), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(2), Reserved: []string{"c"}}))
+	// The lease ends (its command exited): 2 resumes.
+	expect(t, s.Decide(Input{Now: at(3), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(2)}),
+		brief{ActionResume, 2, ReasonSlotAvailable})
+}
+
+func TestAdmittedWorkloadTakesTheLeasedSlot(t *testing.T) {
+	s := New(enforce(2))
+	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "a")}})
+	heavy := []process.WorkloadView{wv(1, "a"), wv(2, "b")}
+	expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureNormal, Heavy: heavy, Reserved: []string{"c"}}),
+		brief{ActionQueue, 2, ReasonSlotsExhausted})
+	// The lease's command shows up as 3 and takes over the lease: it runs
+	// at once, and 2 keeps waiting, since the slot was promised to 3.
+	heavy = append(heavy, wv(3, "c"))
+	got := s.Decide(Input{Now: at(2), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(2), Admitted: keys(3)})
+	expect(t, got)
+	// A second new workload in the same round gets no such pass.
+	s = New(enforce(1))
+	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal})
+	heavy = []process.WorkloadView{wv(3, "c"), wv(4, "c")}
+	expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureNormal, Heavy: heavy, Admitted: keys(3)}),
+		brief{ActionQueue, 4, ReasonSlotsExhausted})
+}
+
+func TestReservedSlotsCountTowardOwnerBudget(t *testing.T) {
+	p := enforce(4)
+	p.PerOwnerLimit = 1
+	s := New(p)
+	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal})
+	// Owner a holds a lease, so its newcomer is at budget; b's is not.
+	heavy := []process.WorkloadView{wv(1, "a"), wv(2, "b")}
+	expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureNormal, Heavy: heavy, Reserved: []string{"a"}}),
+		brief{ActionQueue, 1, ReasonOwnerBudget})
+}
