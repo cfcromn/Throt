@@ -264,7 +264,7 @@ type sizing struct {
 	burst      int // jobs launched at once
 	stagger    int // jobs in the staggered stream
 	every      time.Duration
-	heavyLimit int // Throt's scheduler.heavy_limit
+	heavyLimit int // Throt's scheduler.heavy_limit; 0 keeps the default profile
 	reps       int
 }
 
@@ -279,7 +279,9 @@ func sizeFor(container bool) (sizing, error) {
 	z := sizing{cpus: 2, burst: 8, stagger: 10, every: time.Second, heavyLimit: 2, reps: defaultReps}
 	if !container {
 		n := runtime.NumCPU()
-		z = sizing{cpus: n, burst: 4 * n, stagger: 4 * n, heavyLimit: max(2, n/2), reps: defaultReps}
+		// On a real machine measure what a user gets: the default profile
+		// (adaptive, ceiling = CPUs), sample interval and cooldown.
+		z = sizing{cpus: n, burst: 4 * n, stagger: 4 * n, reps: defaultReps}
 		z.every = (jobCPU / time.Duration(2*n)).Round(10 * time.Millisecond)
 	}
 	positive := func(env string) (int, error) {
@@ -367,13 +369,24 @@ func TestBench(t *testing.T) {
 	t.Logf("calibration: %d iterations per CPU second; GOMAXPROCS %d, NumCPU %d", iters, runtime.GOMAXPROCS(0), runtime.NumCPU())
 	line := strconv.FormatUint(uint64(float64(iters)*jobCPU.Seconds()), 10)
 	tune := func(c *config.Config) {
+		if z.heavyLimit == 0 {
+			return // defaults, as shipped
+		}
+		c.SampleInterval = config.Duration(sampleInterval)
 		c.Scheduler.HeavyLimit = z.heavyLimit
+		c.Scheduler.StartLimit = min(c.Scheduler.StartLimit, z.heavyLimit)
 		c.Scheduler.ResumeCooldown = config.Duration(time.Second)
 	}
 
 	var table strings.Builder
-	fmt.Fprintf(&table, "\n%s/%s, %s, %d CPUs, heavy_limit %d, %s of CPU per job, medians of %d runs\n\n",
-		runtime.GOOS, runtime.GOARCH, kernel(), z.cpus, z.heavyLimit, jobCPU, z.reps)
+	limits := fmt.Sprintf("heavy_limit %d, 500ms sampling, 1s cooldown", z.heavyLimit)
+	if z.heavyLimit == 0 {
+		d := config.Default()
+		limits = fmt.Sprintf("default profile (%s: adaptive, start %d, ceiling %d, %s sampling)",
+			d.Profile, d.Scheduler.StartLimit, d.Scheduler.HeavyLimit, time.Duration(d.SampleInterval))
+	}
+	fmt.Fprintf(&table, "\n%s/%s, %s, %d CPUs, %s, %s of CPU per job, medians of %d runs\n\n",
+		runtime.GOOS, runtime.GOARCH, kernel(), z.cpus, limits, jobCPU, z.reps)
 	table.WriteString("| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Makespan range | Peak running | Interventions | Max pressure |\n")
 	table.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, sc := range scenarios(z) {
@@ -753,7 +766,6 @@ func startDaemon(t *testing.T, mode string, tune func(*config.Config)) (string, 
 
 	cfg := config.Default()
 	cfg.SocketPath = config.DefaultSocketPath()
-	cfg.SampleInterval = config.Duration(sampleInterval)
 	cfg.Scheduler.Mode = mode
 	if tune != nil {
 		tune(&cfg)
