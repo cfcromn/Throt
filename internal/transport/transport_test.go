@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -158,5 +159,21 @@ func TestCheckPrivateDir(t *testing.T) {
 		} else if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 			t.Errorf("%s: err = %v, want %q", tt.dir, err, tt.wantErr)
 		}
+	}
+}
+
+// TestUnknownMethodClipped: an unknown method of nearly maxBodyBytes of
+// "<" was echoed whole, and escaped as < the response grew to 6 MiB,
+// which the client read as a truncated reply instead of the error.
+func TestUnknownMethodClipped(t *testing.T) {
+	req := `{"protocol":1,"method":"` + strings.Repeat("<", maxBodyBytes-64) + `"}`
+	conn := &bufConn{in: bytes.NewReader([]byte(req))}
+	NewServer(nil).handle(context.Background(), conn)
+	if n := conn.out.Len(); n > 1024 {
+		t.Fatalf("response is %d bytes", n)
+	}
+	err := readResponse(&conn.out, nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "unknown method: <<<<") || !strings.HasSuffix(err.Error(), "...") {
+		t.Fatalf("err = %v, want the clipped unknown method", err)
 	}
 }

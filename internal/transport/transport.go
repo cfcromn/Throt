@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -172,7 +173,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	} else if req.Protocol != ProtocolVersion {
 		resp.Error = fmt.Sprintf("protocol mismatch: client speaks v%d, daemon speaks v%d; upgrade throt and throtd to the same release", req.Protocol, ProtocolVersion)
 	} else if h, ok := s.handlers[req.Method]; !ok {
-		resp.Error = "unknown method: " + req.Method
+		resp.Error = "unknown method: " + clip(req.Method)
 	} else if err := s.authorize(conn, req.Method); err != nil {
 		resp.Error = err.Error()
 	} else if v, err := h(s.withPeer(ctx, conn, req.Method), req.Params); err != nil {
@@ -238,8 +239,14 @@ func Call(ctx context.Context, socket, method string, params, out any) error {
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
+	return readResponse(conn, out)
+}
+
+// readResponse decodes one response from r, at most maxBodyBytes, into out
+// (which may be nil).
+func readResponse(r io.Reader, out any) error {
 	var resp Response
-	if err := json.NewDecoder(limitReader(conn)).Decode(&resp); err != nil {
+	if err := json.NewDecoder(limitReader(r)).Decode(&resp); err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}
 	if resp.Error != "" {
@@ -255,6 +262,17 @@ func Call(ctx context.Context, socket, method string, params, out any) error {
 }
 
 func limitReader(r io.Reader) io.Reader { return io.LimitReader(r, maxBodyBytes) }
+
+// clip shortens a client-sent string echoed in an error. Echoed whole, a
+// method name close to maxBodyBytes, once JSON-escaped, made a response
+// the client could not read, so it saw a truncated reply instead.
+func clip(s string) string {
+	const limit = 64
+	if len(s) <= limit {
+		return s
+	}
+	return strings.ToValidUTF8(s[:limit], "") + "..."
+}
 
 // CheckPrivateDir rejects a socket directory that is a symlink, is owned by
 // another user, or is writable by group/other: any of those would let another
