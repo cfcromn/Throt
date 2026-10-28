@@ -14,12 +14,12 @@ import (
 	"testing"
 )
 
-func startServer(t *testing.T, handlers map[string]Handler) string {
+func startServer(t testing.TB, handlers map[string]Handler) string {
 	t.Helper()
 	return serve(t, NewServer(handlers))
 }
 
-func serve(t *testing.T, s *Server) string {
+func serve(t testing.TB, s *Server) string {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "t.sock")
 	l, err := net.Listen("unix", sock)
