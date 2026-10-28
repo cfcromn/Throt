@@ -205,6 +205,7 @@ func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level
 	if s.perr == nil {
 		d.status.Agents, d.status.Heavy = r.snap.Agents, r.snap.Heavy
 		d.status.Orphans, d.status.OrphanCount = r.orphans, r.orphanCount
+		d.status.UnattributedMemory, d.status.UnattributedRSS = r.snap.Unattributed, r.snap.UnattributedRSS
 		d.stopped = r.snap.Stopped
 		ended = d.leases.observe(s.sampled, s.now, s.procs, r.snap.Heavy)
 		d.waiting.prune(s.now, s.sampled, s.procs)

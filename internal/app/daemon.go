@@ -39,6 +39,12 @@ type StatusResult struct {
 	// all. Throt reports them and never resumes one unasked.
 	Orphans     []process.Orphan `json:"orphans,omitempty"`
 	OrphanCount int              `json:"orphan_count,omitempty"`
+	// UnattributedMemory lists the process names with the most resident
+	// memory outside every agent (at most process.MaxUnattributed);
+	// UnattributedRSS totals every process outside the agents. Names only:
+	// no arguments, no paths.
+	UnattributedMemory []process.NameUsage `json:"unattributed_memory,omitempty"`
+	UnattributedRSS    uint64              `json:"unattributed_rss,omitempty"`
 }
 
 // StatsResult is returned by the "stats" method: per-agent usage since the

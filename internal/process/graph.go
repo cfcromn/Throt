@@ -61,6 +61,17 @@ type WorkloadView struct {
 	RSS uint64  `json:"rss"`
 }
 
+// MaxUnattributed bounds Snapshot.Unattributed.
+const MaxUnattributed = 5
+
+// NameUsage is the memory of the live processes with one name that no agent
+// owns. It carries the executable name only: no arguments, no path.
+type NameUsage struct {
+	Name      string `json:"name"`
+	Processes int    `json:"processes"`
+	RSS       uint64 `json:"rss"`
+}
+
 // Snapshot is an immutable view of the graph after the latest Update. It
 // shares no memory with the graph and is safe to hand to other goroutines.
 type Snapshot struct {
@@ -71,6 +82,12 @@ type Snapshot struct {
 	// Stopped lists every stopped process (domain.StateStopped) by PID, for
 	// FindOrphans. It is bounded by the process table.
 	Stopped []StoppedView `json:"stopped,omitempty"`
+	// Unattributed lists the names with the most resident memory among
+	// processes no agent owns, at most MaxUnattributed, by RSS descending
+	// then name; UnattributedRSS totals all such processes. Together with
+	// the agents they show where the host's memory goes.
+	Unattributed    []NameUsage `json:"unattributed,omitempty"`
+	UnattributedRSS uint64      `json:"unattributed_rss,omitempty"`
 	// TotalCPU is the busy fraction of all CPUs across observed processes
 	// since the previous Update, 0..1. Valid only when HasCPU is true.
 	TotalCPU float64 `json:"total_cpu"`
@@ -493,6 +510,28 @@ func (g *Graph) build(order []*proc, busy, dt float64, rates bool) Snapshot {
 		snap.Stopped = append(snap.Stopped, v)
 	}
 
+	byName := map[string]int{}
+	for _, p := range order {
+		if p.owner != nil {
+			continue
+		}
+		snap.UnattributedRSS += p.s.RSS
+		i, ok := byName[p.s.Name]
+		if !ok {
+			i = len(snap.Unattributed)
+			byName[p.s.Name] = i
+			snap.Unattributed = append(snap.Unattributed, NameUsage{Name: p.s.Name})
+		}
+		snap.Unattributed[i].Processes++
+		snap.Unattributed[i].RSS += p.s.RSS
+	}
+	slices.SortFunc(snap.Unattributed, func(a, b NameUsage) int {
+		return cmp.Or(cmp.Compare(b.RSS, a.RSS), cmp.Compare(a.Name, b.Name))
+	})
+	if len(snap.Unattributed) > MaxUnattributed {
+		snap.Unattributed = slices.Clone(snap.Unattributed[:MaxUnattributed])
+	}
+
 	slices.SortFunc(snap.Agents, func(a, b AgentView) int {
 		return cmp.Or(cmp.Compare(b.CPU, a.CPU), cmp.Compare(a.Key.PID, b.Key.PID))
 	})
@@ -523,6 +562,7 @@ func (g *Graph) Snapshot() Snapshot {
 	s.Agents = slices.Clone(s.Agents)
 	s.Heavy = slices.Clone(s.Heavy)
 	s.Stopped = slices.Clone(s.Stopped)
+	s.Unattributed = slices.Clone(s.Unattributed)
 	return s
 }
 

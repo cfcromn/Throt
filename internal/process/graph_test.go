@@ -369,6 +369,41 @@ func TestSnapshots(t *testing.T) {
 	}
 }
 
+func TestUnattributedMemory(t *testing.T) {
+	g := newGraph()
+	procs := []ps{
+		{pid: 10, ppid: 1, name: "claude", rss: 300},
+		{pid: 11, ppid: 10, name: "node", rss: 200}, // owned: not counted
+		{pid: 20, ppid: 1, name: "node", rss: 50},   // same name, outside
+		{pid: 30, ppid: 1, name: "Chrome Helper", rss: 400},
+		{pid: 31, ppid: 1, name: "Chrome Helper", rss: 400},
+		{pid: 40, ppid: 1, name: "VirtualMachine", rss: 4000},
+		{pid: 50, ppid: 1, name: "a", rss: 10},
+		{pid: 51, ppid: 1, name: "b", rss: 10},
+		{pid: 52, ppid: 1, name: "c", rss: 10},
+		{pid: 53, ppid: 1, name: "d", rss: 1},
+	}
+	g.Update(epoch, samples(procs))
+	s := g.Snapshot()
+	want := []NameUsage{
+		{Name: "VirtualMachine", Processes: 1, RSS: 4000 << 20},
+		{Name: "Chrome Helper", Processes: 2, RSS: 800 << 20},
+		{Name: "node", Processes: 1, RSS: 50 << 20},
+		{Name: "a", Processes: 1, RSS: 10 << 20},
+		{Name: "b", Processes: 1, RSS: 10 << 20},
+	}
+	if !reflect.DeepEqual(s.Unattributed, want) {
+		t.Errorf("unattributed = %+v, want %+v", s.Unattributed, want)
+	}
+	if got, want := s.UnattributedRSS, uint64(4881)<<20; got != want {
+		t.Errorf("unattributed rss = %d MiB, want %d MiB", got>>20, want>>20)
+	}
+	s.Unattributed[0].Name = "mutated"
+	if g.Snapshot().Unattributed[0].Name != "VirtualMachine" {
+		t.Error("snapshot shares the unattributed list")
+	}
+}
+
 func TestEmptyGraph(t *testing.T) {
 	s := newGraph().Snapshot()
 	if s.Agents != nil || s.Heavy != nil || s.HasCPU || s.TotalCPU != 0 {
