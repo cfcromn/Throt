@@ -25,7 +25,7 @@ Throt is a local Go daemon (`throtd`) and client (`throt`: CLI, terminal UI, MCP
 
 Principles:
 - **Observe before controlling.** The scheduler is off by default; turn it on in `observe` mode first.
-- **No agent lock-in.** Agents are recognized by adapters; Claude Code, Codex, OpenCode, Gemini, Aider, Cursor Agent, Goose and Orca are built in, and you can add your own.
+- **No agent lock-in.** Agents are recognized by adapters; Claude Code, Codex, OpenCode, Gemini, Aider, Cursor Agent, Goose, Amp, GitHub Copilot CLI and Orca are built in, and anything else gets a one-line custom rule (see [An agent is not detected](#an-agent-is-not-detected)).
 - **Local-first.** No telemetry. The only network access is `throt update`, when you run it.
 - **Fail open.** If Throt crashes or is stopped, agents and their work continue.
 - **Explain every intervention.** Every queue, pause and resume has a reason you can read.
@@ -370,7 +370,7 @@ Start with `throt doctor`: it shows the socket path, the config in use, whether 
 
 **Symptom.** Your agent is missing from `AGENTS` in `throt status` or the TUI, and its builds show no owner.
 
-**Cause.** Agents are matched by exact executable name, only among your own processes. Built in: `claude`, `codex`, `opencode`, `gemini`, `aider`, `cursor-agent`, `goose`, `orca`. An agent started under another name, or as `node script.js`, matches none of them.
+**Cause.** Agents are matched by exact executable name, only among your own processes. Built in: `claude`, `codex`, `opencode`, `gemini`, `aider`, `cursor-agent`, `goose`, `amp`, `copilot`, `orca`. Arguments are never read, so an agent started under another name, or as `node script.js` or `python3 -m aider`, matches none of them and stays unattributed.
 
 **Fix.** Add a custom agent with the executable name its process actually has (the last path element of `ps -o comm= -p PID`; on Linux at most 15 characters), then `throt config check` and `throt reload`:
 

@@ -18,6 +18,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - TUI: `/` filters the timeline by event kind (case-insensitive substring, at most 32 characters), `esc` clears it. Control, scheduler and failure events are tagged `CTL`, `SCHED` and `FAIL` as well as colored.
 - TUI: `NO_COLOR` and `TERM=dumb` turn off all ANSI styling.
 - Observe mode shows what it would have queued: the `status` method's `scheduler` result adds `would_queue` (the workloads the latest observe round would have queued), and `throt status` shows them as `running (would queue)`.
+- Built-in agents `amp` (Amp) and `copilot` (GitHub Copilot CLI), matched by exact executable name like the others. Arguments are still never read, so an agent run as `node script.js` or `python3 -m …` stays unattributed.
 
 ### Changed
 - TUI: colors adapt to a light or dark terminal background, so warnings keep their contrast on light themes. The scheduler moved from the `SYSTEM` header to its own line.

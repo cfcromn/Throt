@@ -42,10 +42,14 @@ func (a nameAdapter) Match(p domain.ProcessSample) bool {
 }
 
 // defaultAgents lists the agents recognized out of the box. Each matches only
-// its own executable name; many of them run on node, but node alone never
-// matches. It is never mutated.
+// its own executable name, never arguments: Throt does not read argv, so an
+// agent run as an interpreter script ("node cli.js", "python3 -m aider")
+// has the interpreter's name and stays unknown. Native or single-file builds
+// (codex, goose, opencode, amp, copilot) and CLIs that retitle their process
+// match. It is never mutated.
 var defaultAgents = []string{
 	"claude", "codex", "opencode", "gemini", "aider", "cursor-agent", "goose", "orca",
+	"amp", "copilot",
 }
 
 // DefaultAdapters returns a fresh slice of the built-in name adapters, one
