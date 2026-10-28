@@ -21,3 +21,19 @@ func Run(ctx context.Context, interval time.Duration, tick func(context.Context)
 		}
 	}
 }
+
+// ProbeLatency measures how late a timer of duration d fires. When the
+// machine's CPUs are saturated, runnable threads wait to be scheduled and
+// the lateness grows, so it is a cheap proxy for foreground responsiveness.
+// It returns 0 if ctx ends first.
+func ProbeLatency(ctx context.Context, d time.Duration) time.Duration {
+	start := time.Now()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return 0
+	case <-t.C:
+		return max(time.Since(start)-d, 0)
+	}
+}

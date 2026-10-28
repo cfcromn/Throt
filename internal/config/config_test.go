@@ -34,6 +34,17 @@ func TestLoad(t *testing.T) {
 				t.Errorf("got %+v", c.Scheduler)
 			}
 		}},
+		{name: "cool profile", body: `{"profile":"cool"}`, check: func(t *testing.T, c Config) {
+			if c.Scheduler.HeavyLimit != 1 || !c.Scheduler.Adaptive || !c.Scheduler.PauseOnCritical || c.Scheduler.Mode != "off" {
+				t.Errorf("got %+v", c.Scheduler)
+			}
+		}},
+		{name: "explicit setting overrides profile", body: `{"profile":"cool","scheduler":{"heavy_limit":4}}`, check: func(t *testing.T, c Config) {
+			if c.Scheduler.HeavyLimit != 4 || !c.Scheduler.PauseOnCritical {
+				t.Errorf("got %+v", c.Scheduler)
+			}
+		}},
+		{name: "unknown profile", body: `{"profile":"turbo"}`, wantErr: "profile must be"},
 		{name: "bad scheduler mode", body: `{"scheduler":{"mode":"auto"}}`, wantErr: "scheduler.mode"},
 		{name: "unknown scheduler key", body: `{"scheduler":{"limit":3}}`, wantErr: "unknown field"},
 	}
