@@ -374,10 +374,12 @@ func (m Model) helpLines() []string {
 		"  tab         switch focus: agents / heavy workloads",
 		"  j/k, ↑/↓    move the selection",
 		"  enter       toggle details for the selected row",
+		"  p / r       pause / resume the selected heavy workload (asks y/n)",
 		"  ?           toggle this help",
 		"  esc         close details and help",
 		"",
-		"  The TUI only observes; throtd makes every decision.",
+		"  The TUI makes no decisions: p and r send only what you confirm,",
+		"  and throtd checks ownership before acting.",
 	}
 	for i, l := range lines {
 		lines[i] = truncate(l, m.width)
@@ -385,7 +387,15 @@ func (m Model) helpLines() []string {
 	return lines
 }
 
+// footer shows a pending confirmation, else a recent control result, else
+// the key hints.
 func (m Model) footer() string {
+	if a := m.confirm; a != nil {
+		return titleStyle.Render(truncate(fmt.Sprintf("%s %s (pid %d)? y/n", a.verb, a.name, a.key.PID), m.width))
+	}
+	if m.notice != "" {
+		return truncate(m.notice, m.width)
+	}
 	return footerStyle.Render(truncate("q quit  tab focus  j/k move  enter details  ? help", m.width))
 }
 

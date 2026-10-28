@@ -375,3 +375,55 @@ func TestDaemonMovesAsideMalformedState(t *testing.T) {
 		t.Errorf("signals = %q", got)
 	}
 }
+
+func TestDaemonEventsSince(t *testing.T) {
+	sock := filepath.Join(shortTempDir(t), "throtd.sock")
+	stop := startDaemon(t, sock)
+	defer stop()
+	ctx := context.Background()
+
+	var all []domain.Event
+	waitFor(t, "a few events", func() bool {
+		all = nil
+		return transport.Call(ctx, sock, "events", nil, &all) == nil && len(all) >= 2
+	})
+	for i := 1; i < len(all); i++ {
+		if all[i].Seq <= all[i-1].Seq {
+			t.Fatalf("seq not increasing: %d then %d", all[i-1].Seq, all[i].Seq)
+		}
+	}
+	var after []domain.Event
+	if err := transport.Call(ctx, sock, "events", EventsParams{Since: all[0].Seq, Limit: 1}, &after); err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || after[0].Seq != all[1].Seq {
+		t.Fatalf("since %d limit 1 = %+v, want seq %d", all[0].Seq, after, all[1].Seq)
+	}
+}
+
+func TestControlRefusesStaleStart(t *testing.T) {
+	sock := filepath.Join(shortTempDir(t), "throtd.sock")
+	sig := &fakeSignaler{}
+	stop := startDaemonWith(t, sock, sig)
+	defer stop()
+	ctx := context.Background()
+	var st StatusResult
+	waitFor(t, "heavy workload", func() bool {
+		st = StatusResult{}
+		return transport.Call(ctx, sock, "status", nil, &st) == nil && len(st.Heavy) == 1
+	})
+	stale := ControlParams{PID: st.Heavy[0].Key.PID, Start: st.Heavy[0].Key.Start.Add(-time.Hour)}
+	if err := transport.Call(ctx, sock, "pause", stale, nil); err == nil || !strings.Contains(err.Error(), "PID reused") {
+		t.Fatalf("stale pause err = %v", err)
+	}
+	if sig.signals() != "" {
+		t.Fatalf("signals sent: %q", sig.signals())
+	}
+	fresh := ControlParams{PID: st.Heavy[0].Key.PID, Start: st.Heavy[0].Key.Start}
+	if err := transport.Call(ctx, sock, "pause", fresh, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.Call(ctx, sock, "resume", fresh, nil); err != nil {
+		t.Fatal(err)
+	}
+}

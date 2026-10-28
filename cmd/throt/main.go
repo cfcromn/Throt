@@ -9,8 +9,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -32,9 +34,12 @@ Commands:
   top        open the terminal UI (the default with no command)
   status     show host resources and pressure
   ping       check that throtd is reachable
-  events     print recent daemon events as JSON lines
+  events     print recent daemon events as JSON lines; -f keeps printing new ones
+  explain PID
+             explain why a heavy workload is running, paused, or queued
   pause PID  pause a heavy workload (SIGSTOP) shown in 'status'
   resume PID resume a paused workload (SIGCONT)
+  reload     make throtd re-read its config file
   doctor     print a sanitized diagnostic report (safe to share)
   mcp        run a read-only MCP server on stdio for coding agents
   version    print the client version
@@ -58,13 +63,25 @@ func run(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() > 2 {
-		fs.Usage()
-		return fmt.Errorf("too many arguments")
-	}
 	cmd := "top"
 	if fs.NArg() >= 1 {
 		cmd = fs.Arg(0)
+	}
+	// 'events' takes its own flags after the command: throt events -f.
+	followEvents := false
+	if cmd == "events" {
+		efs := flag.NewFlagSet("throt events", flag.ContinueOnError)
+		efs.BoolVar(&followEvents, "f", false, "keep printing new events until interrupted")
+		efs.IntVar(limit, "n", *limit, "number of recent events to print first")
+		if err := efs.Parse(fs.Args()[1:]); err != nil {
+			return err
+		}
+		if efs.NArg() > 0 {
+			return fmt.Errorf("usage: throt events [-f] [-n N]")
+		}
+	} else if fs.NArg() > 2 {
+		fs.Usage()
+		return fmt.Errorf("too many arguments")
 	}
 	if cmd == "version" {
 		fmt.Println(app.Version)
@@ -76,7 +93,14 @@ func run(args []string) error {
 	}
 
 	cfg, err := config.Load(*cfgPath)
-	if err != nil {
+	switch {
+	case err != nil && cmd == "reload":
+		// throtd reports the invalid file itself and keeps its config, so
+		// reach it at the best socket path the file allows.
+		if cfg.SocketPath == "" {
+			cfg.SocketPath = config.DefaultSocketPath()
+		}
+	case err != nil:
 		return err
 	}
 	if cmd == "top" {
@@ -88,6 +112,12 @@ func run(args []string) error {
 		// stdout carries MCP messages only; logs go to stderr.
 		log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 		return mcp.New(daemonClient{socket: cfg.SocketPath}, app.Version, log).Serve(context.Background(), os.Stdin, os.Stdout)
+	}
+	if cmd == "events" && followEvents {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		c := daemonClient{socket: cfg.SocketPath}
+		return follow(ctx, c.EventsSince, os.Stdout, os.Stderr, followInterval, *limit)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -114,6 +144,26 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Printf("%sd pid %d\n", cmd, pid)
+	case "reload":
+		var r app.ReloadResult
+		if err := transport.Call(ctx, cfg.SocketPath, "reload", nil, &r); err != nil {
+			return err
+		}
+		printReload(os.Stdout, r)
+	case "explain":
+		pid, err := strconv.Atoi(fs.Arg(1))
+		if err != nil {
+			return fmt.Errorf("usage: throt explain PID")
+		}
+		var st app.StatusResult
+		if err := transport.Call(ctx, cfg.SocketPath, "status", nil, &st); err != nil {
+			return err
+		}
+		var events []domain.Event
+		if err := transport.Call(ctx, cfg.SocketPath, "events", app.EventsParams{Limit: app.MaxEventsPerCall}, &events); err != nil {
+			return err
+		}
+		return explain(os.Stdout, pid, st, events, time.Duration(cfg.Scheduler.ResumeCooldown))
 	case "events":
 		var events []domain.Event
 		if err := transport.Call(ctx, cfg.SocketPath, "events", app.EventsParams{Limit: *limit}, &events); err != nil {
@@ -143,6 +193,34 @@ func (c daemonClient) Events(ctx context.Context, limit int) ([]domain.Event, er
 	var events []domain.Event
 	err := transport.Call(ctx, c.socket, "events", app.EventsParams{Limit: limit}, &events)
 	return events, err
+}
+
+func printReload(w io.Writer, r app.ReloadResult) {
+	if len(r.Changed) == 0 {
+		fmt.Fprintln(w, "reloaded: no changes applied")
+	}
+	for _, c := range r.Changed {
+		fmt.Fprintln(w, "applied: "+c)
+	}
+	for _, c := range r.RequiresRestart {
+		fmt.Fprintln(w, "requires restart: "+c)
+	}
+}
+
+// EventsSince returns up to limit events newer than seq, or the newest limit
+// events when seq is 0.
+func (c daemonClient) EventsSince(ctx context.Context, seq uint64, limit int) ([]domain.Event, error) {
+	var events []domain.Event
+	err := transport.Call(ctx, c.socket, "events", app.EventsParams{Limit: limit, Since: seq}, &events)
+	return events, err
+}
+
+func (c daemonClient) Pause(ctx context.Context, k domain.ProcessKey) error {
+	return transport.Call(ctx, c.socket, "pause", app.ControlParams{PID: k.PID, Start: k.Start}, nil)
+}
+
+func (c daemonClient) Resume(ctx context.Context, k domain.ProcessKey) error {
+	return transport.Call(ctx, c.socket, "resume", app.ControlParams{PID: k.PID, Start: k.Start}, nil)
 }
 
 func printStatus(w io.Writer, st app.StatusResult) {
