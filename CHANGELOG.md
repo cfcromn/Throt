@@ -6,6 +6,23 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+## [0.6.0-rc.1] - 2026-10-28
+
+Cooperative admission, per-agent accounting, Linux PSI, a richer TUI, and real-binary end-to-end tests.
+
+### Added
+- `internal/e2e`: end-to-end tests of the built `throtd` and `throt` binaries against real processes (observe, manual pause/resume, crash recovery, graceful shutdown, enforce scheduler and reload, `throt mcp`). They run on Linux CI with `THROT_E2E=1`, skip outside CI or a container, and use a uniquely named stub agent through a custom adapter.
+- Linux PSI (`/proc/pressure`, or the limiting cgroup's `memory.pressure`/`cpu.pressure`) as pressure signals: memory some ≥ 10% → elevated, full ≥ 5% → high, full ≥ 20% → critical; I/O full ≥ 20% → elevated, ≥ 50% → high; CPU some ≥ 50% → elevated. Memory PSI takes precedence over memory used, like the macOS verdict. Shown in `throt status` and the TUI system line when available.
+- `throt stats` (and `--json`), the `stats` protocol method, and the `throt_stats` MCP tool: per-agent CPU time, peak memory, heavy jobs started, and time queued by the scheduler since throtd started, with all-agent and unattributed totals. Kept in memory for at most 256 agent instances.
+- `throt run [--timeout D] [--no-wait] -- CMD`: cooperative admission control. Waits until throtd reports capacity for a heavy job (the `throt_capacity` verdict, for the nearest agent ancestor), then execs the command in place. Advisory and fail-open: it never pauses anything, runs immediately when throtd is unreachable, and reserves nothing, so two runs checking at once can both start.
+- `throt completion bash|zsh|fish` prints a shell completion script; PIDs complete after `pause`, `resume`, and `explain`.
+- TUI: sparklines of the last 60 polls for CPU, memory, swap growth and latency; a plain-words line naming the signal behind the pressure level; an agent drilldown (`enter` on an agent) listing its heavy workloads with their state, where `p`/`r` work too; `s` sorts each table by CPU, memory or name.
+
+### Changed
+- Memory used still raises pressure to critical (≥ 95%) while a kernel memory signal (macOS verdict or Linux PSI) is present, so memory exhaustion without swap is never hidden.
+- `throt run` waits at most 5m by default (`--timeout 0` waits forever).
+- Linux memory PSI is read from the same cgroup level as the memory figures (least headroom).
+
 ## [0.5.0-rc.1] - 2026-10-28
 
 Accurate pressure everywhere: cgroup-aware Linux, the macOS kernel verdict, and a CPU policy driven by benchmark evidence. Also hardening: fuzzing, a patched toolchain, and a pinned supply chain.

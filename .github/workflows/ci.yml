@@ -34,6 +34,24 @@ jobs:
       - name: Build
         run: go build ./...
 
+  e2e:
+    # Real throtd and throt binaries against real processes. Hosted runners
+    # are disposable VMs, so the daemon's process control is safe here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: End-to-end tests
+        # Build the test binary and run it directly: under `go test`, the
+        # `go` process (itself a heavy build) would be an ancestor of every
+        # job and fold them into one workload.
+        run: |
+          go test -c -o "$RUNNER_TEMP/e2e.test" ./internal/e2e
+          THROT_E2E=1 "$RUNNER_TEMP/e2e.test" -test.v -test.count=1
+
   vulncheck:
     runs-on: ubuntu-latest
     steps:

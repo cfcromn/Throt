@@ -21,12 +21,17 @@ type sig struct {
 	swapMiB float64 // absolute swap used
 	lat     time.Duration
 	kp      domain.MemoryPressure // kernel verdict; zero means absent
-	missing []domain.Metric
+	// PSI readings; nil means absent.
+	memStall, ioStall, cpuStall *domain.Stall
+	missing                     []domain.Metric
 }
 
 func (g sig) sample() domain.HostSample {
 	const total = 1000_000
 	return domain.HostSample{
+		MemoryStall:    g.memStall,
+		IOStall:        g.ioStall,
+		CPUStall:       g.cpuStall,
 		Time:           epoch.Add(time.Duration(g.sec * float64(time.Second))),
 		CPUUsage:       g.cpu,
 		Load1:          g.load,

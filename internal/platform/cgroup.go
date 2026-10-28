@@ -272,6 +272,8 @@ func parseMemoryStatInactiveFile(r io.Reader) (uint64, error) {
 // the usage counted against it, in bytes.
 type cgroupLevel struct {
 	Limit, Used uint64
+	// Dir is the cgroup directory the level was read from.
+	Dir string
 }
 
 // headroom is how much more the level can use, floored at 0.
@@ -414,7 +416,7 @@ func readLevels(dirs []string, limitFile string, used func(dir string) (uint64, 
 		if err != nil {
 			return nil, err
 		}
-		levels = append(levels, cgroupLevel{Limit: limit, Used: u})
+		levels = append(levels, cgroupLevel{Limit: limit, Used: u, Dir: d})
 	}
 	return levels, nil
 }
@@ -449,6 +451,17 @@ func memoryUsed(dir string) (uint64, error) {
 // applyCgroupMemory replaces the host memory figures in out with those of
 // the memory.max level among dirs with the least headroom. It leaves out
 // unchanged without a limit or when a limited level's usage cannot be read.
+// memoryPressureDir is the level whose memory.pressure to read: the same
+// least-headroom level the memory figures use (memory.pressure is
+// hierarchical, so it includes that level's children), or "" for the host.
+func memoryPressureDir(dirs []string) string {
+	levels, err := readLevels(dirs, "memory.max", memoryUsed)
+	if lvl, ok := leastHeadroom(levels); err == nil && ok {
+		return lvl.Dir
+	}
+	return ""
+}
+
 func applyCgroupMemory(out *domain.HostSample, dirs []string) {
 	levels, err := readLevels(dirs, "memory.max", memoryUsed)
 	if lvl, ok := leastHeadroom(levels); err == nil && ok {

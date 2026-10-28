@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
+	"github.com/cfcromn/Throt/internal/capacity"
 	"github.com/cfcromn/Throt/internal/domain"
-	"github.com/cfcromn/Throt/internal/scheduler"
+	"github.com/cfcromn/Throt/internal/stats"
 )
 
 const (
@@ -70,6 +72,16 @@ func toolList() []tool {
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":200,"default":20,` +
 				`"description":"How many of the newest events to return."}},"additionalProperties":false}`),
 			Annotations: readOnly("Throt events"),
+		},
+		{
+			Name:  "throt_stats",
+			Title: "Throt usage stats",
+			Description: "Read-only per-agent resource accounting since throtd started: for each coding agent instance " +
+				"(label and PID), CPU time used by it and its child processes, peak memory, heavy jobs started, and time its " +
+				"heavy jobs spent queued by the scheduler, most CPU time first, plus all-agent and unattributed totals. " +
+				"Answers which agent cost the machine the most.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			Annotations: readOnly("Throt usage stats"),
 		},
 	}
 }
@@ -131,6 +143,12 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 			return errorResult(err.Error()), nil
 		}
 		return s.capacity(ctx, a.Agent), nil
+	case "throt_stats":
+		var a struct{}
+		if err := decodeArgs(p.Arguments, &a); err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return s.stats(ctx), nil
 	case "throt_events":
 		var a struct {
 			Limit *int `json:"limit"`
@@ -208,13 +226,6 @@ type schedulerView struct {
 	Queued     int    `json:"queued"`
 }
 
-// Workload states, matching `throt status`.
-const (
-	stateRunning = "running"
-	statePaused  = "PAUSED"
-	stateQueued  = "QUEUED"
-)
-
 func newStatusView(st app.StatusResult) statusView {
 	v := statusView{
 		Pressure:       st.Pressure.String(),
@@ -248,7 +259,7 @@ func newStatusView(st app.StatusResult) statusView {
 			Agent: a.Agent, PID: a.Key.PID, CPUPercent: percent(a.CPU), Memory: bytesHuman(a.RSS), Children: a.Children,
 		})
 	}
-	states := workloadStates(st)
+	states := capacity.WorkloadStates(st)
 	for _, h := range st.Heavy {
 		owner := h.Owner
 		if owner == "" {
@@ -260,26 +271,6 @@ func newStatusView(st app.StatusResult) statusView {
 		})
 	}
 	return v
-}
-
-// workloadStates maps every heavy workload to running, PAUSED, or QUEUED.
-// Scheduler queueing wins over a plain pause, as in `throt status`.
-func workloadStates(st app.StatusResult) map[domain.ProcessKey]string {
-	states := make(map[domain.ProcessKey]string, len(st.Heavy))
-	for _, h := range st.Heavy {
-		states[h.Key] = stateRunning
-	}
-	for _, p := range st.Paused {
-		if _, ok := states[p.Key]; ok {
-			states[p.Key] = statePaused
-		}
-	}
-	for _, k := range st.Scheduler.Queued {
-		if _, ok := states[k]; ok {
-			states[k] = stateQueued
-		}
-	}
-	return states
 }
 
 func (s *Server) status(ctx context.Context) toolResult {
@@ -322,104 +313,6 @@ func (s *Server) status(ctx context.Context) toolResult {
 	return textResult(strings.TrimSuffix(b.String(), "\n"), v)
 }
 
-// capacityView is the structured content of throt_capacity.
-type capacityView struct {
-	OKToStart      bool   `json:"ok_to_start"`
-	Reason         string `json:"reason"`
-	Pressure       string `json:"pressure"`
-	PressureReason string `json:"pressure_reason,omitempty"`
-	SchedulerMode  string `json:"scheduler_mode"`
-	RunningHeavy   int    `json:"running_heavy"`
-	HeavyLimit     int    `json:"heavy_limit"`
-	Agent          string `json:"agent,omitempty"`
-	// AgentRunningHeavy is set only when an agent was requested.
-	AgentRunningHeavy *int   `json:"agent_running_heavy,omitempty"`
-	Suggestion        string `json:"suggestion"`
-}
-
-// assessCapacity answers "should I start a heavy job now?". It is advisory
-// and fails open: missing data never blocks work.
-func assessCapacity(st app.StatusResult, agent string) capacityView {
-	states := workloadStates(st)
-	running, agentRunning := 0, 0
-	for _, h := range st.Heavy {
-		if states[h.Key] != stateRunning {
-			continue
-		}
-		running++
-		if agent != "" && h.Owner == agent {
-			agentRunning++
-		}
-	}
-	mode := st.Scheduler.Mode
-	if mode == "" {
-		mode = scheduler.ModeOff
-	}
-	c := capacityView{
-		Pressure:       st.Pressure.String(),
-		PressureReason: st.Reason,
-		SchedulerMode:  string(mode),
-		RunningHeavy:   running,
-		HeavyLimit:     st.Scheduler.HeavyLimit,
-		Agent:          agent,
-	}
-	if agent != "" {
-		c.AgentRunningHeavy = &agentRunning
-	}
-	pressure := c.Pressure
-	if st.Reason != "" {
-		pressure += " (" + st.Reason + ")"
-	}
-	switch {
-	case st.Pressure >= domain.PressureHigh:
-		c.Reason = "pressure is " + pressure
-		c.Suggestion = "pressure is " + pressure + "; wait or run a lighter task"
-	case mode != scheduler.ModeOff && agent != "" && st.Scheduler.PerAgentLimit > 0 && agentRunning >= st.Scheduler.PerAgentLimit:
-		c.Reason = fmt.Sprintf("%s already runs %d heavy jobs (per-agent limit %d)", agent, agentRunning, st.Scheduler.PerAgentLimit)
-		c.Suggestion = "wait for one of your heavy jobs to finish; a new one would wait for your budget"
-	case mode != scheduler.ModeOff && len(st.Scheduler.Queued) > 0:
-		c.Reason = fmt.Sprintf("%d heavy jobs are already queued", len(st.Scheduler.Queued))
-		c.Suggestion = "new heavy jobs queue behind waiting ones; wait or run a lighter task"
-	case mode != scheduler.ModeOff && running >= st.Scheduler.HeavyLimit:
-		c.Reason = fmt.Sprintf("all heavy slots are in use (%d running, limit %d)", running, st.Scheduler.HeavyLimit)
-		if mode == scheduler.ModeEnforce {
-			c.Suggestion = "a new heavy job would be queued (paused) by throtd until a slot frees; wait for a running heavy job to finish or run a lighter task"
-		} else {
-			c.Suggestion = "wait for a running heavy job to finish or run a lighter task"
-		}
-	case st.Pressure == domain.PressureUnknown:
-		c.OKToStart = true
-		c.Reason = "pressure is unknown (no stable sample yet); allowed, but capacity is unverified"
-		c.Suggestion = "ok to start; check again shortly if the job is large"
-	case st.Pressure == domain.PressureElevated:
-		c.OKToStart = true
-		c.Reason = "pressure is " + pressure + " but below high"
-		c.Suggestion = "ok to start one heavy job; avoid starting several at once"
-	default:
-		c.OKToStart = true
-		c.Reason = "pressure is " + pressure
-		if mode == scheduler.ModeOff {
-			c.Reason += "; scheduler is off, so no heavy limit applies"
-		} else {
-			c.Reason += fmt.Sprintf("; %d of %d heavy slots in use", running, st.Scheduler.HeavyLimit)
-		}
-		c.Suggestion = "ok to start"
-	}
-	if agent != "" && !hasAgent(st, agent) {
-		c.Suggestion += fmt.Sprintf(" (note: agent %q is not currently detected; see throt_status for labels)", agent)
-	}
-	return c
-}
-
-func hasAgent(st app.StatusResult, label string) bool {
-	for _, a := range st.Agents {
-		if a.Agent == label {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Server) capacity(ctx context.Context, agent string) toolResult {
 	st, err := s.client.Status(ctx)
 	if err != nil {
@@ -434,7 +327,7 @@ func (s *Server) capacity(ctx context.Context, agent string) toolResult {
 			}
 		}
 	}
-	c := assessCapacity(st, agent)
+	c := capacity.Assess(st, agent)
 	verdict := "NO"
 	if c.OKToStart {
 		verdict = "YES"
@@ -469,6 +362,84 @@ func (s *Server) events(ctx context.Context, limit int) toolResult {
 		lines = append(lines, line)
 	}
 	return textResult(strings.Join(lines, "\n"), map[string]any{"events": events})
+}
+
+// statsView is the structured content of throt_stats.
+type statsView struct {
+	Since        string         `json:"since,omitempty"`
+	Agents       []statsRowView `json:"agents"`
+	Total        statsRowView   `json:"total"`
+	Unattributed statsRowView   `json:"unattributed"`
+}
+
+type statsRowView struct {
+	Agent         string  `json:"agent"`
+	PID           int     `json:"pid,omitempty"`
+	CPUSeconds    float64 `json:"cpu_seconds"`
+	PeakMemory    string  `json:"peak_memory"`
+	HeavyJobs     int     `json:"heavy_jobs"`
+	QueuedSeconds float64 `json:"queued_seconds"`
+	ActiveSeconds float64 `json:"active_seconds"`
+}
+
+func newStatsRow(label string, pid int, r stats.Row) statsRowView {
+	round := func(s float64) float64 { return math.Round(s*10) / 10 }
+	return statsRowView{
+		Agent: label, PID: pid, CPUSeconds: round(r.CPUSeconds), PeakMemory: bytesHuman(r.PeakRSS),
+		HeavyJobs: r.HeavyStarted, QueuedSeconds: round(r.QueuedSeconds), ActiveSeconds: round(r.ActiveFor().Seconds()),
+	}
+}
+
+func newStatsView(r app.StatsResult) statsView {
+	v := statsView{
+		Agents:       make([]statsRowView, 0, len(r.Agents)),
+		Total:        newStatsRow("all agents", 0, r.Total),
+		Unattributed: newStatsRow("unattributed", 0, r.Unattributed),
+	}
+	if !r.Since.IsZero() {
+		v.Since = r.Since.Format(time.RFC3339)
+	}
+	for _, a := range r.Agents {
+		v.Agents = append(v.Agents, newStatsRow(a.Agent, a.Process.PID, a))
+	}
+	return v
+}
+
+func (s *Server) stats(ctx context.Context) toolResult {
+	r, err := s.client.Stats(ctx)
+	if err != nil {
+		return daemonDown(err)
+	}
+	v := newStatsView(r)
+	if v.Since == "" {
+		return textResult("no samples yet", v)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "since %s (in memory; resets when throtd restarts)\n", v.Since)
+	line := func(r statsRowView) {
+		name := r.Agent
+		if r.PID != 0 {
+			name += fmt.Sprintf(" pid %d", r.PID)
+		}
+		fmt.Fprintf(&b, "  %s: cpu %s, peak mem %s, %d heavy jobs, queued %s, active %s\n", name,
+			secs(r.CPUSeconds), r.PeakMemory, r.HeavyJobs, secs(r.QueuedSeconds), secs(r.ActiveSeconds))
+	}
+	fmt.Fprintf(&b, "agents (%d, most cpu first):\n", len(v.Agents))
+	for i, a := range v.Agents {
+		if i == maxTextRows {
+			fmt.Fprintf(&b, "  ... and %d more\n", len(v.Agents)-maxTextRows)
+			break
+		}
+		line(a)
+	}
+	b.WriteString("totals:\n")
+	line(v.Total)
+	line(v.Unattributed)
+	return textResult(strings.TrimSuffix(b.String(), "\n"), v)
+}
+
+func secs(s float64) string {
+	return time.Duration(s * float64(time.Second)).Round(time.Second).String()
 }
 
 func percent(cores float64) int { return int(cores*100 + 0.5) }

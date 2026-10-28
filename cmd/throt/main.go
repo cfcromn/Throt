@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -33,15 +34,21 @@ const usage = `Usage: throt [flags] [command]
 Commands:
   top        open the terminal UI (the default with no command)
   status     show host resources and pressure
+  stats      show per-agent resource usage since throtd started; --json for JSON
   ping       check that throtd is reachable
   events     print recent daemon events as JSON lines; -f keeps printing new ones
   explain PID
              explain why a heavy workload is running, paused, or queued
   pause PID  pause a heavy workload (SIGSTOP) shown in 'status'
   resume PID resume a paused workload (SIGCONT)
+  run [--timeout D] [--no-wait] -- CMD [ARGS...]
+             wait for heavy-job capacity, then exec CMD (advisory; runs
+             immediately if throtd is down)
   reload     make throtd re-read its config file
   doctor     print a sanitized diagnostic report (safe to share)
   mcp        run a read-only MCP server on stdio for coding agents
+  completion bash|zsh|fish
+             print a shell completion script
   version    print the client version
 
 Flags:
@@ -50,6 +57,10 @@ Flags:
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "throt:", err)
+		var ee exitError
+		if errors.As(err, &ee) {
+			os.Exit(ee.code)
+		}
 		os.Exit(1)
 	}
 }
@@ -67,9 +78,23 @@ func run(args []string) error {
 	if fs.NArg() >= 1 {
 		cmd = fs.Arg(0)
 	}
+	// 'run' takes its own flags and passes everything else to the command.
+	if cmd == "run" {
+		return runCommand(fs.Args()[1:], *cfgPath)
+	}
 	// 'events' takes its own flags after the command: throt events -f.
-	followEvents := false
-	if cmd == "events" {
+	followEvents, statsJSON := false, false
+	switch {
+	case cmd == "stats":
+		sfs := flag.NewFlagSet("throt stats", flag.ContinueOnError)
+		sfs.BoolVar(&statsJSON, "json", false, "print the stats as JSON")
+		if err := sfs.Parse(fs.Args()[1:]); err != nil {
+			return err
+		}
+		if sfs.NArg() > 0 {
+			return fmt.Errorf("usage: throt stats [--json]")
+		}
+	case cmd == "events":
 		efs := flag.NewFlagSet("throt events", flag.ContinueOnError)
 		efs.BoolVar(&followEvents, "f", false, "keep printing new events until interrupted")
 		efs.IntVar(limit, "n", *limit, "number of recent events to print first")
@@ -79,7 +104,7 @@ func run(args []string) error {
 		if efs.NArg() > 0 {
 			return fmt.Errorf("usage: throt events [-f] [-n N]")
 		}
-	} else if fs.NArg() > 2 {
+	case fs.NArg() > 2:
 		fs.Usage()
 		return fmt.Errorf("too many arguments")
 	}
@@ -90,6 +115,9 @@ func run(args []string) error {
 
 	if cmd == "doctor" {
 		return runDoctor(*cfgPath)
+	}
+	if cmd == "completion" {
+		return printCompletion(os.Stdout, fs.Arg(1))
 	}
 
 	cfg, err := config.Load(*cfgPath)
@@ -135,6 +163,17 @@ func run(args []string) error {
 			return err
 		}
 		printStatus(os.Stdout, st)
+	case "stats":
+		var r app.StatsResult
+		if err := transport.Call(ctx, cfg.SocketPath, "stats", nil, &r); err != nil {
+			return err
+		}
+		if statsJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(r)
+		}
+		printStats(os.Stdout, r, time.Now())
 	case "pause", "resume":
 		pid, err := strconv.Atoi(fs.Arg(1))
 		if err != nil {
@@ -195,6 +234,12 @@ func (c daemonClient) Events(ctx context.Context, limit int) ([]domain.Event, er
 	return events, err
 }
 
+func (c daemonClient) Stats(ctx context.Context) (app.StatsResult, error) {
+	var r app.StatsResult
+	err := transport.Call(ctx, c.socket, "stats", nil, &r)
+	return r, err
+}
+
 func printReload(w io.Writer, r app.ReloadResult) {
 	if len(r.Changed) == 0 {
 		fmt.Fprintln(w, "reloaded: no changes applied")
@@ -252,6 +297,9 @@ func printStatus(w io.Writer, st app.StatusResult) {
 	fmt.Fprintf(w, "MEM       %s\n", mem)
 	fmt.Fprintf(w, "LATENCY   %s\n", na(domain.MetricLatency, h.Latency.Round(time.Millisecond).String()))
 	fmt.Fprintf(w, "SWAP      %s\n", na(domain.MetricSwap, fmt.Sprintf("%s used of %s", gib(h.SwapUsed), gib(h.SwapTotal))))
+	if psi := psiDetail(*h); psi != "" {
+		fmt.Fprintf(w, "PSI       %s\n", psi)
+	}
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "\nAGENTS\nAGENT\tPID\tCPU\tMEM\tCHILDREN")
@@ -294,6 +342,25 @@ func printStatus(w io.Writer, st app.StatusResult) {
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.0f%%\t%s\t%s\n", owner, h.Key.PID, h.Name, h.Class, h.CPU*100, gib(h.RSS), state)
 	}
 	tw.Flush()
+}
+
+// psiDetail renders the Linux PSI readings the sample carries, as
+// "mem 3% (full 1%)  io 0% (full 0%)  cpu 12%", or "" when it has none.
+// The pressure policy uses some and full for memory, full for I/O and some
+// for CPU.
+func psiDetail(h domain.HostSample) string {
+	var parts []string
+	pct := func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) }
+	if st, ok := h.StallFor(domain.MetricMemoryStall); ok {
+		parts = append(parts, "mem "+pct(st.Some)+" (full "+pct(st.Full)+")")
+	}
+	if st, ok := h.StallFor(domain.MetricIOStall); ok {
+		parts = append(parts, "io "+pct(st.Some)+" (full "+pct(st.Full)+")")
+	}
+	if st, ok := h.StallFor(domain.MetricCPUStall); ok {
+		parts = append(parts, "cpu "+pct(st.Some))
+	}
+	return strings.Join(parts, "  ")
 }
 
 func gib(b uint64) string {
