@@ -1,12 +1,15 @@
 // Package bench holds Throt's real-kernel benchmark: real processes, the real
-// kernel scheduler and the real daemon. It only runs with THROT_BENCH=1 inside
-// a Linux container (see `make bench`), because an enforce-mode daemon pauses
-// any build attributed to an agent named claude.
+// kernel scheduler and the real daemon. It only runs with THROT_BENCH=1 in a
+// disposable environment: a Linux container (see `make bench`), or a hosted
+// CI runner (CI=true) on Linux or macOS (.github/workflows/bench.yml),
+// because an enforce-mode daemon pauses any build attributed to an agent
+// named claude.
 package bench
 
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -159,6 +162,7 @@ const (
 	sampleInterval = 500 * time.Millisecond
 	jobCPU         = 5 * time.Second
 	runTimeout     = 10 * time.Minute
+	defaultReps    = 3
 )
 
 // scenario is a set of job arrivals, as offsets from the first launch.
@@ -167,15 +171,67 @@ type scenario struct {
 	arrivals []time.Duration
 }
 
-func scenarios() []scenario {
-	burst := make([]time.Duration, 8)
-	stagger := make([]time.Duration, 10)
+// sizing is the contention for one machine.
+type sizing struct {
+	cpus       int // CPUs the jobs compete for
+	burst      int // jobs launched at once
+	stagger    int // jobs in the staggered stream
+	every      time.Duration
+	heavyLimit int // Throt's scheduler.heavy_limit
+	reps       int
+}
+
+// sizeFor picks the contention. In a container (make bench, --cpus=2) it
+// keeps the fixed scenarios of the published results: NumCPU there is the
+// host's, not the quota. On a CI runner, which has no CPU limit, it scales
+// to the machine: 4x NumCPU jobs at once, and a stream of as many whose
+// arrival rate asks for about twice the CPUs, so both oversubscribe.
+// THROT_BENCH_JOBS and THROT_BENCH_REPS override the job count of both
+// scenarios and the repetitions, for a quick run.
+func sizeFor(container bool) (sizing, error) {
+	z := sizing{cpus: 2, burst: 8, stagger: 10, every: time.Second, heavyLimit: 2, reps: defaultReps}
+	if !container {
+		n := runtime.NumCPU()
+		z = sizing{cpus: n, burst: 4 * n, stagger: 4 * n, heavyLimit: max(2, n/2), reps: defaultReps}
+		z.every = (jobCPU / time.Duration(2*n)).Round(10 * time.Millisecond)
+	}
+	positive := func(env string) (int, error) {
+		v := os.Getenv(env)
+		if v == "" {
+			return 0, nil
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return 0, fmt.Errorf("%s=%q: want a positive integer", env, v)
+		}
+		return n, nil
+	}
+	jobs, err := positive("THROT_BENCH_JOBS")
+	if err != nil {
+		return z, err
+	}
+	if jobs > 0 {
+		z.burst, z.stagger = jobs, jobs
+	}
+	reps, err := positive("THROT_BENCH_REPS")
+	if err != nil {
+		return z, err
+	}
+	if reps > 0 {
+		z.reps = reps
+	}
+	return z, nil
+}
+
+func scenarios(z sizing) []scenario {
+	burst := make([]time.Duration, z.burst)
+	stagger := make([]time.Duration, z.stagger)
 	for i := range stagger {
-		stagger[i] = time.Duration(i) * time.Second
+		stagger[i] = time.Duration(i) * z.every
 	}
 	return []scenario{
-		{"8 at once", burst},
-		{"10 staggered 1s", stagger},
+		{fmt.Sprintf("%d at once", z.burst), burst},
+		{fmt.Sprintf("%d staggered %s", z.stagger, z.every), stagger},
 	}
 }
 
@@ -190,11 +246,19 @@ type result struct {
 
 func TestBench(t *testing.T) {
 	if os.Getenv("THROT_BENCH") != "1" {
-		t.Skip("set THROT_BENCH=1 and run inside a container (make bench)")
+		t.Skip("set THROT_BENCH=1 and run inside a container (make bench) or on a CI runner (bench.yml)")
 	}
-	if runtime.GOOS != "linux" || !inContainer() {
-		// An enforce-mode daemon pauses builds of any process named claude.
-		t.Skip("the benchmark only runs in a Linux container, where the PID namespace is isolated (make bench)")
+	// An enforce-mode daemon pauses builds of any process named claude, so
+	// only a disposable environment qualifies: a Linux container, whose PID
+	// namespace is isolated, or a hosted CI runner, which is a throwaway VM.
+	container := runtime.GOOS == "linux" && inContainer()
+	ci := os.Getenv("CI") == "true" && (runtime.GOOS == "linux" || runtime.GOOS == "darwin")
+	if !container && !ci {
+		t.Skip("the benchmark only runs in a Linux container (make bench) or on a Linux or macOS CI runner with CI=true (gh workflow run bench.yml)")
+	}
+	z, err := sizeFor(container)
+	if err != nil {
+		t.Fatal(err)
 	}
 	bin := buildHelpers(t)
 	iters := calibrate(t, bin)
@@ -202,27 +266,80 @@ func TestBench(t *testing.T) {
 	work := uint64(float64(iters) * jobCPU.Seconds())
 
 	var table strings.Builder
-	table.WriteString("\n| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Peak running | Interventions | Max pressure |\n")
-	table.WriteString("|---|---|---|---|---|---|---|---|---|\n")
-	for _, sc := range scenarios() {
+	fmt.Fprintf(&table, "\n%s/%s, %s, %d CPUs, heavy_limit %d, %s of CPU per job, medians of %d runs\n\n",
+		runtime.GOOS, runtime.GOARCH, kernel(), z.cpus, z.heavyLimit, jobCPU, z.reps)
+	table.WriteString("| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Makespan range | Peak running | Interventions | Max pressure |\n")
+	table.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
+	for _, sc := range scenarios(z) {
 		for _, mode := range []string{"off", "enforce"} {
 			t.Run(sc.name+"/"+mode, func(t *testing.T) {
-				r := runScenario(t, bin, sc, mode, work)
+				var runs []result
+				for i := range z.reps {
+					t.Run("run"+strconv.Itoa(i+1), func(t *testing.T) {
+						runs = append(runs, runScenario(t, bin, sc, mode, work, z.heavyLimit))
+					})
+				}
+				if len(runs) != z.reps {
+					t.Fatalf("%d of %d runs finished", len(runs), z.reps)
+				}
+				r := medianResult(runs)
 				label := "baseline"
 				if mode == "enforce" {
 					label = "Throt"
 				}
-				fmt.Fprintf(&table, "| %s | %s | %s | %s | %s | %s | %d | %d | %s |\n",
-					sc.name, label, ms(r.p50), ms(r.p95), ms(r.p99), r.makespan.Round(100*time.Millisecond),
+				lo := slices.MinFunc(runs, byMakespan).makespan
+				hi := slices.MaxFunc(runs, byMakespan).makespan
+				fmt.Fprintf(&table, "| %s | %s | %s | %s | %s | %s | %s–%s | %d | %d | %s |\n",
+					sc.name, label, ms(r.p50), ms(r.p95), ms(r.p99), secs(r.makespan), secs(lo), secs(hi),
 					r.peak, r.interventions, r.maxPressure)
 			})
 		}
 	}
 	t.Log(table.String())
+	if out := os.Getenv("THROT_BENCH_OUT"); out != "" {
+		if err := os.WriteFile(out, []byte(table.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func byMakespan(a, b result) int { return cmp.Compare(a.makespan, b.makespan) }
+
+// medianResult takes the median of each measurement separately, so one
+// row's columns may come from different runs.
+func medianResult(runs []result) result {
+	med := func(f func(result) int64) int64 {
+		v := make([]int64, len(runs))
+		for i, r := range runs {
+			v[i] = f(r)
+		}
+		slices.Sort(v)
+		return v[len(v)/2]
+	}
+	return result{
+		p50:           time.Duration(med(func(r result) int64 { return int64(r.p50) })),
+		p95:           time.Duration(med(func(r result) int64 { return int64(r.p95) })),
+		p99:           time.Duration(med(func(r result) int64 { return int64(r.p99) })),
+		makespan:      time.Duration(med(func(r result) int64 { return int64(r.makespan) })),
+		peak:          int(med(func(r result) int64 { return int64(r.peak) })),
+		interventions: int(med(func(r result) int64 { return int64(r.interventions) })),
+		maxPressure:   domain.PressureLevel(med(func(r result) int64 { return int64(r.maxPressure) })),
+	}
 }
 
 func ms(d time.Duration) string {
 	return strconv.FormatFloat(float64(d)/float64(time.Millisecond), 'f', 1, 64) + "ms"
+}
+
+func secs(d time.Duration) string { return d.Round(100 * time.Millisecond).String() }
+
+// kernel is `uname -sr`, for the results header.
+func kernel() string {
+	out, err := exec.Command("uname", "-sr").Output()
+	if err != nil {
+		return "unknown kernel"
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func inContainer() bool {
@@ -308,9 +425,14 @@ func startGroup(t *testing.T, cmd *exec.Cmd) (stdin io.WriteCloser, stdout io.Re
 
 // startDaemon runs throtd in process with the real platform adapters and a
 // private socket, and stops it at cleanup.
-func startDaemon(t *testing.T, mode string) string {
+func startDaemon(t *testing.T, mode string, heavyLimit int) string {
 	t.Helper()
-	runtimeDir, err := os.MkdirTemp("", "throtbench")
+	// macOS limits socket paths to 104 bytes, and its $TMPDIR is long.
+	base := ""
+	if runtime.GOOS == "darwin" {
+		base = "/tmp"
+	}
+	runtimeDir, err := os.MkdirTemp(base, "throtbench")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +443,7 @@ func startDaemon(t *testing.T, mode string) string {
 	cfg.SocketPath = config.DefaultSocketPath()
 	cfg.SampleInterval = config.Duration(sampleInterval)
 	cfg.Scheduler.Mode = mode
-	cfg.Scheduler.HeavyLimit = 2
+	cfg.Scheduler.HeavyLimit = heavyLimit
 	cfg.Scheduler.ResumeCooldown = config.Duration(time.Second)
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -397,7 +519,8 @@ func (j *jobTracker) read(r io.Reader, want int) {
 	}
 }
 
-// running counts live jobs that are not stopped, read from /proc.
+// running counts live jobs that are not stopped: from /proc on Linux, from
+// ps elsewhere.
 func (j *jobTracker) running() int {
 	j.mu.Lock()
 	pids := make([]int, 0, len(j.live))
@@ -405,6 +528,9 @@ func (j *jobTracker) running() int {
 		pids = append(pids, pid)
 	}
 	j.mu.Unlock()
+	if runtime.GOOS != "linux" {
+		return runningPS(pids)
+	}
 	n := 0
 	for _, pid := range pids {
 		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
@@ -423,8 +549,34 @@ func (j *jobTracker) running() int {
 	return n
 }
 
-func runScenario(t *testing.T, bin string, sc scenario, mode string, work uint64) result {
-	socket := startDaemon(t, mode)
+// runningPS counts the pids that ps reports as a job in a running or
+// sleeping state (R, S, I or U on macOS; T is stopped, Z has exited). ps
+// exits non-zero when a pid is already gone, so its output is used anyway.
+func runningPS(pids []int) int {
+	if len(pids) == 0 {
+		return 0
+	}
+	list := make([]string, len(pids))
+	for i, pid := range pids {
+		list[i] = strconv.Itoa(pid)
+	}
+	out, _ := exec.Command("ps", "-o", "state=,comm=", "-p", strings.Join(list, ",")).Output()
+	n := 0
+	for line := range strings.Lines(string(out)) {
+		f := strings.Fields(line)
+		if len(f) < 2 || filepath.Base(f[len(f)-1]) != "make" {
+			continue
+		}
+		switch f[0][0] {
+		case 'R', 'S', 'I', 'U', 'D':
+			n++
+		}
+	}
+	return n
+}
+
+func runScenario(t *testing.T, bin string, sc scenario, mode string, work uint64, heavyLimit int) result {
+	socket := startDaemon(t, mode, heavyLimit)
 	// The scheduler never queues while pressure is unknown, so wait out the
 	// warm-up before any job starts.
 	waitFor(t, "known pressure", func() bool {
