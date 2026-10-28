@@ -52,6 +52,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - A heavy job first seen unattributed (its agent missing from one sample) is credited to its agent in `throt stats` once attribution appears, instead of staying unattributed.
 - After a sampling gap longer than the pressure window, recovery waits the full dwell again instead of de-escalating on the first sample.
 - A pause checks every member's live uid before its first signal, so a stale sampled uid (Linux) is refused with nothing signaled instead of stopping and rolling back the top process every round. The shutdown event counts only processes actually continued. Resuming an orphan whose top process was resumed by hand continues its stopped children. `would_queue` is cleared on a tick whose process sample fails.
+- Config errors locate a bad duration by line, column and key (before: no location, or line 1, column 1 for a non-string), and an unknown key inside a section spelled in other case, such as `"Scheduler"`, instead of blaming the section.
 
 ## [0.8.0-rc.1] - 2026-10-28
 
