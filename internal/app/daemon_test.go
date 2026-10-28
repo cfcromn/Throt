@@ -21,8 +21,9 @@ type fakeSampler struct{}
 func (fakeSampler) SampleProcesses(context.Context) ([]domain.ProcessSample, error) {
 	start := time.Unix(1, 0)
 	return []domain.ProcessSample{
-		{PID: 10, PPID: 1, Start: start, Name: "claude"},
-		{PID: 11, PPID: 10, Start: start, Name: "go", RSS: 1 << 20},
+		{PID: 10, PPID: 1, UID: uint32(os.Getuid()), Start: start, Name: "claude"},
+		{PID: 11, PPID: 10, UID: uint32(os.Getuid()), Start: start, Name: "go", RSS: 1 << 20},
+		{PID: 12, PPID: 1, UID: uint32(os.Getuid()) + 1, Start: start, Name: "claude"}, // another user's
 	}, nil
 }
 

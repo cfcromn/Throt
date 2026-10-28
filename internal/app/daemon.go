@@ -92,12 +92,13 @@ type Daemon struct {
 // NewDaemon returns a daemon for cfg using the given samplers, logging to log.
 func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, log *slog.Logger) *Daemon {
 	return &Daemon{
-		cfg:      cfg,
-		log:      log,
-		events:   domain.NewEventLog(cfg.EventHistory),
-		host:     host,
-		procs:    procs,
-		graph:    process.NewGraph(agent.DefaultAdapters(), process.WithCPUCount(runtime.NumCPU())),
+		cfg:    cfg,
+		log:    log,
+		events: domain.NewEventLog(cfg.EventHistory),
+		host:   host,
+		procs:  procs,
+		graph: process.NewGraph(agent.DefaultAdapters(),
+			process.WithCPUCount(runtime.NumCPU()), process.WithAgentUID(uint32(os.Getuid()))),
 		engine:   pressure.New(pressure.DefaultWindow, pressure.DefaultThresholds()),
 		failing:  map[string]bool{},
 		failures: map[string]string{},
@@ -145,11 +146,17 @@ func (d *Daemon) Run(ctx context.Context) error {
 // window and pressure falls back to unknown instead of freezing.
 var allMissing = []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap}
 
+// sampleTimeout bounds one sampling round.
+const sampleTimeout = 5 * time.Second
+
 // tick takes one host and process sample and publishes the result.
-func (d *Daemon) tick(ctx context.Context) {
+func (d *Daemon) tick(parent context.Context) {
+	// Bound each round so a hung sampler (e.g. ps) cannot stall updates.
+	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
+	defer cancel()
 	host, herr := d.host.SampleHost(ctx)
 	procs, perr := d.procs.SampleProcesses(ctx)
-	if ctx.Err() != nil {
+	if parent.Err() != nil {
 		return // shutting down; partial samples are meaningless
 	}
 	now := time.Now()

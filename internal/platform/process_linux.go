@@ -17,21 +17,29 @@ import (
 // NewProcessSampler returns a process sampler for the current OS. On Linux
 // it reads /proc/<pid>/stat and /proc/<pid>/status for every numeric entry
 // in /proc.
-func NewProcessSampler() ProcessSampler { return linuxProcessSampler{} }
+func NewProcessSampler() ProcessSampler { return &linuxProcessSampler{} }
 
-type linuxProcessSampler struct{}
+// linuxProcessSampler is not safe for concurrent use.
+type linuxProcessSampler struct {
+	// boot is read once: the kernel derives btime from the wall clock, so
+	// re-reading it after a clock step would shift every process's Start and
+	// change every identity at once.
+	boot time.Time
+}
 
-func (linuxProcessSampler) SampleProcesses(ctx context.Context) ([]domain.ProcessSample, error) {
+func (s *linuxProcessSampler) SampleProcesses(ctx context.Context) ([]domain.ProcessSample, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)
 	}
-	var boot time.Time
-	if err := withFile("/proc/stat", func(r io.Reader) (err error) {
-		boot, err = parseBootTime(r)
-		return err
-	}); err != nil {
-		return nil, fmt.Errorf("sample processes: %w", err)
+	if s.boot.IsZero() {
+		if err := withFile("/proc/stat", func(r io.Reader) (err error) {
+			s.boot, err = parseBootTime(r)
+			return err
+		}); err != nil {
+			return nil, fmt.Errorf("sample processes: %w", err)
+		}
 	}
+	boot := s.boot
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)

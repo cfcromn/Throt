@@ -86,6 +86,12 @@ func WithCPUCount(n int) Option {
 	}
 }
 
+// WithAgentUID only lets processes owned by uid be recognized as agents.
+// Without it, any user's process may match.
+func WithAgentUID(uid uint32) Option {
+	return func(g *Graph) { g.agentUID, g.hasAgentUID = uid, true }
+}
+
 // track is what kind of lifecycle a process reports.
 type track int
 
@@ -113,6 +119,10 @@ type proc struct {
 type Graph struct {
 	adapters []agent.Adapter
 	ncpu     int
+	// agentUID, when set, restricts agent matching to processes of that
+	// user, so another account's "claude" is never treated as ours.
+	agentUID    uint32
+	hasAgentUID bool
 
 	procs   map[domain.ProcessKey]*proc
 	last    time.Time
@@ -238,6 +248,9 @@ func (g *Graph) link(order []*proc, byPID map[int]*proc) {
 }
 
 func (g *Graph) match(s domain.ProcessSample) string {
+	if g.hasAgentUID && s.UID != g.agentUID {
+		return ""
+	}
 	for _, a := range g.adapters {
 		if a != nil && a.Match(s) {
 			return a.Name()

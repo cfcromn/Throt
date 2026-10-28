@@ -73,7 +73,7 @@ func parsePSNames(r io.Reader) (map[int]string, error) {
 		if _, exists := names[pid]; exists {
 			dup[pid] = true
 		}
-		names[pid] = path.Base(comm)
+		names[pid] = psName(comm)
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("read ps names: %w", err)
@@ -82,6 +82,22 @@ func parsePSNames(r io.Reader) (map[int]string, error) {
 		delete(names, pid)
 	}
 	return names, nil
+}
+
+// psName reduces macOS ps comm, which is argv[0] and may hold a process
+// title with arguments ("npm run build", "x --token=..."), to an executable
+// name. A bare first word is the name; for a path, everything from the first
+// " -" (flags) is dropped and the base name's first word is kept.
+// ponytail: heuristic; paths with spaces in the final element keep only
+// their first word, which is harmless for unknown processes.
+func psName(comm string) string {
+	first, _, _ := strings.Cut(comm, " ")
+	if !strings.Contains(first, "/") {
+		return first
+	}
+	exe, _, _ := strings.Cut(comm, " -")
+	base, _, _ := strings.Cut(path.Base(exe), " ")
+	return base
 }
 
 // parsePSStatLine parses one psStatColumns line: pid ppid uid rss time

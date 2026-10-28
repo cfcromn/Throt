@@ -68,9 +68,9 @@ func TestParsePS(t *testing.T) {
 	want := []domain.ProcessSample{
 		{PID: 1, PPID: 0, UID: 0, Start: time.Date(2026, 10, 18, 11, 6, 2, 0, loc), Name: "launchd",
 			CPUTime: 90*time.Minute + 36830*time.Millisecond, RSS: 7584 * 1024},
-		{PID: 412, PPID: 1, UID: 501, Start: time.Date(2026, 10, 5, 9, 0, 0, 0, loc), Name: "Korean IM",
+		{PID: 412, PPID: 1, UID: 501, Start: time.Date(2026, 10, 5, 9, 0, 0, 0, loc), Name: "Korean",
 			CPUTime: 1500 * time.Millisecond, RSS: 20480 * 1024},
-		{PID: 413, PPID: 1, UID: 501, Start: time.Date(2026, 10, 5, 9, 0, 0, 0, loc), Name: "Core Audio Driver (Parrot.driver)"},
+		{PID: 413, PPID: 1, UID: 501, Start: time.Date(2026, 10, 5, 9, 0, 0, 0, loc), Name: "Core"},
 		{PID: 421, PPID: 1, UID: 501, Start: time.Date(2026, 10, 6, 10, 0, 0, 0, loc), Name: "go",
 			CPUTime: 26*time.Hour + 3*time.Minute + 4*time.Second, RSS: 8 * 1024},
 		{PID: 422, PPID: 1, UID: 501, Start: time.Date(2026, 10, 6, 10, 0, 0, 0, loc), RSS: 8 * 1024},
@@ -85,6 +85,23 @@ func TestParsePS(t *testing.T) {
 		got[i].Start, want[i].Start = time.Time{}, time.Time{}
 		if got[i] != want[i] {
 			t.Errorf("[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestPSName(t *testing.T) {
+	for in, want := range map[string]string{
+		"claude":                                         "claude",
+		"claude --api-key=sk-SECRET":                     "claude",
+		"npm run build":                                  "npm",
+		"npm exec @scope/server --stdio":                 "npm",
+		"/usr/local/go/bin/go":                           "go",
+		"/usr/bin/x --tok=a/b":                           "x",
+		"/usr/bin/x secret":                              "x",
+		"/Applications/My App.app/Contents/MacOS/My App": "My",
+	} {
+		if got := psName(in); got != want {
+			t.Errorf("psName(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
