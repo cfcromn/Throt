@@ -38,6 +38,18 @@ func parseProcSelfCgroup(r io.Reader) (p string, ok bool, err error) {
 	return "", false, nil
 }
 
+// cgroupLimitsApply reports whether the limits of the daemon's cgroup, at
+// cgPath from /proc/self/cgroup, describe the machine the agents share. That
+// holds only at "/", the root of a private cgroup namespace, where the
+// daemon runs containerized beside the agents. Elsewhere, for example in a
+// systemd unit with CPUQuota= or MemoryMax=, the limits confine throtd
+// alone, and the agents it watches run outside them, so host-wide figures
+// apply. (On a host, "/" is the real root cgroup, which has no limit files,
+// so the figures fall back to host-wide anyway.)
+func cgroupLimitsApply(cgPath string) bool {
+	return cgPath == "/"
+}
+
 // parseCgroup2Mount returns the mount point and mounted root of the first
 // cgroup2 filesystem in /proc/self/mountinfo. ok is false when there is none.
 func parseCgroup2Mount(r io.Reader) (mountPoint, root string, ok bool, err error) {
@@ -161,15 +173,18 @@ func parseCPUMax(s string) (cpus float64, limited bool, err error) {
 	return float64(quota) / float64(period), true, nil
 }
 
-// cgroupCPU holds the cpu.stat counters Throt uses, in microseconds.
+// cgroupCPU holds the cpu.stat counters Throt uses: CPU time in
+// microseconds, and the count of enforcement periods and of those in which
+// the cgroup was throttled.
 type cgroupCPU struct {
 	Usage     uint64
+	Periods   uint64
 	Throttled uint64
 }
 
-// parseCPUStat reads usage_usec and throttled_usec from cpu.stat.
-// throttled_usec is absent when the cpu controller is not enabled for the
-// cgroup and then reads as zero; usage_usec is required.
+// parseCPUStat reads usage_usec, nr_periods and nr_throttled from cpu.stat.
+// The period counters are absent when the cpu controller is not enabled for
+// the cgroup and then read as zero; usage_usec is required.
 func parseCPUStat(r io.Reader) (cgroupCPU, error) {
 	var (
 		c        cgroupCPU
@@ -178,18 +193,25 @@ func parseCPUStat(r io.Reader) (cgroupCPU, error) {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
-		if len(fields) != 2 || (fields[0] != "usage_usec" && fields[0] != "throttled_usec") {
+		if len(fields) != 2 {
+			continue
+		}
+		var dst *uint64
+		switch fields[0] {
+		case "usage_usec":
+			dst, hasUsage = &c.Usage, true
+		case "nr_periods":
+			dst = &c.Periods
+		case "nr_throttled":
+			dst = &c.Throttled
+		default:
 			continue
 		}
 		v, err := strconv.ParseUint(fields[1], 10, 64)
 		if err != nil {
 			return cgroupCPU{}, fmt.Errorf("parse cpu.stat %s: %w", fields[0], err)
 		}
-		if fields[0] == "usage_usec" {
-			c.Usage, hasUsage = v, true
-		} else {
-			c.Throttled = v
-		}
+		*dst = v
 	}
 	if err := sc.Err(); err != nil {
 		return cgroupCPU{}, fmt.Errorf("read cpu.stat: %w", err)
@@ -205,24 +227,24 @@ func parseCPUStat(r io.Reader) (cgroupCPU, error) {
 // when it is undefined (no time passed, or the counters went backwards
 // because the cgroup was recreated).
 //
-// Rule: any throttling in the interval reports 1.0. Being throttled means the
-// cgroup spent its whole quota in at least one period and runnable work then
-// waited for the next, which is CPU saturation as the workloads experience
-// it, even when usage averaged over the interval reads lower (bursty work
-// spends the quota early in each period). Otherwise the fraction is usage
-// over the quota's capacity, clamped to 0..1.
+// Rule: busy = max(usage over the quota's capacity, the fraction of
+// enforcement periods that were throttled), clamped to 0..1. A throttled
+// period is one in which runnable work waited for quota, so work throttled
+// every period reads fully busy even when bursty usage averages lower, while
+// a container throttled only now and then reads about its usage.
 func cgroupCPUBusy(prev, cur cgroupCPU, wall time.Duration, cpus float64) (float64, bool) {
-	if wall <= 0 || cpus <= 0 || cur.Usage < prev.Usage || cur.Throttled < prev.Throttled {
+	if wall <= 0 || cpus <= 0 || cur.Usage < prev.Usage || cur.Periods < prev.Periods || cur.Throttled < prev.Throttled {
 		return 0, false
-	}
-	if cur.Throttled > prev.Throttled {
-		return 1, true
 	}
 	capacity := float64(wall.Microseconds()) * cpus
 	if capacity <= 0 {
 		return 0, false
 	}
-	return min(float64(cur.Usage-prev.Usage)/capacity, 1), true
+	busy := float64(cur.Usage-prev.Usage) / capacity
+	if periods := cur.Periods - prev.Periods; periods > 0 {
+		busy = max(busy, float64(cur.Throttled-prev.Throttled)/float64(periods))
+	}
+	return min(busy, 1), true
 }
 
 // parseMemoryStatInactiveFile returns inactive_file from memory.stat, in
@@ -246,18 +268,47 @@ func parseMemoryStatInactiveFile(r io.Reader) (uint64, error) {
 	return 0, errors.New("parse memory.stat: no inactive_file")
 }
 
-// cgroupMemory returns MemTotal and MemAvailable for a cgroup with a memory
-// limit. Total is the smaller of the limit and the host total. Available is
-// total minus the cgroup's non-reclaimable usage (current - inactive_file),
-// floored at 0, and never more than the host has available: a container
-// cannot use memory the whole machine lacks.
-func cgroupMemory(limit, current, inactiveFile, hostTotal, hostAvail uint64) (total, avail uint64) {
-	total = min(limit, hostTotal)
-	used := current - min(inactiveFile, current)
-	if used < total {
-		avail = total - used
+// cgroupLevel is one limited level of the cgroup hierarchy: its limit and
+// the usage counted against it, in bytes.
+type cgroupLevel struct {
+	Limit, Used uint64
+}
+
+// headroom is how much more the level can use, floored at 0.
+func (l cgroupLevel) headroom() uint64 {
+	if l.Used >= l.Limit {
+		return 0
 	}
-	return total, min(avail, hostAvail)
+	return l.Limit - l.Used
+}
+
+// leastHeadroom returns the level with the least headroom; ok is false for
+// no levels. Headroom, not the smallest limit, decides: a nearly full pod
+// binds before a roomy container inside it whose own limit is smaller.
+func leastHeadroom(levels []cgroupLevel) (lvl cgroupLevel, ok bool) {
+	for i, l := range levels {
+		if i == 0 || l.headroom() < lvl.headroom() {
+			lvl = l
+		}
+	}
+	return lvl, len(levels) > 0
+}
+
+// cgroupMemory returns MemTotal and MemAvailable for the binding memory
+// level. Total is the smaller of its limit and the host total. Available is
+// its headroom, never more than total or than the host has available: a
+// container cannot use memory the whole machine lacks.
+func cgroupMemory(lvl cgroupLevel, hostTotal, hostAvail uint64) (total, avail uint64) {
+	total = min(lvl.Limit, hostTotal)
+	return total, min(lvl.headroom(), total, hostAvail)
+}
+
+// cgroupSwap returns SwapTotal and SwapUsed for the binding swap level:
+// total is the smaller of its limit and the host swap total, and used is
+// its usage, at most total.
+func cgroupSwap(lvl cgroupLevel, hostTotal uint64) (total, used uint64) {
+	total = min(lvl.Limit, hostTotal)
+	return total, min(lvl.Used, total)
 }
 
 // The functions below read cgroup files from the directories cgroupDirs
@@ -343,50 +394,77 @@ func (t *cgroupCPUTracker) sample(dir string, cpus float64, now time.Time) (busy
 	return busy, ok, nil
 }
 
-// applyCgroupMemory replaces the host memory figures in out with those of
-// the cgroup with the tightest memory.max among dirs. It leaves out unchanged
-// without a limit or when the cgroup's usage cannot be read.
-func applyCgroupMemory(out *domain.HostSample, dirs []string) {
-	dir, limit, ok := tightestLimit(dirs, "memory.max", parseCgroupLimit)
-	if !ok {
-		return
+// readLevels returns every level among dirs whose limit file sets a limit,
+// with the usage used reports for it. Directories whose limit file is
+// missing, unreadable or "max" impose no limit. An error reading the usage
+// of a limited level fails the whole read, so the caller keeps the host
+// figure rather than ignore a level that may bind.
+func readLevels(dirs []string, limitFile string, used func(dir string) (uint64, error)) ([]cgroupLevel, error) {
+	var levels []cgroupLevel
+	for _, d := range dirs {
+		s, err := readCgroupFile(d, limitFile)
+		if err != nil {
+			continue
+		}
+		limit, limited, err := parseCgroupLimit(s)
+		if err != nil || !limited {
+			continue
+		}
+		u, err := used(d)
+		if err != nil {
+			return nil, err
+		}
+		levels = append(levels, cgroupLevel{Limit: limit, Used: u})
 	}
-	s, err := readCgroupFile(dir, "memory.current")
+	return levels, nil
+}
+
+// readValue reads a single-value counter file in dir.
+func readValue(dir, name string) (uint64, error) {
+	s, err := readCgroupFile(dir, name)
 	if err != nil {
-		return
+		return 0, err
 	}
-	current, err := parseCgroupValue(s)
+	return parseCgroupValue(s)
+}
+
+// memoryUsed is a cgroup's non-reclaimable memory: memory.current less the
+// inactive_file page cache in memory.stat.
+func memoryUsed(dir string) (uint64, error) {
+	current, err := readValue(dir, "memory.current")
 	if err != nil {
-		return
+		return 0, err
 	}
 	stat, err := readCgroupFile(dir, "memory.stat")
 	if err != nil {
-		return
+		return 0, err
 	}
 	inactive, err := parseMemoryStatInactiveFile(strings.NewReader(stat))
 	if err != nil {
-		return
+		return 0, err
 	}
-	out.MemTotal, out.MemAvailable = cgroupMemory(limit, current, inactive, out.MemTotal, out.MemAvailable)
+	return current - min(inactive, current), nil
+}
+
+// applyCgroupMemory replaces the host memory figures in out with those of
+// the memory.max level among dirs with the least headroom. It leaves out
+// unchanged without a limit or when a limited level's usage cannot be read.
+func applyCgroupMemory(out *domain.HostSample, dirs []string) {
+	levels, err := readLevels(dirs, "memory.max", memoryUsed)
+	if lvl, ok := leastHeadroom(levels); err == nil && ok {
+		out.MemTotal, out.MemAvailable = cgroupMemory(lvl, out.MemTotal, out.MemAvailable)
+	}
 }
 
 // applyCgroupSwap replaces the host swap figures in out with those of the
-// cgroup with the tightest memory.swap.max among dirs: its memory.swap.current
-// against the smaller of that limit and the host swap total. It leaves out
-// unchanged without a limit or when the usage cannot be read.
+// memory.swap.max level among dirs with the least headroom, its usage read
+// from memory.swap.current. It leaves out unchanged without a limit or when
+// a limited level's usage cannot be read.
 func applyCgroupSwap(out *domain.HostSample, dirs []string) {
-	dir, limit, ok := tightestLimit(dirs, "memory.swap.max", parseCgroupLimit)
-	if !ok {
-		return
+	levels, err := readLevels(dirs, "memory.swap.max", func(d string) (uint64, error) {
+		return readValue(d, "memory.swap.current")
+	})
+	if lvl, ok := leastHeadroom(levels); err == nil && ok {
+		out.SwapTotal, out.SwapUsed = cgroupSwap(lvl, out.SwapTotal)
 	}
-	s, err := readCgroupFile(dir, "memory.swap.current")
-	if err != nil {
-		return
-	}
-	used, err := parseCgroupValue(s)
-	if err != nil {
-		return
-	}
-	total := min(limit, out.SwapTotal)
-	out.SwapTotal, out.SwapUsed = total, min(used, total)
 }
