@@ -932,7 +932,7 @@ run a read-only MCP server on stdio for coding agents
 
 run a read-only MCP server on stdio for coding agents
 `, stderr: ""},
-		"mcp initialize": {code: 0, stdout: `{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}},"instructions":"Throt reports local machine pressure and heavy-workload capacity. Call throt_capacity before starting a heavy build, test suite, or container build; if ok_to_start is false, wait or run a lighter task. All tools are read-only and advisory.","protocolVersion":"2025-06-18","serverInfo":{"name":"throt","version":"dev"}}}
+		"mcp initialize": {code: 0, stdout: `{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}},"instructions":"Throt reports local machine pressure and heavy-workload capacity. Call throt_capacity before starting a heavy build, test suite, or container build; if ok_to_start is false, call throt_wait_for_capacity to wait for a slot, or run a lighter task. Call throt_explain with a PID from throt_status to learn why a heavy job is paused or queued. All tools are read-only and advisory.","protocolVersion":"2025-06-18","serverInfo":{"name":"throt","version":"dev"}}}
 `, stderr: ""},
 		"mcp too many": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
 `},
