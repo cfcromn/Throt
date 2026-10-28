@@ -248,7 +248,7 @@ Custom agents can be added with `"agents": [{"name": "myagent", "executables": [
 - `cool`: limit 1, adaptive, may pause one workload under critical pressure.
 
 A profile never turns the scheduler on.
-- `adaptive` halves the running limit under high pressure and raises it by one per 30s of calm.
+- `adaptive` halves the running limit under high pressure and raises it by one per 30s, up to `heavy_limit`, while the machine copes: at normal pressure, or at elevated pressure caused only by busy CPUs (CPU, load, CPU PSI) with memory, swap and latency calm. Elevated pressure from memory, swap or latency holds it.
 - `per_agent_limit` caps heavy workloads per agent, so one agent can't take every slot.
 
 `scheduler.mode` is `off` (default), `observe` (log what it would do as `scheduler_decision` events), or `enforce` (queue new agent-owned heavy workloads with SIGSTOP when `heavy_limit` heavy workloads are already running, and resume them as slots free up). Try `observe` first and watch `throt events`.

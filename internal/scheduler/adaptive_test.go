@@ -306,3 +306,68 @@ func TestOwnerBudgetResumeSelection(t *testing.T) {
 	expect(t, s2.Decide(Input{Now: at(2), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(2, "a")}, Paused: keys(2)}),
 		brief{ActionResume, 2, ReasonSlotAvailable})
 }
+
+func TestAdaptiveThroughputOnly(t *testing.T) {
+	N, E, H := domain.PressureNormal, domain.PressureElevated, domain.PressureHigh
+	type step struct {
+		sec            int
+		pressure       domain.PressureLevel
+		throughputOnly bool
+		limit          int
+	}
+	tests := []struct {
+		name    string
+		steps   []step
+		changes []LimitChange
+	}{
+		{
+			name: "throughput-only elevated adds one per interval up to the ceiling",
+			steps: []step{
+				{0, H, false, 3}, {30, H, false, 1}, {31, E, true, 1}, {59, E, true, 1}, {60, E, true, 2},
+				{90, E, true, 3}, {120, E, true, 4}, {150, E, true, 5}, {180, E, true, 6}, {210, E, true, 6},
+			},
+			changes: []LimitChange{
+				{6, 3, ReasonPressureHigh, at(0)}, {3, 1, ReasonPressureHigh, at(30)},
+				{1, 2, ReasonPressureThroughput, at(60)}, {2, 3, ReasonPressureThroughput, at(90)},
+				{3, 4, ReasonPressureThroughput, at(120)}, {4, 5, ReasonPressureThroughput, at(150)},
+				{5, 6, ReasonPressureThroughput, at(180)},
+			},
+		},
+		{
+			name:    "memory-elevated holds",
+			steps:   []step{{0, H, false, 3}, {30, E, false, 3}, {60, E, false, 3}, {300, E, false, 3}},
+			changes: []LimitChange{{6, 3, ReasonPressureHigh, at(0)}},
+		},
+		{
+			name: "the cause may change between rounds",
+			steps: []step{
+				// The hold at 60 does not use up the interval, so 61 is due.
+				{0, H, false, 3}, {30, E, true, 4}, {60, E, false, 4}, {61, E, true, 5}, {90, E, true, 5}, {91, N, false, 6},
+			},
+			changes: []LimitChange{
+				{6, 3, ReasonPressureHigh, at(0)}, {3, 4, ReasonPressureThroughput, at(30)},
+				{4, 5, ReasonPressureThroughput, at(61)}, {5, 6, ReasonPressureNormal, at(91)},
+			},
+		},
+		{
+			// The flag only matters at elevated.
+			name:    "high still halves",
+			steps:   []step{{0, H, true, 3}, {30, H, true, 1}},
+			changes: []LimitChange{{6, 3, ReasonPressureHigh, at(0)}, {3, 1, ReasonPressureHigh, at(30)}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(adaptive(6))
+			for _, st := range tt.steps {
+				s.Decide(Input{Now: at(st.sec), Pressure: st.pressure, ThroughputOnly: st.throughputOnly})
+				if s.Limit() != st.limit {
+					t.Fatalf("t=%d %v throughputOnly=%v: limit = %d, want %d", st.sec, st.pressure, st.throughputOnly, s.Limit(), st.limit)
+				}
+			}
+			if got := s.Changes(); !slices.Equal(got, tt.changes) {
+				t.Fatalf("changes = %+v, want %+v", got, tt.changes)
+			}
+		})
+	}
+}

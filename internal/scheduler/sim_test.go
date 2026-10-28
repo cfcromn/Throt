@@ -24,6 +24,8 @@ type simScenario struct {
 	policy   Policy
 	jobs     []simJob
 	pressure func(t int) domain.PressureLevel
+	// throughputOnly, when set, is Input.ThroughputOnly at each tick.
+	throughputOnly func(t int) bool
 	// wantPreempt requires at least one preemption.
 	wantPreempt bool
 	// noBound skips the makespan bound, for scenarios where pressure
@@ -39,7 +41,9 @@ type simResult struct {
 	maxWait, makespan, ideal   int
 	// limitMin and limitMax are the range of the effective limit.
 	limitMin, limitMax int
-	limitChanges       int
+	// limitEnd is the effective limit when the last job finished.
+	limitEnd     int
+	limitChanges int
 	// ownerMaxWait and ownerFinish are per owner: the longest single wait
 	// and when the owner's last job finished, relative to the first arrival.
 	ownerMaxWait, ownerFinish map[string]int
@@ -99,6 +103,9 @@ func runSim(t *testing.T, sc simScenario) simResult {
 		}
 		pressure := sc.pressure(tick)
 		in := Input{Now: at(tick), Pressure: pressure}
+		if sc.throughputOnly != nil {
+			in.ThroughputOnly = sc.throughputOnly(tick)
+		}
 		for i, j := range sc.jobs {
 			if j.arrive <= tick && finish[i] < 0 {
 				in.Heavy = append(in.Heavy, process.WorkloadView{Key: keyOf(i), Name: "build", Class: domain.ClassBuild, Owner: j.owner})
@@ -113,7 +120,7 @@ func runSim(t *testing.T, sc simScenario) simResult {
 		if lim < 1 || lim > limit {
 			t.Fatalf("%s t=%d: effective limit %d outside [1, %d]", sc.name, tick, lim, limit)
 		}
-		res.limitMin, res.limitMax = min(res.limitMin, lim), max(res.limitMax, lim)
+		res.limitMin, res.limitMax, res.limitEnd = min(res.limitMin, lim), max(res.limitMax, lim), lim
 		res.limitChanges += len(s.Changes())
 		for _, d := range decisions {
 			if d.HeavyLimit != lim {
@@ -287,6 +294,28 @@ func TestSimulation(t *testing.T) {
 	}
 	flood = append(flood, simJob{owner: "agent-b", arrive: 15, dur: 30}, simJob{owner: "agent-b", arrive: 16, dur: 30})
 
+	// CPU-only oversubscription, as on the first real-machine benchmark: a
+	// burst of 4x CPUs one-core builds (2 minutes each) on 8 CPUs, with the ceiling at the
+	// CPU count. A memory spike before the burst has halved the limit to 2.
+	// From then on only the CPU is saturated, which holds pressure at
+	// elevated; memory, swap and latency stay calm.
+	oversubPolicy := base
+	oversubPolicy.HeavyLimit, oversubPolicy.Adaptive, oversubPolicy.ResumeCooldown = 8, true, time.Second
+	var oversub []simJob
+	for i := range 32 {
+		oversub = append(oversub, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 40, dur: 120})
+	}
+	oversubPressure := func(t int) domain.PressureLevel {
+		if t < 31 {
+			return domain.PressureHigh
+		}
+		return domain.PressureElevated
+	}
+	cpuOnly := func(t int) bool { return t >= 31 }
+	memoryElevated := func(int) bool { return false }
+	// ideal is the makespan with every build running at once on 8 CPUs.
+	const oversubIdeal = 32 * 120 / 8
+
 	scenarios := []simScenario{
 		{name: "1 agent, 1 build", policy: base, jobs: []simJob{{owner: "agent-0", arrive: 1, dur: 120}}, pressure: normalPressure},
 		{name: "6 agents, 12 overlapping builds", policy: base, jobs: overlap, pressure: normalPressure},
@@ -305,6 +334,31 @@ func TestSimulation(t *testing.T) {
 			check: func(t *testing.T, r simResult) {
 				if r.limitMin != 1 || r.limitMax != 4 {
 					t.Errorf("limit range [%d, %d], want [1, 4]: high must drive it down and recovery back up", r.limitMin, r.limitMax)
+				}
+			},
+		},
+		{
+			name: "CPU-only oversubscription", policy: oversubPolicy, jobs: oversub,
+			pressure: oversubPressure, throughputOnly: cpuOnly, noBound: true,
+			check: func(t *testing.T, r simResult) {
+				if r.limitEnd != 8 {
+					t.Errorf("limit ended at %d, want the ceiling 8", r.limitEnd)
+				}
+				if bound := oversubIdeal * 130 / 100; r.makespan > bound {
+					t.Errorf("makespan %ds over %ds, 1.3x the unthrottled ideal %ds", r.makespan, bound, oversubIdeal)
+				}
+			},
+		},
+		{
+			name: "same, elevated by memory", policy: oversubPolicy, jobs: oversub,
+			pressure: oversubPressure, throughputOnly: memoryElevated, noBound: true,
+			check: func(t *testing.T, r simResult) {
+				// Memory pressure holds the limit where high left it.
+				if r.limitEnd != 2 {
+					t.Errorf("limit ended at %d, want it held at 2", r.limitEnd)
+				}
+				if r.makespan < 3*oversubIdeal {
+					t.Errorf("makespan %ds, want the held limit to cost at least 3x the ideal %ds", r.makespan, oversubIdeal)
 				}
 			},
 		},

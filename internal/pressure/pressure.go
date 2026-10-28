@@ -180,6 +180,8 @@ type Engine struct {
 
 	level  domain.PressureLevel
 	reason string
+	// throughputOnly is ThroughputOnly as of the latest sample.
+	throughputOnly bool
 
 	// Escalation: consecutive samples whose raw level exceeds level, and the
 	// lowest such raw level (the level that was actually sustained).
@@ -219,6 +221,16 @@ func New(window time.Duration, th Thresholds) *Engine {
 // Level returns the current stable level.
 func (e *Engine) Level() domain.PressureLevel { return e.level }
 
+// ThroughputOnly reports whether the current level is elevated by
+// throughput signals only: at least one of CPU, load and CPU PSI some holds
+// elevated (is at or above its elevated exit threshold), no signal reaches
+// high on its enter threshold, and every other signal (memory used, swap
+// growth, latency, the kernel memory verdict, memory and I/O PSI) is below
+// its elevated exit threshold. Exit thresholds make the test conservative:
+// a memory signal that is recovering but not yet clear still disqualifies.
+// It is false at every other level. It does not change Observe's reason.
+func (e *Engine) ThroughputOnly() bool { return e.throughputOnly }
+
 // Observe adds a sample and returns the current stable level, whether this
 // sample changed it, and a short machine-readable reason for the level
 // (e.g. "memory_used>=0.9"). Samples older than the newest one are ignored.
@@ -228,7 +240,30 @@ func (e *Engine) Observe(s domain.HostSample) (level domain.PressureLevel, chang
 	}
 	e.add(s)
 	st := e.stats()
+	level, changed, reason = e.step(st, s.Time)
+	e.throughputOnly = e.classifyThroughputOnly(st)
+	return level, changed, reason
+}
 
+// classifyThroughputOnly computes ThroughputOnly for st at the current
+// stable level.
+func (e *Engine) classifyThroughputOnly(st stats) bool {
+	if e.level != domain.PressureElevated {
+		return false
+	}
+	if raw, _ := e.classify(st, false, false); raw > domain.PressureElevated {
+		return false
+	}
+	if other, _ := e.classify(st, true, true); other > domain.PressureNormal {
+		return false
+	}
+	hold, _ := e.classify(st, true, false)
+	return hold >= domain.PressureElevated
+}
+
+// step advances the state machine with the window statistics of a new
+// sample taken at now.
+func (e *Engine) step(st stats, now time.Time) (domain.PressureLevel, bool, string) {
 	if !st.has {
 		if e.level == domain.PressureUnknown {
 			e.reason = "no_signals"
@@ -237,7 +272,7 @@ func (e *Engine) Observe(s domain.HostSample) (level domain.PressureLevel, chang
 		return e.set(domain.PressureUnknown, "no_signals")
 	}
 
-	enter, enterReason := e.classify(st, false)
+	enter, enterReason := e.classify(st, false, false)
 	if enter > e.level {
 		e.resetDown()
 		if e.upCount == 0 || enter < e.upLevel {
@@ -254,17 +289,17 @@ func (e *Engine) Observe(s domain.HostSample) (level domain.PressureLevel, chang
 	if e.level <= domain.PressureNormal {
 		return e.level, false, e.reason
 	}
-	hold, holdReason := e.classify(st, true)
+	hold, holdReason := e.classify(st, true, false)
 	if hold >= e.level {
 		e.resetDown()
 		return e.level, false, e.reason
 	}
 	if e.downSince.IsZero() {
-		e.downSince, e.downLevel, e.downReason = s.Time, hold, holdReason
+		e.downSince, e.downLevel, e.downReason = now, hold, holdReason
 	} else if hold > e.downLevel {
 		e.downLevel, e.downReason = hold, holdReason
 	}
-	if s.Time.Sub(e.downSince) >= e.dwell {
+	if now.Sub(e.downSince) >= e.dwell {
 		return e.set(e.downLevel, e.downReason)
 	}
 	return e.level, false, e.reason
@@ -385,7 +420,9 @@ func medianOf(vals []float64) float64 {
 }
 
 // classify returns the highest level any present signal reaches, using enter
-// thresholds or, when exit is true, the lower exit thresholds.
+// thresholds or, when exit is true, the lower exit thresholds. With
+// skipThroughput it ignores the throughput signals (CPU, load and CPU PSI
+// some), which saturate during any build without hurting the machine.
 //
 // A kernel memory signal in the window (the macOS verdict or Linux memory
 // PSI) takes precedence over memory used for elevated and high unless
@@ -393,7 +430,7 @@ func medianOf(vals []float64) float64 {
 // critical: without swap, memory can fill with little reclaim stall until
 // the OOM killer acts, so near-exhaustion must stay visible. The macOS
 // verdict never reaches critical on its own.
-func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
+func (e *Engine) classify(st stats, exit, skipThroughput bool) (domain.PressureLevel, string) {
 	kernelMem := st.hasKernel || st.hasMemStall
 	useMem := st.hasMem && (!kernelMem || e.th.MemoryUsedWhenKernelSignal)
 	levels := [...]struct {
@@ -406,24 +443,25 @@ func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
 	}
 	for _, lv := range levels {
 		sigs := [...]struct {
-			name    string
-			v, t    float64
-			present bool
-			kind    sigKind
+			name       string
+			v, t       float64
+			present    bool
+			kind       sigKind
+			throughput bool
 		}{
-			{"kernel_memory_pressure", st.kernel, float64(lv.th.KernelMemory), st.hasKernel && lv.l != domain.PressureCritical, kindVerdict},
-			{"memory_stall_full", st.memFull, lv.th.MemoryStallFull, st.hasMemStall, kindStall},
-			{"memory_stall_some", st.memSome, lv.th.MemoryStallSome, st.hasMemStall, kindStall},
-			{"memory_used", st.mem, lv.th.MemoryUsed, useMem || (st.hasMem && lv.l == domain.PressureCritical), kindFraction},
-			{"swap_growth", st.swap, lv.th.SwapGrowth, st.hasSwap, kindRate},
-			{"io_stall_full", st.ioFull, lv.th.IOStallFull, st.hasIOStall, kindStall},
-			{"load", st.load, lv.th.Load, st.hasLoad, kindFraction},
-			{"latency", st.latency, float64(lv.th.Latency), st.hasLatency, kindDuration},
-			{"cpu", st.cpu, lv.th.CPU, st.hasCPU, kindFraction},
-			{"cpu_stall_some", st.cpuSome, lv.th.CPUStallSome, st.hasCPUStall, kindStall},
+			{"kernel_memory_pressure", st.kernel, float64(lv.th.KernelMemory), st.hasKernel && lv.l != domain.PressureCritical, kindVerdict, false},
+			{"memory_stall_full", st.memFull, lv.th.MemoryStallFull, st.hasMemStall, kindStall, false},
+			{"memory_stall_some", st.memSome, lv.th.MemoryStallSome, st.hasMemStall, kindStall, false},
+			{"memory_used", st.mem, lv.th.MemoryUsed, useMem || (st.hasMem && lv.l == domain.PressureCritical), kindFraction, false},
+			{"swap_growth", st.swap, lv.th.SwapGrowth, st.hasSwap, kindRate, false},
+			{"io_stall_full", st.ioFull, lv.th.IOStallFull, st.hasIOStall, kindStall, false},
+			{"load", st.load, lv.th.Load, st.hasLoad, kindFraction, true},
+			{"latency", st.latency, float64(lv.th.Latency), st.hasLatency, kindDuration, false},
+			{"cpu", st.cpu, lv.th.CPU, st.hasCPU, kindFraction, true},
+			{"cpu_stall_some", st.cpuSome, lv.th.CPUStallSome, st.hasCPUStall, kindStall, true},
 		}
 		for _, sg := range sigs {
-			if !sg.present || sg.t <= 0 {
+			if !sg.present || sg.t <= 0 || (skipThroughput && sg.throughput) {
 				continue
 			}
 			t := sg.t

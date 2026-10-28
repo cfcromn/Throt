@@ -374,7 +374,7 @@ func (d *Daemon) tick(parent context.Context) {
 	if perr == nil {
 		// Only schedule on a fresh process snapshot: acting on stale data
 		// could queue a workload that already finished.
-		d.schedule(parent, now, level, snap.Heavy, reserved, admitted(ended), waiters, stoppedOrphans)
+		d.schedule(parent, now, level, d.engine.ThroughputOnly(), snap.Heavy, reserved, admitted(ended), waiters, stoppedOrphans)
 		d.account(now, snap)
 	}
 	sched := d.schedulerStatus()

@@ -9,6 +9,9 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 ### Added
 - Real-machine benchmarks: the `Bench` workflow (`gh workflow run bench.yml`, also weekly) runs `internal/bench` on hosted Linux and macOS runners, sized to the runner (4× its CPUs per scenario), and writes the medians of three runs to the job summary and an artifact. The benchmark now runs on macOS (CI only) as well as in a Linux container.
 
+### Changed
+- Adaptive scheduling grows the limit (by one per 30s, up to `heavy_limit`) at elevated pressure caused only by throughput signals (CPU, load, CPU PSI `some`) while memory, swap, latency, the kernel memory verdict and memory and I/O PSI stay below their elevated exit thresholds. Before, saturated CPUs held pressure at elevated and the limit never grew, so on the first real-machine benchmark cores sat idle. Elevated pressure from memory, swap or latency still holds the limit, and high or critical still halves it. The increase is a `scheduler_limit` event with reason `pressure_elevated_throughput`.
+
 ## [0.8.0-rc.1] - 2026-10-28
 
 Claude Code integration, fair admission, a security review, reproducible releases, and macOS end-to-end tests: the 1.0 groundwork.

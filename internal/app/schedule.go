@@ -54,7 +54,8 @@ const maxQueueMembers = 256
 // workloads that took over a lease this round. Orphans (stopped processes
 // no record explains) are held like manual pauses: the scheduler must never
 // queue one and later resume it, since Throt only reports orphans.
-func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.PressureLevel, heavy []process.WorkloadView, reserved []string, admitted []domain.ProcessKey, waiters []scheduler.Waiter, orphans []domain.ProcessKey) {
+// throughputOnly is pressure.Engine.ThroughputOnly for level.
+func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.PressureLevel, throughputOnly bool, heavy []process.WorkloadView, reserved []string, admitted []domain.ProcessKey, waiters []scheduler.Waiter, orphans []domain.ProcessKey) {
 	// The controller records who paused what, so a manual hold is never
 	// mistaken for scheduler queueing, even across restarts.
 	inSnapshot := make(map[domain.ProcessKey]bool, len(heavy))
@@ -76,7 +77,7 @@ func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.Pr
 		}
 	}
 
-	decisions := d.sched.Decide(scheduler.Input{Now: now, Pressure: level, Heavy: heavy, Paused: ours, Held: held, Reserved: reserved, Admitted: admitted, Waiters: waiters})
+	decisions := d.sched.Decide(scheduler.Input{Now: now, Pressure: level, ThroughputOnly: throughputOnly, Heavy: heavy, Paused: ours, Held: held, Reserved: reserved, Admitted: admitted, Waiters: waiters})
 	for _, c := range d.sched.Changes() {
 		d.emit(domain.EventSchedulerLimit, fmt.Sprintf("heavy limit %d -> %d: %s", c.From, c.To, c.Reason),
 			map[string]string{"from": strconv.Itoa(c.From), "to": strconv.Itoa(c.To), "reason": c.Reason})

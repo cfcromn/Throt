@@ -8,8 +8,8 @@
 //
 // With Policy.Adaptive the number of heavy slots follows pressure (AIMD):
 // HeavyLimit is the ceiling, and the effective limit grows by one per
-// AdaptInterval under normal pressure and halves under high or critical
-// pressure. Limit changes are not decisions; the daemon drains them with
+// AdaptInterval under normal pressure, or elevated pressure caused by
+// throughput signals only, and halves under high or critical pressure. Limit changes are not decisions; the daemon drains them with
 // Changes and reports them as events.
 //
 // The package is deterministic: it makes no OS calls, starts no goroutines,
@@ -65,6 +65,9 @@ const (
 	ReasonPressureNormal  = "pressure_normal"
 	ReasonPressureUnknown = "pressure_unknown"
 	ReasonPolicyChanged   = "policy_changed"
+	// ReasonPressureThroughput is an increase at elevated pressure that
+	// only throughput signals cause (Input.ThroughputOnly).
+	ReasonPressureThroughput = "pressure_elevated_throughput"
 )
 
 // Policy defaults.
@@ -101,7 +104,8 @@ type Policy struct {
 	// preempts; new starts and resumes just wait.
 	Adaptive bool
 	// AdaptInterval is the minimum time between two adaptive limit changes
-	// driven by normal, high or critical pressure. Values <= 0 use the
+	// driven by normal, elevated (throughput only), high or critical
+	// pressure. Values <= 0 use the
 	// default.
 	AdaptInterval time.Duration
 	// PerOwnerLimit caps the running heavy workloads of one owner, so one
@@ -143,6 +147,11 @@ func (p Policy) normalized() Policy {
 type Input struct {
 	Now      time.Time
 	Pressure domain.PressureLevel
+	// ThroughputOnly reports that elevated pressure comes from throughput
+	// signals only (CPU, load, CPU PSI), with memory, swap and latency calm
+	// (see pressure.Engine.ThroughputOnly). Adaptive then grows the limit as
+	// at normal pressure. It is ignored at other levels.
+	ThroughputOnly bool
 	// Heavy is the latest snapshot of heavy workloads.
 	Heavy []process.WorkloadView
 	// Paused lists workloads currently paused by the scheduler (queued or
@@ -330,10 +339,14 @@ func (s *Scheduler) Changes() []LimitChange {
 // adapt moves the effective limit for this round's pressure:
 //
 //   - normal: +1, at most once per AdaptInterval, up to HeavyLimit;
-//   - elevated: hold;
+//   - elevated by throughput signals only: +1 as at normal. Saturated
+//     cores are the throughput the scheduler protects; while memory, swap
+//     and latency stay calm the machine copes, and holding would pin the
+//     limit wherever it was when the build started;
+//   - elevated otherwise: hold;
 //   - high or critical: halve (floor 1), at most once per AdaptInterval;
 //   - unknown: reset to HeavyLimit at once (fail open).
-func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel) {
+func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel, throughputOnly bool) {
 	p := s.policy
 	if !p.Adaptive {
 		return
@@ -353,6 +366,10 @@ func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel) {
 		return
 	case domain.PressureNormal:
 		next, reason = min(s.limit+1, p.HeavyLimit), ReasonPressureNormal
+	case domain.PressureElevated:
+		if throughputOnly {
+			next, reason = min(s.limit+1, p.HeavyLimit), ReasonPressureThroughput
+		}
 	case domain.PressureHigh:
 		next, reason = max(s.limit/2, 1), ReasonPressureHigh
 	case domain.PressureCritical:
@@ -398,7 +415,7 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		s.lastSwitch = time.Time{}
 	}
 	s.lastRound = in.Now
-	s.adapt(in.Now, in.Pressure)
+	s.adapt(in.Now, in.Pressure, in.ThroughputOnly)
 	limit := s.limit
 
 	paused := keySet(in.Paused)
