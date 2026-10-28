@@ -181,6 +181,9 @@ func decodeWait(t *testing.T, m message) (toolResult, waitView) {
 	if len(r.Content) != 1 {
 		t.Fatalf("content = %+v", r.Content)
 	}
+	if !r.IsError {
+		checkOutput(t, "throt_wait_for_capacity", r.StructuredContent)
+	}
 	var v waitView
 	if len(r.StructuredContent) > 0 {
 		if err := json.Unmarshal(r.StructuredContent, &v); err != nil {

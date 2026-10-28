@@ -6,6 +6,9 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Added
+- Every `throt mcp` tool declares an `outputSchema` (MCP `2025-06-18` and later) describing its `structuredContent`; earlier clients ignore it. Error results still carry no structured content.
+
 ### Changed
 - The `reason` attr of every `control_refused` event is now a stable code. Refusals throtd decides itself used to put a sentence there; they now use `start_mismatch`, `gone`, `peer_mismatch`, `unidentified`, `paused_member`, `needs_force`, `job_control` or `not_stopped` (or the controller's `not_heavy`, `foreign_uid`, `not_paused`). The sentence stays in the event message and the error the client sees.
 

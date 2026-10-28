@@ -337,6 +337,9 @@ func call(t *testing.T, c Client, name, args string) (toolResult, json.RawMessag
 	if len(r.Content) != 1 || r.Content[0].Type != "text" || r.Content[0].Text == "" {
 		t.Fatalf("content = %+v", r.Content)
 	}
+	if !r.IsError {
+		checkOutput(t, name, r.StructuredContent)
+	}
 	return toolResult{Content: r.Content, IsError: r.IsError}, r.StructuredContent
 }
 
