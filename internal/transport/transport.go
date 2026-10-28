@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -22,9 +23,12 @@ const ProtocolVersion = 1
 
 const (
 	maxConns     = 16
-	ioTimeout    = 5 * time.Second
 	maxBodyBytes = 1 << 20
 )
+
+// ioTimeout bounds one request/response exchange on both ends, so a
+// stalled peer cannot hold a connection slot. Tests shorten it.
+var ioTimeout = 5 * time.Second
 
 // Request is sent by a client.
 type Request struct {
@@ -172,28 +176,53 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	} else if req.Protocol != ProtocolVersion {
 		resp.Error = fmt.Sprintf("protocol mismatch: client speaks v%d, daemon speaks v%d; upgrade throt and throtd to the same release", req.Protocol, ProtocolVersion)
 	} else if h, ok := s.handlers[req.Method]; !ok {
-		resp.Error = "unknown method: " + req.Method
+		resp.Error = "unknown method: " + clip(req.Method)
 	} else if err := s.authorize(conn, req.Method); err != nil {
 		resp.Error = err.Error()
 	} else if v, err := h(s.withPeer(ctx, conn, req.Method), req.Params); err != nil {
 		resp.Error = err.Error()
+		if resp.Error == "" {
+			// An empty Error reads as success on the client.
+			resp.Error = req.Method + ": failed without a message"
+		}
 	} else if resp.Result, err = json.Marshal(v); err != nil {
 		resp.Error = "encode result: " + err.Error()
 	}
 	json.NewEncoder(conn).Encode(resp)
 }
 
+// NotRunningError reports that no daemon listens on Socket: the socket or
+// its directory does not exist, or nothing accepts connections on it (a
+// daemon that exited without removing it). Err is the underlying error.
+type NotRunningError struct {
+	Socket string
+	Err    error
+}
+
+func (e *NotRunningError) Error() string {
+	what := "no socket at "
+	if errors.Is(e.Err, syscall.ECONNREFUSED) {
+		what = "nothing listening on "
+	}
+	return "throtd is not running (" + what + e.Socket + "); start it with `throtd`"
+}
+
+func (e *NotRunningError) Unwrap() error { return e.Err }
+
 // Call sends one request to the daemon at socket and decodes the result into out
 // (which may be nil).
 func Call(ctx context.Context, socket, method string, params, out any) error {
 	if err := CheckPrivateDir(filepath.Dir(socket)); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("connect to throtd at %s (is it running?): %w", socket, err)
+			return &NotRunningError{Socket: socket, Err: err}
 		}
 		return err
 	}
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", socket)
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+		return &NotRunningError{Socket: socket, Err: err}
+	}
 	if err != nil {
 		return fmt.Errorf("connect to throtd at %s (is it running?): %w", socket, err)
 	}
@@ -213,8 +242,14 @@ func Call(ctx context.Context, socket, method string, params, out any) error {
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return fmt.Errorf("send request: %w", err)
 	}
+	return readResponse(conn, out)
+}
+
+// readResponse decodes one response from r, at most maxBodyBytes, into out
+// (which may be nil).
+func readResponse(r io.Reader, out any) error {
 	var resp Response
-	if err := json.NewDecoder(limitReader(conn)).Decode(&resp); err != nil {
+	if err := json.NewDecoder(limitReader(r)).Decode(&resp); err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}
 	if resp.Error != "" {
@@ -230,6 +265,17 @@ func Call(ctx context.Context, socket, method string, params, out any) error {
 }
 
 func limitReader(r io.Reader) io.Reader { return io.LimitReader(r, maxBodyBytes) }
+
+// clip shortens a client-sent string echoed in an error. Echoed whole, a
+// method name close to maxBodyBytes, once JSON-escaped, made a response
+// the client could not read, so it saw a truncated reply instead.
+func clip(s string) string {
+	const limit = 64
+	if len(s) <= limit {
+		return s
+	}
+	return strings.ToValidUTF8(s[:limit], "") + "..."
+}
 
 // CheckPrivateDir rejects a socket directory that is a symlink, is owned by
 // another user, or is writable by group/other: any of those would let another

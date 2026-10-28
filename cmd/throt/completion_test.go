@@ -7,19 +7,6 @@ import (
 	"testing"
 )
 
-// commandNames lists the commands documented in usage.
-func commandNames(t *testing.T) []string {
-	t.Helper()
-	var names []string
-	for _, m := range regexp.MustCompile(`(?m)^  ([a-z]+)\b`).FindAllStringSubmatch(usage, -1) {
-		names = append(names, m[1])
-	}
-	if len(names) < 10 {
-		t.Fatalf("parsed only %v from usage", names)
-	}
-	return names
-}
-
 func TestCompletionCoversEveryCommand(t *testing.T) {
 	for _, shell := range []string{"bash", "zsh", "fish"} {
 		t.Run(shell, func(t *testing.T) {
@@ -31,9 +18,9 @@ func TestCompletionCoversEveryCommand(t *testing.T) {
 			for _, w := range regexp.MustCompile(`[a-z]+`).FindAllString(b.String(), -1) {
 				words[w] = true
 			}
-			for _, name := range commandNames(t) {
-				if !words[name] {
-					t.Errorf("%s script lacks command %q", shell, name)
+			for _, c := range commands() {
+				if !words[c.name] {
+					t.Errorf("%s script lacks command %q", shell, c.name)
 				}
 			}
 			for _, flag := range []string{"config", "timeout", "no-wait"} {

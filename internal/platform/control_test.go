@@ -132,6 +132,9 @@ func testLifecycle(t *testing.T, sampler ProcessSampler, ctl ProcessController) 
 	if gone, err := ctl.Gone(ctx, key); err != nil || gone {
 		t.Errorf("Gone(live) = %v, %v", gone, err)
 	}
+	if ctl.Exited(ctx, key) {
+		t.Error("Exited(live) = true")
+	}
 
 	// A live PID with another start time (a reused PID) or another owner
 	// is reported gone and never signaled.
@@ -176,6 +179,9 @@ func testLifecycle(t *testing.T, sampler ProcessSampler, ctl ProcessController) 
 	if gone, err := ctl.Gone(ctx, key); err != nil || !gone {
 		t.Errorf("Gone after exit = %v, %v", gone, err)
 	}
+	if !ctl.Exited(ctx, key) {
+		t.Error("Exited after exit = false")
+	}
 	if err := ctl.Stop(ctx, key, uid); !errors.Is(err, domain.ErrProcessGone) {
 		t.Errorf("Stop after exit: err = %v, want ErrProcessGone", err)
 	}
@@ -205,6 +211,10 @@ func TestProcessControllerIdentify(t *testing.T) {
 		if p.PID == os.Getpid() {
 			if got.PID != p.PID || got.PPID != os.Getppid() || got.PPID != p.PPID || !got.Start.Equal(p.Start) || got.UID != p.UID {
 				t.Fatalf("Identify = %+v, sample = %+v", got, p)
+			}
+			// Resuming an orphan checks the live state; this test runs.
+			if got.State != domain.StateRunning && got.State != domain.StateSleeping {
+				t.Errorf("Identify state = %q, want running or sleeping", got.State)
 			}
 			if _, err := id.Identify(ctx, 1<<30); !errors.Is(err, domain.ErrProcessGone) && err == nil {
 				t.Errorf("Identify(missing) succeeded")

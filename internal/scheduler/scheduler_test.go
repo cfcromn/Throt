@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func TestDefaultPolicyAndNormalize(t *testing.T) {
 		t.Fatalf("DefaultPolicy = %+v", d)
 	}
 	got := New(Policy{Mode: "bogus", HeavyLimit: 0, ResumeCooldown: -time.Second}).Policy()
-	want := Policy{Mode: ModeOff, HeavyLimit: 1, ResumeCooldown: 0, MaxQueueWait: DefaultMaxQueueWait, AdaptInterval: DefaultAdaptInterval}
+	want := Policy{Mode: ModeOff, HeavyLimit: 1, StartLimit: 1, ResumeCooldown: 0, MaxQueueWait: DefaultMaxQueueWait, AdaptInterval: DefaultAdaptInterval}
 	if got != want {
 		t.Fatalf("normalized = %+v, want %+v", got, want)
 	}
@@ -190,6 +191,9 @@ func TestNewcomerDoesNotOvertakeQueue(t *testing.T) {
 	expect(t, s.Decide(Input{Now: at(5), Pressure: domain.PressureNormal, Heavy: heavy}),
 		brief{ActionQueue, 6, ReasonSlotsExhausted})
 	heavy = []process.WorkloadView{wv(6, "d"), wv(7, "e")}
+	// 5's exit would let 6 skip the cooldown, unless pressure just paused
+	// something.
+	s.lastPressureSwitch = at(5)
 	expect(t, s.Decide(Input{Now: at(6), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(6)}),
 		brief{ActionQueue, 7, ReasonQueueWaiting})
 }
@@ -209,8 +213,10 @@ func TestResumeConditions(t *testing.T) {
 		{"unknown full not aged", domain.PressureUnknown, 2, time.Minute, nil},
 		{"high free", domain.PressureHigh, 0, time.Minute, nil},
 		{"critical free", domain.PressureCritical, 0, time.Minute, nil},
-		{"cooldown pending", domain.PressureNormal, 0, 9 * time.Second, nil},
-		{"cooldown just elapsed", domain.PressureNormal, 0, 10 * time.Second, []brief{{ActionResume, 100, ReasonSlotAvailable}}},
+		{"cooldown pending", domain.PressureElevated, 0, 9 * time.Second, nil},
+		{"cooldown just elapsed", domain.PressureElevated, 0, 10 * time.Second, []brief{{ActionResume, 100, ReasonSlotAvailable}}},
+		{"cooldown skipped at normal", domain.PressureNormal, 0, 9 * time.Second, []brief{{ActionResume, 100, ReasonPressureNormal}}},
+		{"cooldown pending at high", domain.PressureHigh, 0, 9 * time.Second, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -291,7 +297,8 @@ func TestResumePriority(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := New(enforce(2))
+			// One free slot, so exactly one queued workload is chosen.
+			s := New(enforce(len(tt.running) + 1))
 			heavy := slices.Clone(tt.running)
 			var paused []domain.ProcessKey
 			for _, q := range tt.queued {
@@ -324,12 +331,149 @@ func TestUnknownPressureResumesAgedRegardlessOfSlots(t *testing.T) {
 	}
 }
 
-func TestResumeAtMostOnePerRound(t *testing.T) {
-	s := New(enforce(4))
-	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal})
+// TestCooldownExemptions covers when free slots are refilled in one round
+// and when ResumeCooldown still spaces resumes. Workloads 1-4 run, 10-13
+// are queued in that order, and the limit is 4; exits take running
+// workloads out of the snapshot, and the previous resume was 1s ago.
+func TestCooldownExemptions(t *testing.T) {
+	const memory = false // elevated by memory: ThroughputOnly unset
+	tests := []struct {
+		name       string
+		pressure   domain.PressureLevel
+		throughput bool
+		exits      int // running workloads that exited since the last round
+		held       int // running workloads paused manually since
+		preempted  bool
+		want       []brief
+	}{
+		{"normal: exits refill at once", domain.PressureNormal, false, 3, 0, false, []brief{
+			{ActionResume, 10, ReasonWorkloadExited}, {ActionResume, 11, ReasonWorkloadExited}, {ActionResume, 12, ReasonWorkloadExited}}},
+		{"normal: free slots fill at once", domain.PressureNormal, false, 0, 2, false, []brief{
+			{ActionResume, 10, ReasonPressureNormal}, {ActionResume, 11, ReasonPressureNormal}}},
+		{"throughput: exits refill at once", domain.PressureElevated, true, 2, 0, false, []brief{
+			{ActionResume, 10, ReasonWorkloadExited}, {ActionResume, 11, ReasonWorkloadExited}}},
+		{"throughput: free slots fill at once", domain.PressureElevated, true, 0, 2, false, []brief{
+			{ActionResume, 10, ReasonPressureThroughput}, {ActionResume, 11, ReasonPressureThroughput}}},
+		{"mixed: exits first, then pressure", domain.PressureNormal, false, 1, 1, false, []brief{
+			{ActionResume, 10, ReasonWorkloadExited}, {ActionResume, 11, ReasonPressureNormal}}},
+		{"memory: exits refill at once", domain.PressureElevated, memory, 2, 0, false, []brief{
+			{ActionResume, 10, ReasonWorkloadExited}, {ActionResume, 11, ReasonWorkloadExited}}},
+		{"memory: other free slots wait", domain.PressureElevated, memory, 1, 2, false, []brief{
+			{ActionResume, 10, ReasonWorkloadExited}}},
+		{"memory: no exit, cooldown", domain.PressureElevated, memory, 0, 2, false, nil},
+		{"unknown: exits refill at once", domain.PressureUnknown, false, 1, 1, false, []brief{
+			{ActionResume, 10, ReasonWorkloadExited}}},
+		{"high: cooldown", domain.PressureHigh, false, 2, 0, false, nil},
+		{"after preemption: cooldown", domain.PressureNormal, false, 2, 0, true, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(enforce(4))
+			s.baselined, s.lastSwitch = true, at(99)
+			if tt.preempted {
+				s.lastPressureSwitch = at(95)
+			}
+			var heavy []process.WorkloadView
+			for pid := 1; pid <= 4; pid++ {
+				s.seen[key(pid)] = &entry{firstSeen: t0, running: true}
+				if pid > tt.exits {
+					heavy = append(heavy, wv(pid, "a"+fmt.Sprint(pid)))
+				}
+			}
+			var exited, held []domain.ProcessKey
+			for pid := 1; pid <= tt.exits; pid++ {
+				exited = append(exited, key(pid))
+			}
+			for pid := tt.exits + 1; pid <= tt.exits+tt.held; pid++ {
+				held = append(held, key(pid))
+			}
+			for i, pid := range []int{10, 11, 12, 13} {
+				heavy = append(heavy, wv(pid, "b"+fmt.Sprint(pid)))
+				s.seen[key(pid)] = &entry{firstSeen: at(i), queuedSince: at(i)}
+			}
+			got := s.Decide(Input{Now: at(100), Pressure: tt.pressure, ThroughputOnly: tt.throughput,
+				Heavy: heavy, Paused: keys(10, 11, 12, 13), Held: held, Exited: exited})
+			expect(t, got, tt.want...)
+			for i, d := range got {
+				// Running counts the resumes before and including d.
+				if want := 4 - tt.exits - tt.held + i + 1; d.RunningHeavy != want {
+					t.Fatalf("decision %d: RunningHeavy = %d, want %d", i, d.RunningHeavy, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCooldownSpacesRecoveryAfterPreemption(t *testing.T) {
+	crit := enforce(3)
+	crit.PauseOnCritical = true
+	s := New(crit)
 	heavy := []process.WorkloadView{wv(1, "a"), wv(2, "b"), wv(3, "c")}
-	got := s.Decide(Input{Now: at(1), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(1, 2, 3)})
-	expect(t, got, brief{ActionResume, 1, ReasonSlotAvailable})
+	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: heavy})
+	expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureCritical, Heavy: heavy}),
+		brief{ActionPreempt, 3, ReasonPressureCritical})
+	// 1 exits as pressure recovers, but the slot waits out the cooldown
+	// after the preemption.
+	heavy = []process.WorkloadView{wv(2, "b"), wv(3, "c")}
+	expect(t, s.Decide(Input{Now: at(5), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(3)}))
+	expect(t, s.Decide(Input{Now: at(11), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(3)}),
+		brief{ActionResume, 3, ReasonSlotAvailable})
+}
+
+func TestCooldownExemptionKeepsSafetyRules(t *testing.T) {
+	t.Run("held stays held", func(t *testing.T) {
+		s := New(enforce(4))
+		heavy := []process.WorkloadView{wv(1, "a"), wv(2, "b"), wv(3, "c")}
+		s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: heavy, Held: keys(2, 3), Paused: keys(3)})
+		// 1 exits; 2 and 3 are held (3 also wrongly listed as paused) and
+		// are never resumed, however many slots are free.
+		heavy = []process.WorkloadView{wv(2, "b"), wv(3, "c")}
+		expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureNormal, Heavy: heavy, Held: keys(2, 3), Paused: keys(3)}))
+	})
+	t.Run("per-agent limit", func(t *testing.T) {
+		s := New(budget(4, 1))
+		s.baselined, s.lastSwitch = true, at(9)
+		heavy := []process.WorkloadView{wv(1, "a"), wv(10, "a"), wv(11, "a"), wv(12, "b")}
+		s.seen[key(1)] = &entry{firstSeen: t0}
+		for _, pid := range []int{10, 11, 12} {
+			s.seen[key(pid)] = &entry{firstSeen: at(pid), queuedSince: at(pid)}
+		}
+		expect(t, s.Decide(Input{Now: at(10), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(10, 11, 12)}),
+			brief{ActionResume, 12, ReasonPressureNormal})
+	})
+	t.Run("adaptive limit and leases", func(t *testing.T) {
+		s := New(adaptive(8)) // starts at 8 and holds at elevated
+		s.baselined, s.lastSwitch, s.limit = true, at(9), 3
+		heavy := []process.WorkloadView{wv(10, "a"), wv(11, "b"), wv(12, "c")}
+		for _, pid := range []int{10, 11, 12} {
+			s.seen[key(pid)] = &entry{firstSeen: at(pid), queuedSince: at(pid)}
+		}
+		// Limit 3 and one lease: two slots, though three exits are
+		// credited.
+		s.seen[key(1)] = &entry{running: true}
+		s.seen[key(2)] = &entry{running: true}
+		s.seen[key(3)] = &entry{running: true}
+		expect(t, s.Decide(Input{Now: at(10), Pressure: domain.PressureElevated, Heavy: heavy, Paused: keys(10, 11, 12), Reserved: []string{"d"}, Exited: keys(1, 2, 3)}),
+			brief{ActionResume, 10, ReasonWorkloadExited}, brief{ActionResume, 11, ReasonWorkloadExited})
+	})
+	t.Run("critical resumes nothing", func(t *testing.T) {
+		s := New(enforce(4))
+		s.baselined = true
+		s.seen[key(1)] = &entry{running: true}
+		s.seen[key(10)] = &entry{queuedSince: t0}
+		expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureCritical, Heavy: []process.WorkloadView{wv(10, "a")}, Paused: keys(10)}))
+	})
+	t.Run("left the heavy list without exiting", func(t *testing.T) {
+		// 1 was regrouped into another workload or reclassified as light:
+		// it still uses what it used, so its slot earns no exemption.
+		s := New(enforce(2))
+		s.baselined, s.lastSwitch = true, at(99)
+		s.seen[key(1)] = &entry{firstSeen: t0, running: true}
+		s.seen[key(2)] = &entry{firstSeen: t0, running: true}
+		s.seen[key(10)] = &entry{firstSeen: t0, queuedSince: t0}
+		heavy := []process.WorkloadView{wv(2, "a"), wv(10, "b")}
+		expect(t, s.Decide(Input{Now: at(100), Pressure: domain.PressureElevated, Heavy: heavy, Paused: keys(10)}))
+	})
 }
 
 func TestPreemptUnderCritical(t *testing.T) {
@@ -672,4 +816,32 @@ func TestNewcomerQueuesBehindWaiter(t *testing.T) {
 		brief{ActionQueue, 1, ReasonQueueWaiting})
 	// Unknown pressure fails open, as for queued work.
 	expect(t, s.Decide(Input{Now: at(2), Pressure: domain.PressureUnknown, Heavy: []process.WorkloadView{wv(3, "a")}, Waiters: w}))
+}
+
+// TestRecoveryAfterSustainedHighIsSpaced checks that pressure staying high
+// with nothing to decide still spaces the recovery: the first calm round
+// must not resume every queued workload at once.
+func TestRecoveryAfterSustainedHighIsSpaced(t *testing.T) {
+	s := New(enforce(4))
+	s.baselined = true
+	var heavy []process.WorkloadView
+	for i, pid := range []int{10, 11, 12, 13} {
+		heavy = append(heavy, wv(pid, "a"+fmt.Sprint(pid)))
+		s.seen[key(pid)] = &entry{firstSeen: at(i), queuedSince: at(i)}
+	}
+	in := Input{Pressure: domain.PressureHigh, Heavy: heavy, Paused: keys(10, 11, 12, 13)}
+	for sec := 100; sec < 110; sec++ {
+		in.Now = at(sec)
+		s.Decide(in)
+	}
+	in.Now, in.Pressure = at(111), domain.PressureNormal
+	resumes := 0
+	for _, d := range s.Decide(in) {
+		if d.Action == ActionResume {
+			resumes++
+		}
+	}
+	if resumes > 1 {
+		t.Fatalf("first calm round after sustained high resumed %d workloads, want at most 1", resumes)
+	}
 }

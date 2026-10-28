@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -18,11 +19,16 @@ import (
 
 const configUsage = "usage: throt config check|show [--config PATH] [--json]"
 
+// cmdConfig is 'throt config'.
+func cmdConfig(_ context.Context, e env, args []string) error {
+	return runConfig(args, e.cfgPath, e.stdout)
+}
+
 // runConfig handles 'throt config check' and 'throt config show'. Both load
 // the file with config.Load, as throtd does.
 func runConfig(args []string, cfgPath string, w io.Writer) error {
 	if len(args) == 0 {
-		return errors.New(configUsage)
+		return usageLine(configUsage)
 	}
 	sub := args[0]
 	if sub == "-h" || sub == "-help" || sub == "--help" {
@@ -37,10 +43,13 @@ func runConfig(args []string, cfgPath string, w io.Writer) error {
 	if sub == "show" {
 		cfs.BoolVar(&asJSON, "json", false, "print the effective config as JSON")
 	}
-	if err := parseFlags(cfs, args[1:], w); errors.Is(err, flag.ErrHelp) {
+	if sub != "check" && sub != "show" {
+		return usageLine(configUsage)
+	}
+	if err := parseFlags(cfs, args[1:], w); err != nil {
 		return err
-	} else if err != nil || cfs.NArg() > 0 {
-		return errors.New(configUsage)
+	} else if cfs.NArg() > 0 {
+		return usageLine(configUsage)
 	}
 	switch sub {
 	case "check":
@@ -48,16 +57,14 @@ func runConfig(args []string, cfgPath string, w io.Writer) error {
 	case "show":
 		return configShow(w, cfgPath, asJSON)
 	}
-	return errors.New(configUsage)
+	return usageLine(configUsage)
 }
 
 // configCheck validates the file at path and prints "ok", what it changes
 // from the defaults, and warnings about settings that are allowed but risky
-// or ineffective. An invalid or missing file is an error.
+// or ineffective. An invalid file is an error; a missing one is not, since
+// throtd then uses the defaults.
 func configCheck(w io.Writer, path string, ncpu int) error {
-	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("no config file at %s (throtd would use the defaults)", path)
-	}
 	cfg, settings, err := config.Effective(path)
 	if err != nil {
 		return err
@@ -66,7 +73,11 @@ func configCheck(w io.Writer, path string, ncpu int) error {
 	for _, s := range settings {
 		source[s.Key] = s.Source
 	}
-	fmt.Fprintln(w, "ok: "+path)
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(w, "no config file at %s; defaults apply\n", path)
+	} else {
+		fmt.Fprintln(w, "ok: "+path)
+	}
 	changes := config.Diff(config.Default(), cfg)
 	if len(changes) == 0 {
 		fmt.Fprintln(w, "same as the defaults")
@@ -84,8 +95,10 @@ func configCheck(w io.Writer, path string, ncpu int) error {
 func configWarnings(cfg config.Config, ncpu int) []string {
 	var out []string
 	s := cfg.Scheduler
-	if s.Mode == "enforce" && s.HeavyLimit >= ncpu {
-		out = append(out, fmt.Sprintf("scheduler.heavy_limit %d is at least the CPU count (%d), so enforce mode will rarely queue anything", s.HeavyLimit, ncpu))
+	// With adaptive the heavy limit is only a ceiling, which the balanced
+	// profile sets to the CPU count on purpose.
+	if s.Mode == "enforce" && !s.Adaptive && s.HeavyLimit >= ncpu {
+		out = append(out, fmt.Sprintf("scheduler.heavy_limit %d is at least the CPU count (%d) and adaptive is off, so enforce mode will rarely queue anything", s.HeavyLimit, ncpu))
 	}
 	if s.Mode == "off" && s.PauseOnCritical {
 		out = append(out, "scheduler.pause_on_critical has no effect while scheduler.mode is off")

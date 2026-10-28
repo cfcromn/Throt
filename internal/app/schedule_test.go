@@ -2,11 +2,13 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,8 @@ import (
 
 	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/process"
+	"github.com/cfcromn/Throt/internal/scheduler"
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
@@ -68,6 +72,13 @@ func (w *world) signal(op string, k domain.ProcessKey, uid uint32) error {
 		return domain.ErrProcessGone
 	}
 	w.sent = append(w.sent, fmt.Sprintf("%s:%d", op, k.PID))
+	switch {
+	case op == "stop":
+		p.State = domain.StateStopped
+	case p.State == domain.StateStopped:
+		p.State = domain.StateRunning
+	}
+	w.procs[k.PID] = p
 	return nil
 }
 
@@ -250,5 +261,68 @@ func TestDaemonStats(t *testing.T) {
 	}
 	if r.Total.HeavyStarted != 2 || r.Total.QueuedSeconds != a.QueuedSeconds || r.Unattributed.HeavyStarted != 1 {
 		t.Fatalf("total = %+v, unattributed = %+v", r.Total, r.Unattributed)
+	}
+}
+
+// TestObserveWouldQueue checks that observe mode exposes the workloads the
+// last round would have queued, and that enforce mode never does.
+func TestObserveWouldQueue(t *testing.T) {
+	a := process.WorkloadView{Key: domain.ProcessKey{PID: 11, Start: time.Unix(11, 0)}, Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	b := process.WorkloadView{Key: domain.ProcessKey{PID: 21, Start: time.Unix(21, 0)}, Name: "make", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	d := controlDaemon(t, t.TempDir(), &fakeSignaler{})
+	c := config.Default().Scheduler
+	c.Mode, c.HeavyLimit, c.Adaptive = "observe", 1, false
+	d.sched = newScheduler(c)
+	now := time.Now()
+	round := func(heavy ...process.WorkloadView) []domain.ProcessKey {
+		now = now.Add(time.Second)
+		d.schedule(context.Background(), scheduler.Input{Now: now, Pressure: domain.PressureNormal, Heavy: heavy}, nil)
+		return d.schedulerStatus().WouldQueue
+	}
+	if got := round(a); len(got) != 0 {
+		t.Fatalf("first round would queue %v, want nothing", got)
+	}
+	if got := round(a, b); !reflect.DeepEqual(got, []domain.ProcessKey{b.Key}) {
+		t.Fatalf("would queue %v, want %v", got, b.Key)
+	}
+	if got := round(a, b); got == nil || len(got) != 0 {
+		t.Fatalf("next round would queue %v, want an empty list", got)
+	}
+	if st := d.schedulerStatus(); len(st.Queued) != 0 {
+		t.Errorf("observe mode queued %v", st.Queued)
+	}
+}
+
+// failingProcs is a process sampler that always fails.
+type failingProcs struct{}
+
+func (failingProcs) SampleProcesses(context.Context) ([]domain.ProcessSample, error) {
+	return nil, errors.New("ps: fork: resource temporarily unavailable")
+}
+
+// TestWouldQueueClearedOnFailedSample checks that a tick whose process
+// sample fails, and so skips the scheduler, does not keep showing the
+// previous round's would_queue.
+func TestWouldQueueClearedOnFailedSample(t *testing.T) {
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(t.TempDir(), "throtd.sock")
+	cfg.Scheduler.Mode, cfg.Scheduler.HeavyLimit, cfg.Scheduler.Adaptive = "observe", 1, false
+	d := NewDaemon(cfg, fakeSampler{}, failingProcs{}, &fakeSignaler{}, slog.New(slog.DiscardHandler))
+	a := process.WorkloadView{Key: domain.ProcessKey{PID: 11, Start: time.Unix(11, 0)}, Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	b := process.WorkloadView{Key: domain.ProcessKey{PID: 21, Start: time.Unix(21, 0)}, Name: "make", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	now := time.Now()
+	for _, heavy := range [][]process.WorkloadView{{a}, {a, b}} {
+		now = now.Add(time.Second)
+		d.schedule(context.Background(), scheduler.Input{Now: now, Pressure: domain.PressureNormal, Heavy: heavy}, nil)
+	}
+	if got := d.schedulerStatus().WouldQueue; len(got) != 1 {
+		t.Fatalf("would queue %v, want one workload", got)
+	}
+	d.tick(context.Background())
+	d.mu.Lock()
+	got := d.status.Scheduler.WouldQueue
+	d.mu.Unlock()
+	if len(got) != 0 {
+		t.Errorf("would queue after a failed process sample = %v, want empty", got)
 	}
 }

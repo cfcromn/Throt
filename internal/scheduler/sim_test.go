@@ -17,6 +17,7 @@ type simJob struct {
 	arrive int
 	dur    int  // seconds of work; a paused job makes no progress
 	pre    bool // already running when the scheduler starts (arrive must be 0)
+	rss    uint64
 }
 
 type simScenario struct {
@@ -24,6 +25,12 @@ type simScenario struct {
 	policy   Policy
 	jobs     []simJob
 	pressure func(t int) domain.PressureLevel
+	// throughputOnly, when set, is Input.ThroughputOnly at each tick.
+	throughputOnly func(t int) bool
+	// memory, when set, is the host's memory: Input.MemoryHeadroom is what
+	// is left of 3/4 of it (the elevated exit threshold) after the RSS of
+	// every job that has arrived and not finished, paused or not.
+	memory uint64
 	// wantPreempt requires at least one preemption.
 	wantPreempt bool
 	// noBound skips the makespan bound, for scenarios where pressure
@@ -39,7 +46,9 @@ type simResult struct {
 	maxWait, makespan, ideal   int
 	// limitMin and limitMax are the range of the effective limit.
 	limitMin, limitMax int
-	limitChanges       int
+	// limitEnd is the effective limit when the last job finished.
+	limitEnd     int
+	limitChanges int
 	// ownerMaxWait and ownerFinish are per owner: the longest single wait
 	// and when the owner's last job finished, relative to the first arrival.
 	ownerMaxWait, ownerFinish map[string]int
@@ -74,8 +83,8 @@ func runSim(t *testing.T, sc simScenario) simResult {
 	budget := s.Policy().PerOwnerLimit
 	cooldown := int(s.Policy().ResumeCooldown / time.Second)
 	maxQueueWait := int(s.Policy().MaxQueueWait / time.Second)
-	lastSwitch, preemptedNow := -1, false
-	res := simResult{limitMin: limit, limitMax: limit, ownerMaxWait: map[string]int{}, ownerFinish: map[string]int{}}
+	lastSwitch, lastPreempt, preemptedNow := -1, -1, false
+	res := simResult{limitMin: s.Limit(), limitMax: s.Limit(), ownerMaxWait: map[string]int{}, ownerFinish: map[string]int{}}
 	done := 0
 	// counts returns the running controlled jobs and the running jobs per
 	// owner at tick.
@@ -99,13 +108,24 @@ func runSim(t *testing.T, sc simScenario) simResult {
 		}
 		pressure := sc.pressure(tick)
 		in := Input{Now: at(tick), Pressure: pressure}
+		if sc.throughputOnly != nil {
+			in.ThroughputOnly = sc.throughputOnly(tick)
+		}
+		var used uint64
 		for i, j := range sc.jobs {
+			if finish[i] == tick {
+				in.Exited = append(in.Exited, keyOf(i))
+			}
 			if j.arrive <= tick && finish[i] < 0 {
-				in.Heavy = append(in.Heavy, process.WorkloadView{Key: keyOf(i), Name: "build", Class: domain.ClassBuild, Owner: j.owner})
+				in.Heavy = append(in.Heavy, process.WorkloadView{Key: keyOf(i), Name: "build", Class: domain.ClassBuild, Owner: j.owner, RSS: j.rss})
+				used += j.rss
 				if paused[i] {
 					in.Paused = append(in.Paused, keyOf(i))
 				}
 			}
+		}
+		if room := sc.memory / 4 * 3; room > used {
+			in.MemoryHeadroom = room - used
 		}
 		preemptedNow = false
 		decisions := s.Decide(in)
@@ -113,21 +133,49 @@ func runSim(t *testing.T, sc simScenario) simResult {
 		if lim < 1 || lim > limit {
 			t.Fatalf("%s t=%d: effective limit %d outside [1, %d]", sc.name, tick, lim, limit)
 		}
-		res.limitMin, res.limitMax = min(res.limitMin, lim), max(res.limitMax, lim)
+		res.limitMin, res.limitMax, res.limitEnd = min(res.limitMin, lim), max(res.limitMax, lim), lim
 		res.limitChanges += len(s.Changes())
 		for _, d := range decisions {
 			if d.HeavyLimit != lim {
 				t.Fatalf("%s t=%d: decision limit %d, effective %d", sc.name, tick, d.HeavyLimit, lim)
 			}
 		}
+		// Resumes and preemptions are at least one cooldown apart, except
+		// resumes exempt from it: at normal or throughput-only pressure, or
+		// into a slot an exit freed, and never within a cooldown of a
+		// preemption. So a round has at most one switch that is not exempt.
+		spaced, switched := 0, false
 		for _, d := range decisions {
-			if d.Action != ActionQueue {
-				// Resumes and preemptions are at least one cooldown apart.
-				if lastSwitch >= 0 && tick-lastSwitch < cooldown {
-					t.Fatalf("%s t=%d: %s %ds after the previous switch", sc.name, tick, d.Action, tick-lastSwitch)
-				}
-				lastSwitch = tick
+			if d.Action == ActionQueue {
+				continue
 			}
+			switched = true
+			exempt := false
+			switch d.Reason {
+			case ReasonPressureNormal:
+				exempt = pressure == domain.PressureNormal
+			case ReasonPressureThroughput:
+				exempt = pressure == domain.PressureElevated && in.ThroughputOnly
+			case ReasonWorkloadExited:
+				exempt = pressure != domain.PressureHigh && pressure != domain.PressureCritical
+			}
+			if d.Action == ActionResume && exempt {
+				if lastPreempt >= 0 && tick-lastPreempt < cooldown {
+					t.Fatalf("%s t=%d: resume (%s) %ds after a preemption", sc.name, tick, d.Reason, tick-lastPreempt)
+				}
+				continue
+			}
+			if spaced++; spaced > 1 || (lastSwitch >= 0 && tick-lastSwitch < cooldown) {
+				t.Fatalf("%s t=%d: %s (%s) %ds after the previous switch", sc.name, tick, d.Action, d.Reason, tick-lastSwitch)
+			}
+			if d.Action == ActionPreempt {
+				lastPreempt = tick
+			}
+		}
+		if switched {
+			lastSwitch = tick
+		}
+		for _, d := range decisions {
 			i := index[d.Key]
 			j := sc.jobs[i]
 			switch d.Action {
@@ -287,6 +335,52 @@ func TestSimulation(t *testing.T) {
 	}
 	flood = append(flood, simJob{owner: "agent-b", arrive: 15, dur: 30}, simJob{owner: "agent-b", arrive: 16, dur: 30})
 
+	// CPU-only oversubscription, as on the first real-machine benchmark: a
+	// burst of 4x CPUs one-core builds (2 minutes each) on 8 CPUs, under the
+	// balanced profile: start 2 (CPUs/4), ceiling 8 (the CPU count). Only
+	// the CPU is saturated, which holds pressure at elevated; memory, swap
+	// and latency stay calm.
+	oversubPolicy := base
+	oversubPolicy.HeavyLimit, oversubPolicy.StartLimit, oversubPolicy.Adaptive = 8, 2, true
+	oversubPolicy.ResumeCooldown = time.Second
+	var oversub []simJob
+	for i := range 32 {
+		oversub = append(oversub, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 1, dur: 120})
+	}
+	oversubPressure := func(int) domain.PressureLevel { return domain.PressureElevated }
+	cpuOnly := func(int) bool { return true }
+	memoryElevated := func(int) bool { return false }
+	// ideal is the makespan with every build running at once on 8 CPUs.
+	const oversubIdeal = 32 * 120 / 8
+
+	// A burst of short builds at the default 10s cooldown, as on the 2-CPU
+	// CI runner: 8 jobs of 5s at once, 2 slots. Each exit frees a slot that
+	// is refilled the next round, so the cooldown does not serialize them.
+	var burst []simJob
+	for i := range 8 {
+		burst = append(burst, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 1, dur: 5})
+	}
+
+	// A burst of short CPU-only builds under the balanced profile on 5
+	// CPUs, as on the macOS CI runner: 20 jobs of 5s at once, start 2,
+	// ceiling 5, default cooldown and adapt interval. The +1 per 30s alone
+	// held 3 slots for the whole burst, 1.8x the baseline makespan; with
+	// 50 MiB jobs on 16 GiB the limit may grow to the ceiling at once.
+	const gib = 1 << 30
+	shortPolicy := base
+	shortPolicy.HeavyLimit, shortPolicy.StartLimit, shortPolicy.Adaptive = 5, 2, true
+	var short []simJob
+	for i := range 20 {
+		short = append(short, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 1, dur: 5, rss: 50 << 20})
+	}
+	// The same burst with jobs of 22% of memory each, while the memory
+	// signals still read calm (they lag the working set): the headroom
+	// keeps the limit from growing at once.
+	var heavyMem []simJob
+	for i := range 8 {
+		heavyMem = append(heavyMem, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 1, dur: 6, rss: 16 * gib * 22 / 100})
+	}
+
 	scenarios := []simScenario{
 		{name: "1 agent, 1 build", policy: base, jobs: []simJob{{owner: "agent-0", arrive: 1, dur: 120}}, pressure: normalPressure},
 		{name: "6 agents, 12 overlapping builds", policy: base, jobs: overlap, pressure: normalPressure},
@@ -305,6 +399,61 @@ func TestSimulation(t *testing.T) {
 			check: func(t *testing.T, r simResult) {
 				if r.limitMin != 1 || r.limitMax != 4 {
 					t.Errorf("limit range [%d, %d], want [1, 4]: high must drive it down and recovery back up", r.limitMin, r.limitMax)
+				}
+			},
+		},
+		{
+			name: "CPU-only oversubscription", policy: oversubPolicy, jobs: oversub,
+			pressure: oversubPressure, throughputOnly: cpuOnly, noBound: true,
+			check: func(t *testing.T, r simResult) {
+				if r.limitEnd != 8 {
+					t.Errorf("limit ended at %d, want the ceiling 8", r.limitEnd)
+				}
+				if bound := oversubIdeal * 130 / 100; r.makespan > bound {
+					t.Errorf("makespan %ds over %ds, 1.3x the unthrottled ideal %ds", r.makespan, bound, oversubIdeal)
+				}
+			},
+		},
+		{
+			name: "same, elevated by memory", policy: oversubPolicy, jobs: oversub,
+			pressure: oversubPressure, throughputOnly: memoryElevated, noBound: true,
+			check: func(t *testing.T, r simResult) {
+				// Memory pressure holds the limit at its start.
+				if r.limitEnd != 2 || r.limitMax != 2 {
+					t.Errorf("limit ended at %d, want it held at 2", r.limitEnd)
+				}
+				if r.makespan < 3*oversubIdeal {
+					t.Errorf("makespan %ds, want the held limit to cost at least 3x the ideal %ds", r.makespan, oversubIdeal)
+				}
+			},
+		},
+		{name: "burst of short builds", policy: base, jobs: burst, pressure: normalPressure},
+		{
+			name: "same, elevated by CPU", policy: base, jobs: burst,
+			pressure: oversubPressure, throughputOnly: cpuOnly,
+		},
+		{
+			name: "same, elevated by memory", policy: base, jobs: burst,
+			pressure: oversubPressure, throughputOnly: memoryElevated,
+		},
+		{
+			name: "short CPU-only burst, 5 CPUs", policy: shortPolicy, jobs: short, memory: 16 * gib,
+			pressure: oversubPressure, throughputOnly: cpuOnly, noBound: true,
+			check: func(t *testing.T, r simResult) {
+				// 20 x 5s on 5 CPUs packs into 20s.
+				if r.limitEnd != 5 || r.makespan > 22 {
+					t.Errorf("limit ended at %d, makespan %ds; want the ceiling 5 within 10%% of 20s", r.limitEnd, r.makespan)
+				}
+			},
+		},
+		{
+			name: "same, 22% of memory per job", policy: shortPolicy, jobs: heavyMem, memory: 16 * gib,
+			pressure: oversubPressure, throughputOnly: cpuOnly, noBound: true,
+			check: func(t *testing.T, r simResult) {
+				// Only the first calm round's +1; the rest is too short for
+				// another interval.
+				if r.limitMax != 3 {
+					t.Errorf("limit reached %d, want 3: the jobs do not fit in the headroom", r.limitMax)
 				}
 			},
 		},

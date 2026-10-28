@@ -459,6 +459,12 @@ func TestApplyCgroupMemory(t *testing.T) {
 		want  domain.HostSample
 	}{
 		{"limited", limited, domain.HostSample{MemTotal: gib, MemAvailable: 3 * gib / 4, SwapTotal: gib, SwapUsed: 100 << 20}},
+		{
+			// Swap forbidden to the cgroup: no usable swap, whatever the host has.
+			"swap.max 0",
+			map[string]string{"memory.max": "max\n", "memory.swap.max": "0\n", "memory.swap.current": "0\n"},
+			domain.HostSample{MemTotal: 8 * gib, MemAvailable: 6 * gib},
+		},
 		{"unlimited", map[string]string{"memory.max": "max\n", "memory.swap.max": "max\n"}, host},
 		{"no files", nil, host},
 		{"unreadable usage", map[string]string{"memory.max": "1073741824\n", "memory.swap.max": "1073741824\n"}, host},

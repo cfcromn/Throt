@@ -7,9 +7,12 @@
 // workloads are paused.
 //
 // With Policy.Adaptive the number of heavy slots follows pressure (AIMD):
-// HeavyLimit is the ceiling, and the effective limit grows by one per
-// AdaptInterval under normal pressure and halves under high or critical
-// pressure. Limit changes are not decisions; the daemon drains them with
+// HeavyLimit is the ceiling, the effective limit starts at StartLimit and grows by one per
+// AdaptInterval under normal pressure, or elevated pressure caused by
+// throughput signals only, and halves under high or critical pressure.
+// Under the same calm pressure it also grows at once to make room for
+// waiting work, as far as memory headroom allows (see Input.MemoryHeadroom).
+// Limit changes are not decisions; the daemon drains them with
 // Changes and reports them as events.
 //
 // The package is deterministic: it makes no OS calls, starts no goroutines,
@@ -65,6 +68,14 @@ const (
 	ReasonPressureNormal  = "pressure_normal"
 	ReasonPressureUnknown = "pressure_unknown"
 	ReasonPolicyChanged   = "policy_changed"
+	// ReasonPressureThroughput is an increase at elevated pressure that
+	// only throughput signals cause (Input.ThroughputOnly).
+	ReasonPressureThroughput = "pressure_elevated_throughput"
+	// Resumes that skip ResumeCooldown (see cooldownExempt) say why:
+	// ReasonWorkloadExited when a running workload exited since the
+	// previous round and freed the slot, otherwise ReasonPressureNormal or
+	// ReasonPressureThroughput for the calm pressure that allowed it.
+	ReasonWorkloadExited = "workload_exited"
 )
 
 // Policy defaults.
@@ -87,7 +98,9 @@ type Policy struct {
 	HeavyLimit int
 	// ResumeCooldown is the minimum time between two resumes, two
 	// preemptions, or a preemption and a resume in either order, which
-	// avoids oscillation. Negative values are treated as 0.
+	// avoids oscillation. A resume into a free slot skips it while
+	// pressure is calm or the slot was freed by an exit (see
+	// cooldownExempt). Negative values are treated as 0.
 	ResumeCooldown time.Duration
 	// PauseOnCritical allows pausing a running workload under critical
 	// pressure.
@@ -96,12 +109,17 @@ type Policy struct {
 	// long outranks every other queued workload. Values <= 0 use the
 	// default.
 	MaxQueueWait time.Duration
-	// Adaptive makes HeavyLimit a ceiling: the effective limit starts there
-	// and follows pressure between 1 and HeavyLimit. Lowering it never
-	// preempts; new starts and resumes just wait.
+	// Adaptive makes HeavyLimit a ceiling: the effective limit starts at
+	// StartLimit and follows pressure between 1 and HeavyLimit. Lowering it
+	// never preempts; new starts and resumes just wait.
 	Adaptive bool
+	// StartLimit is the adaptive limit after New, a policy change that
+	// turns Adaptive on, or ModeOff. Values < 1 or above HeavyLimit mean
+	// HeavyLimit. It is ignored without Adaptive.
+	StartLimit int
 	// AdaptInterval is the minimum time between two adaptive limit changes
-	// driven by normal, high or critical pressure. Values <= 0 use the
+	// driven by normal, elevated (throughput only), high or critical
+	// pressure. Values <= 0 use the
 	// default.
 	AdaptInterval time.Duration
 	// PerOwnerLimit caps the running heavy workloads of one owner, so one
@@ -128,6 +146,9 @@ func (p Policy) normalized() Policy {
 		p.Mode = ModeOff
 	}
 	p.HeavyLimit = max(p.HeavyLimit, 1)
+	if p.StartLimit < 1 || p.StartLimit > p.HeavyLimit {
+		p.StartLimit = p.HeavyLimit
+	}
 	p.ResumeCooldown = max(p.ResumeCooldown, 0)
 	if p.MaxQueueWait <= 0 {
 		p.MaxQueueWait = DefaultMaxQueueWait
@@ -139,10 +160,24 @@ func (p Policy) normalized() Policy {
 	return p
 }
 
+// start is the effective limit to begin with: StartLimit when adaptive,
+// otherwise the fixed HeavyLimit. p must be normalized.
+func (p Policy) start() int {
+	if p.Adaptive {
+		return p.StartLimit
+	}
+	return p.HeavyLimit
+}
+
 // Input is one decision round's view of the host.
 type Input struct {
 	Now      time.Time
 	Pressure domain.PressureLevel
+	// ThroughputOnly reports that elevated pressure comes from throughput
+	// signals only (CPU, load, CPU PSI), with memory, swap and latency calm
+	// (see pressure.Engine.ThroughputOnly). Adaptive then grows the limit as
+	// at normal pressure. It is ignored at other levels.
+	ThroughputOnly bool
 	// Heavy is the latest snapshot of heavy workloads.
 	Heavy []process.WorkloadView
 	// Paused lists workloads currently paused by the scheduler (queued or
@@ -161,6 +196,17 @@ type Input struct {
 	// round. They move into the slot the lease held, so they are never
 	// queued, not even behind workloads that queued meanwhile.
 	Admitted []domain.ProcessKey
+	// Exited lists heavy workloads whose top process exited since the
+	// previous snapshot. Only these free a slot for a cooldown exemption
+	// (ReasonWorkloadExited): a workload that leaves Heavy while its
+	// process lives on (regrouped, or reclassified as light) still uses
+	// what it used.
+	Exited []domain.ProcessKey
+	// MemoryHeadroom is the bytes of memory the host can still fill before
+	// memory pressure would no longer be calm (see
+	// pressure.Engine.MemoryHeadroom); 0 when unknown. With Adaptive it
+	// bounds how far the limit may grow at once for waiting work.
+	MemoryHeadroom uint64
 	// Waiters are the `throt run` callers waiting for an admission lease.
 	// They share one FIFO with queued workloads (see Policy.FirstInLine):
 	// a queued workload is not resumed, and a newcomer not admitted, while a
@@ -251,6 +297,9 @@ type entry struct {
 	preemptions int
 	// preemptPending marks a preempt decision not yet confirmed by Paused.
 	preemptPending bool
+	// running is set when the latest round counted the workload as
+	// running (or resumed or admitted it), so its exit frees a slot.
+	running bool
 }
 
 // Scheduler is a deterministic heavy-slot scheduler.
@@ -262,6 +311,10 @@ type Scheduler struct {
 	seen      map[domain.ProcessKey]*entry
 	// lastSwitch is when the last resume or preemption was decided.
 	lastSwitch time.Time
+	// lastPressureSwitch is the last round at high or critical pressure,
+	// or the last preemption. Within ResumeCooldown of it no resume skips
+	// the cooldown.
+	lastPressureSwitch time.Time
 	// limit is the effective heavy limit, in [1, policy.HeavyLimit].
 	limit int
 	// lastAdapt is when the last interval-limited limit change happened;
@@ -272,12 +325,19 @@ type Scheduler struct {
 	lastRound time.Time
 	// changes are limit changes not yet drained by Changes.
 	changes []LimitChange
+	// pressureKnown is set by the first round with a known pressure. Before
+	// it, unknown pressure is the pressure engine warming up, not degraded
+	// metrics, so it does not reset the adaptive limit.
+	pressureKnown bool
+	// lastMaxRSS is the largest heavy workload RSS of the previous round,
+	// 0 when there was none; see grow.
+	lastMaxRSS uint64
 }
 
 // New returns a scheduler with policy p.
 func New(p Policy) *Scheduler {
 	p = p.normalized()
-	return &Scheduler{policy: p, seen: map[domain.ProcessKey]*entry{}, limit: p.HeavyLimit}
+	return &Scheduler{policy: p, seen: map[domain.ProcessKey]*entry{}, limit: p.start()}
 }
 
 // Policy returns the effective (normalized) policy.
@@ -288,10 +348,11 @@ func (s *Scheduler) Policy() Policy { return s.policy }
 // are already paused is kept so they are still resumed.
 //
 // If the scheduler was and stays adaptive, the effective limit is kept,
-// clamped to the new ceiling; otherwise it becomes the new HeavyLimit.
+// clamped to the new ceiling; otherwise it becomes the new StartLimit when
+// adaptive, or the new HeavyLimit.
 func (s *Scheduler) SetPolicy(p Policy) {
 	p = p.normalized()
-	limit := p.HeavyLimit
+	limit := p.start()
 	if p.Adaptive && s.policy.Adaptive {
 		limit = min(s.limit, p.HeavyLimit)
 	}
@@ -301,8 +362,8 @@ func (s *Scheduler) SetPolicy(p Policy) {
 	s.setLimit(limit, ReasonPolicyChanged, s.lastRound)
 }
 
-// Limit returns the effective heavy limit: Policy().HeavyLimit unless
-// Adaptive lowered it.
+// Limit returns the effective heavy limit: Policy().HeavyLimit, or with
+// Adaptive the limit that started at StartLimit and follows pressure.
 func (s *Scheduler) Limit() int { return s.limit }
 
 // Queued returns the workloads waiting in line (queued or preempted) as of
@@ -330,10 +391,16 @@ func (s *Scheduler) Changes() []LimitChange {
 // adapt moves the effective limit for this round's pressure:
 //
 //   - normal: +1, at most once per AdaptInterval, up to HeavyLimit;
-//   - elevated: hold;
+//   - elevated by throughput signals only: +1 as at normal. Saturated
+//     cores are the throughput the scheduler protects; while memory, swap
+//     and latency stay calm the machine copes, and holding would pin the
+//     limit wherever it was when the build started;
+//   - elevated otherwise: hold;
 //   - high or critical: halve (floor 1), at most once per AdaptInterval;
-//   - unknown: reset to HeavyLimit at once (fail open).
-func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel) {
+//   - unknown: reset to HeavyLimit at once (fail open), once pressure has
+//     been known; the unknown rounds before that are the pressure engine
+//     warming up and hold the limit, so a daemon start keeps StartLimit.
+func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel, throughputOnly bool) {
 	p := s.policy
 	if !p.Adaptive {
 		return
@@ -346,6 +413,9 @@ func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel) {
 	next, reason := s.limit, ""
 	switch pressure {
 	case domain.PressureUnknown:
+		if !s.pressureKnown {
+			return
+		}
 		// Degraded metrics must not keep work throttled. The reset is not
 		// rate limited and does not delay the next decrease.
 		s.lastAdapt = time.Time{}
@@ -353,6 +423,10 @@ func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel) {
 		return
 	case domain.PressureNormal:
 		next, reason = min(s.limit+1, p.HeavyLimit), ReasonPressureNormal
+	case domain.PressureElevated:
+		if throughputOnly {
+			next, reason = min(s.limit+1, p.HeavyLimit), ReasonPressureThroughput
+		}
 	case domain.PressureHigh:
 		next, reason = max(s.limit/2, 1), ReasonPressureHigh
 	case domain.PressureCritical:
@@ -362,6 +436,62 @@ func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel) {
 		s.lastAdapt = now
 		s.setLimit(next, reason, now)
 	}
+}
+
+// grow raises the adaptive limit at once, without waiting for
+// AdaptInterval, so that waiting work can start while pressure is calm
+// (normal, or elevated by throughput only). The +1 per AdaptInterval of
+// adapt is sized for the pressure window, which takes that long to show
+// what one more workload does to memory; a burst of short builds is over
+// before the limit catches up, and leaves cores idle that the CPU signals
+// say are only throughput. grow uses evidence that is available at once
+// instead: each new slot is assumed to take as much memory as the largest
+// heavy workload (running or not), and the slots must fit in
+// in.MemoryHeadroom. It does nothing:
+//
+//   - unless Adaptive, pressure is calm and has been known;
+//   - within AdaptInterval of a round at high or critical pressure or of a
+//     preemption, so a decrease is not undone at once;
+//   - while the largest heavy RSS is unknown, or grew more than 1/8 since
+//     the previous round: a workload still building its working set (or
+//     one that just started) would be undercounted;
+//   - beyond the work waiting (queued, new, or lease waiters: demand), the
+//     memory that fits, or HeavyLimit.
+//
+// Lease reservations count as running but have not used memory yet, so
+// each takes one fitted slot.
+func (s *Scheduler) grow(in Input, cands []*cand, running, demand int) {
+	var maxRSS uint64
+	for _, c := range cands {
+		maxRSS = max(maxRSS, c.v.RSS)
+	}
+	last := s.lastMaxRSS
+	s.lastMaxRSS = maxRSS
+	p := s.policy
+	calm := in.Pressure == domain.PressureNormal || (in.Pressure == domain.PressureElevated && in.ThroughputOnly)
+	if !p.Adaptive || !calm || !s.pressureKnown || demand == 0 || s.limit >= p.HeavyLimit {
+		return
+	}
+	if !s.lastPressureSwitch.IsZero() && in.Now.Sub(s.lastPressureSwitch) < p.AdaptInterval {
+		return
+	}
+	if maxRSS == 0 || last == 0 || maxRSS > last+last/8 {
+		return
+	}
+	fit := int(min(in.MemoryHeadroom/maxRSS, uint64(p.HeavyLimit))) - len(in.Reserved)
+	if fit <= 0 {
+		return
+	}
+	next := min(p.HeavyLimit, running+min(demand, fit))
+	if next <= s.limit {
+		return
+	}
+	reason := ReasonPressureNormal
+	if in.Pressure == domain.PressureElevated {
+		reason = ReasonPressureThroughput
+	}
+	s.lastAdapt = in.Now
+	s.setLimit(next, reason, in.Now)
 }
 
 // setLimit changes the effective limit and records the change.
@@ -386,7 +516,9 @@ type cand struct {
 }
 
 // Decide returns this round's decisions, sorted by action (resume, queue,
-// preempt) and then by process key.
+// preempt) and then by process key. It resumes at most one queued workload
+// per ResumeCooldown, plus every one a cooldown exemption lets fill a free
+// slot (cooldownExempt).
 func (s *Scheduler) Decide(in Input) []Decision {
 	p := s.policy
 	if p.Mode == ModeOff {
@@ -397,13 +529,22 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		// The clock went backwards; do not let the cooldown block forever.
 		s.lastSwitch = time.Time{}
 	}
+	if !s.lastPressureSwitch.IsZero() && in.Now.Before(s.lastPressureSwitch) {
+		s.lastPressureSwitch = time.Time{}
+	}
+	if in.Pressure == domain.PressureHigh || in.Pressure == domain.PressureCritical {
+		// Pressure that stays high with nothing to decide must still space
+		// the recovery, or every queued workload resumes in its first calm
+		// round.
+		s.lastPressureSwitch = in.Now
+	}
 	s.lastRound = in.Now
-	s.adapt(in.Now, in.Pressure)
-	limit := s.limit
+	s.adapt(in.Now, in.Pressure, in.ThroughputOnly)
+	s.pressureKnown = s.pressureKnown || in.Pressure != domain.PressureUnknown
 
 	paused := keySet(in.Paused)
 	held := keySet(in.Held)
-	cands := s.observe(in, paused, held, keySet(in.Admitted))
+	cands, exited := s.observe(in, paused, held, keySet(in.Admitted))
 
 	// Running heavy workloads, before admitting new ones. Unattributed
 	// workloads count: they consume resources even though they are never
@@ -424,8 +565,11 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		default:
 			running++
 			perOwner[c.v.Owner]++
+			c.e.running = true
 		}
 	}
+	s.grow(in, cands, running, len(queued)+len(admissible)+len(in.Waiters))
+	limit := s.limit
 
 	var out []Decision
 	add := func(a Action, c *cand, reason string) {
@@ -437,10 +581,24 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		})
 	}
 
-	// Resume at most one queued workload.
-	if c, reason := s.pickResume(in, queued, running, perOwner); c != nil {
+	// Resume queued workloads: one per cooldown, plus as many as a
+	// cooldown exemption lets fill free slots.
+	for {
+		c, reason := s.pickResume(in, queued, running, perOwner)
+		if c == nil {
+			break
+		}
+		if !s.cooledDown(in.Now) {
+			if reason = s.cooldownExempt(in, running, exited); reason == "" {
+				break
+			}
+			if reason == ReasonWorkloadExited {
+				exited--
+			}
+		}
 		running++
 		perOwner[c.v.Owner]++
+		c.e.running = true
 		add(ActionResume, c, reason)
 		queued = slices.DeleteFunc(queued, func(q *cand) bool { return q == c })
 		s.lastSwitch = in.Now
@@ -475,9 +633,13 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		if reason == "" {
 			running++
 			perOwner[c.v.Owner]++
+			c.e.running = true
 			continue
 		}
 		c.e.queuedSince = in.Now
+		if reason == ReasonPressureHigh || reason == ReasonPressureCritical {
+			s.lastPressureSwitch = in.Now
+		}
 		add(ActionQueue, c, reason)
 	}
 
@@ -500,7 +662,8 @@ func (s *Scheduler) Decide(in Input) []Decision {
 			}
 		}
 		if eligible > 1 {
-			s.lastSwitch = in.Now
+			s.lastSwitch, s.lastPressureSwitch = in.Now, in.Now
+			victim.e.running = false
 			victim.e.queuedSince = in.Now
 			victim.e.preemptPending = true
 			add(ActionPreempt, victim, ReasonPressureCritical)
@@ -515,8 +678,10 @@ func (s *Scheduler) Decide(in Input) []Decision {
 }
 
 // observe updates per-workload state from the snapshot and returns this
-// round's candidates in snapshot order.
-func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessKey]struct{}) []*cand {
+// round's candidates in snapshot order, and how many workloads the previous
+// round counted as running have left the snapshot because they exited
+// (in.Exited).
+func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessKey]struct{}) ([]*cand, int) {
 	present := make(map[domain.ProcessKey]struct{}, len(in.Heavy))
 	cands := make([]*cand, 0, len(in.Heavy))
 	for _, v := range in.Heavy {
@@ -555,22 +720,27 @@ func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessK
 			e.queuedSince = time.Time{}
 		}
 		e.preemptPending = false
+		e.running = false // set again by Decide
 		cands = append(cands, c)
 	}
-	for k := range s.seen {
+	exited := 0
+	for k, e := range s.seen {
 		if _, ok := present[k]; !ok {
+			if e.running && slices.Contains(in.Exited, k) {
+				exited++
+			}
 			delete(s.seen, k)
 		}
 	}
 	s.baselined = true
-	return cands
+	return cands, exited
 }
 
 // pickResume returns the queued workload to resume this round, if any, and
 // the reason.
 func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner map[string]int) (*cand, string) {
 	p := s.policy
-	if len(queued) == 0 || !s.cooledDown(in.Now) {
+	if len(queued) == 0 {
 		return nil, ""
 	}
 	aged := func(c *cand) bool { return in.Now.Sub(c.e.queuedSince) >= p.MaxQueueWait }
@@ -638,6 +808,34 @@ func (s *Scheduler) yields(in Input, c *cand, perOwner map[string]int) bool {
 	})
 }
 
+// cooldownExempt returns the reason a resume may skip ResumeCooldown, or ""
+// if it must wait. The cooldown keeps resumes from compounding pressure, so
+// a resume skips it when it fills a free slot under the effective limit and
+// either a running workload exited since the previous round (its
+// replacement adds no load: ReasonWorkloadExited) or pressure is calm:
+// normal, or elevated by throughput only (ReasonPressureNormal,
+// ReasonPressureThroughput). It never does at high or critical pressure,
+// nor within ResumeCooldown of a preemption or of a round at high or
+// critical pressure, so recovery stays spaced. exited is the number of
+// exits not yet refilled this round.
+func (s *Scheduler) cooldownExempt(in Input, running, exited int) string {
+	if running >= s.limit || in.Pressure == domain.PressureHigh || in.Pressure == domain.PressureCritical {
+		return ""
+	}
+	if !s.lastPressureSwitch.IsZero() && in.Now.Sub(s.lastPressureSwitch) < s.policy.ResumeCooldown {
+		return ""
+	}
+	switch {
+	case exited > 0:
+		return ReasonWorkloadExited
+	case in.Pressure == domain.PressureNormal:
+		return ReasonPressureNormal
+	case in.Pressure == domain.PressureElevated && in.ThroughputOnly:
+		return ReasonPressureThroughput
+	}
+	return ""
+}
+
 // cooledDown reports whether ResumeCooldown has elapsed since the last
 // resume or preemption.
 func (s *Scheduler) cooledDown(now time.Time) bool {
@@ -647,9 +845,11 @@ func (s *Scheduler) cooledDown(now time.Time) bool {
 func (s *Scheduler) reset() {
 	s.baselined = false
 	s.lastSwitch = time.Time{}
+	s.lastPressureSwitch = time.Time{}
 	clear(s.seen)
-	s.limit = s.policy.HeavyLimit
+	s.limit = s.policy.start()
 	s.lastAdapt = time.Time{}
+	s.lastMaxRSS = 0
 	s.changes = nil
 }
 

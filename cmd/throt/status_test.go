@@ -8,6 +8,7 @@ import (
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
 )
 
@@ -56,13 +57,50 @@ func TestPrintStatusReserved(t *testing.T) {
 	var buf bytes.Buffer
 	printStatus(&buf, st)
 	for _, want := range []string{
-		"SCHEDULER enforce (heavy limit 2, 0 queued, 2 reserved)",
+		"SCHEDULER enforce, limit 2, 0 queued, 2 reserved",
 		"RESERVED  pid 500 (claude-1) since 14:03:04",
 		"RESERVED  pid 501 (-) since 14:03:04",
 	} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, buf.String())
 		}
+	}
+}
+
+// TestPrintStatusOrder checks that the scheduler lines come with the
+// summary, before the tables, which a tabwriter buffers.
+func TestPrintStatusOrder(t *testing.T) {
+	st := app.StatusResult{
+		Host:      &domain.HostSample{MemTotal: 1 << 30},
+		Agents:    []process.AgentView{{Agent: "claude-1", Key: domain.ProcessKey{PID: 1000}}},
+		Scheduler: app.SchedulerStatus{Mode: scheduler.ModeEnforce, HeavyLimit: 2, Leases: []app.Lease{{Process: domain.ProcessKey{PID: 500}}}},
+	}
+	var buf bytes.Buffer
+	printStatus(&buf, st)
+	out := buf.String()
+	order := []string{"SWAP", "SCHEDULER", "RESERVED", "\nAGENTS\nAGENT", "claude-1", "HEAVY WORKLOADS"}
+	last := -1
+	for _, s := range order {
+		i := strings.Index(out, s)
+		if i <= last {
+			t.Fatalf("%q out of order:\n%s", s, out)
+		}
+		last = i
+	}
+}
+
+func TestLimitText(t *testing.T) {
+	if got := limitText(app.SchedulerStatus{HeavyLimit: 2}); got != "limit 2" {
+		t.Errorf("fixed: %q", got)
+	}
+	adaptive := app.SchedulerStatus{HeavyLimit: 3, Adaptive: true, StartLimit: 2, MaxLimit: 10}
+	if got := limitText(adaptive); got != "limit 3 (adaptive, start 2, max 10)" {
+		t.Errorf("adaptive: %q", got)
+	}
+	var buf bytes.Buffer
+	printStatus(&buf, app.StatusResult{Host: &domain.HostSample{}, Scheduler: adaptive})
+	if want := "SCHEDULER off, limit 3 (adaptive, start 2, max 10), 0 queued, 0 reserved\n"; !strings.Contains(buf.String(), want) {
+		t.Errorf("status lacks %q:\n%s", want, buf.String())
 	}
 }
 

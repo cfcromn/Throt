@@ -1,0 +1,62 @@
+name: Soak
+
+# The soak test (internal/e2e TestSoak) on hosted runners: 10 minutes of
+# enforce-mode churn, a throtd crash and restart, and checks for stranded
+# work, leaks, latency and the heavy limit. It runs on demand
+# (gh workflow run soak.yml) and weekly, never on push or pull request.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    # Hosted runners are disposable VMs, so the enforce-mode daemon's
+    # process control is safe here, and macOS gets a real XNU kernel.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # Build, 10 minutes of churn, then up to 6 minutes of drain.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Soak
+        # Build the test binary and run it directly: under `go test`, the
+        # `go` process (itself a heavy build) would be an ancestor of every
+        # job and fold them into one workload.
+        run: |
+          out="$RUNNER_TEMP/soak-${{ matrix.os }}"
+          mkdir -p "$out"
+          go test -c -o "$RUNNER_TEMP/e2e.test" ./internal/e2e
+          set -o pipefail
+          CI=true THROT_SOAK=1 THROT_SOAK_DURATION=10m THROT_SOAK_LOGDIR="$out" \
+            "$RUNNER_TEMP/e2e.test" -test.run TestSoak -test.v -test.count=1 -test.timeout 30m 2>&1 |
+            tee "$out/soak.log"
+      - name: Summary
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/soak-${{ matrix.os }}/summary.md"
+          if [ -f "$out" ]; then
+            { echo "## Soak: ${{ matrix.os }}"; cat "$out"; } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Soak: ${{ matrix.os }}: no results (see the log)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: soak-${{ matrix.os }}
+          path: ${{ runner.temp }}/soak-${{ matrix.os }}
+          if-no-files-found: warn

@@ -84,6 +84,9 @@ type Accountant struct {
 type heavyRec struct {
 	owner      domain.ProcessKey
 	attributed bool
+	// credited is set once the workload counted toward an agent's heavy
+	// jobs; until then it counts as unattributed.
+	credited bool
 }
 
 // New returns an empty accountant.
@@ -149,13 +152,20 @@ func (a *Accountant) Observe(now time.Time, snap process.Snapshot, queued []doma
 	for _, w := range snap.Heavy {
 		owner, attributed := byPID[w.OwnerPID]
 		attributed = attributed && w.Owner != ""
-		heavy[w.Key] = heavyRec{owner: owner, attributed: attributed}
-		_, old := a.heavy[w.Key]
-		if attributed {
-			if !old {
-				a.agents[owner].HeavyStarted++
-				a.total.HeavyStarted++
+		prev, old := a.heavy[w.Key]
+		rec := heavyRec{owner: owner, attributed: attributed, credited: old && prev.credited}
+		if attributed && !rec.credited {
+			// A workload first seen unattributed (its agent missing
+			// from a snapshot) moves to the agent once it is known.
+			if old {
+				a.unattr.HeavyStarted--
 			}
+			a.agents[owner].HeavyStarted++
+			a.total.HeavyStarted++
+			rec.credited = true
+		}
+		heavy[w.Key] = rec
+		if attributed {
 			continue
 		}
 		anyUnattr = true

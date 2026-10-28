@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -25,6 +24,11 @@ type versionInfo struct {
 	DaemonError string `json:"daemon_error,omitempty"`
 }
 
+// cmdVersion is 'throt version'.
+func cmdVersion(_ context.Context, e env, args []string) error {
+	return runVersion(args, e.cfgPath, e.stdout)
+}
+
 // runVersion prints the client version, or with --json a versionInfo that
 // also asks throtd for its version.
 func runVersion(args []string, cfgPath string, w io.Writer) error {
@@ -34,7 +38,7 @@ func runVersion(args []string, cfgPath string, w io.Writer) error {
 		return err
 	case len(args) == 1 && (args[0] == "--json" || args[0] == "-json"):
 	default:
-		return errors.New("usage: throt version [--json]")
+		return usageLine("usage: throt version [--json]")
 	}
 	// An invalid config must not hide the client version.
 	socket := config.DefaultSocketPath()

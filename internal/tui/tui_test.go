@@ -191,7 +191,7 @@ func TestRenderWide(t *testing.T) {
 		"SWAP", "25%", "1.0 GiB / 4.0 GiB",
 		"AGENTS (3)", "AGENT", "PID", "CHILDREN", "claude-1", "1000",
 		"HEAVY WORKLOADS (2)", "OWNER", "PROCESS", "CLASS", "gradle", "build", "200%",
-		"TIMELINE", "09:31:06", "pressure_changed", "pressure normal -> high",
+		"TIMELINE", "09:31:06", "pressure normal -> high",
 		"q quit",
 	)
 	// Newest event first.
@@ -229,17 +229,17 @@ func TestPausedState(t *testing.T) {
 
 func TestTooSmall(t *testing.T) {
 	c := &fakeClient{status: sampleStatus(1, 1)}
-	for _, size := range [][2]int{{39, 30}, {80, 11}} {
+	for _, size := range [][2]int{{39, 30}, {80, 9}} {
 		m := newModel(t, c, size[0], size[1])
 		out := view(m)
 		assertContains(t, out, "terminal too small")
 		assertFits(t, out, size[0], size[1])
 	}
-	m := newModel(t, c, 40, 12)
+	m := newModel(t, c, 40, 10)
 	if out := view(m); strings.Contains(out, "too small") {
-		t.Errorf("40x12 should render:\n%s", out)
+		t.Errorf("40x10 should render:\n%s", out)
 	} else {
-		assertFits(t, out, 40, 12)
+		assertFits(t, out, 40, 10)
 	}
 }
 

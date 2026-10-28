@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"strconv"
@@ -9,7 +12,45 @@ import (
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/stats"
+	"github.com/cfcromn/Throt/internal/transport"
 )
+
+// cmdStats is 'throt stats [--json]'.
+func cmdStats(ctx context.Context, e env, args []string) error {
+	asJSON, err := parseStatsArgs(args, e.stdout, e.stderr)
+	if err != nil {
+		return err
+	}
+	cfg := e.clientConfig()
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	var r app.StatsResult
+	if err := transport.Call(ctx, cfg.SocketPath, "stats", nil, &r); err != nil {
+		return err
+	}
+	if asJSON {
+		enc := json.NewEncoder(e.stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(r)
+	}
+	printStats(e.stdout, r, time.Now())
+	return nil
+}
+
+// parseStatsArgs parses the arguments after 'stats'.
+func parseStatsArgs(args []string, stdout, stderr io.Writer) (asJSON bool, err error) {
+	sfs := flag.NewFlagSet("throt stats", flag.ContinueOnError)
+	sfs.SetOutput(stderr)
+	sfs.Usage = func() { fmt.Fprintln(sfs.Output(), "usage: throt stats [--json]"); sfs.PrintDefaults() }
+	sfs.BoolVar(&asJSON, "json", false, "print the stats as JSON")
+	if err := parseFlags(sfs, args, stdout); err != nil {
+		return false, err
+	}
+	if sfs.NArg() > 0 {
+		return false, usageLine("usage: throt stats [--json]")
+	}
+	return asJSON, nil
+}
 
 // printStats prints per-agent usage, most CPU time first (the daemon sorts
 // the rows), followed by the all-agents and unattributed totals.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"slices"
@@ -14,10 +15,31 @@ import (
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
+	"github.com/cfcromn/Throt/internal/transport"
 )
 
 // explainEvents is how many events about the workload explain shows.
 const explainEvents = 10
+
+// cmdExplain is 'throt explain PID'.
+func cmdExplain(ctx context.Context, e env, args []string) error {
+	pid, err := pidArg(args, "usage: throt explain PID")
+	if err != nil {
+		return err
+	}
+	cfg := e.clientConfig()
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	var st app.StatusResult
+	if err := transport.Call(ctx, cfg.SocketPath, "status", nil, &st); err != nil {
+		return err
+	}
+	var events []domain.Event
+	if err := transport.Call(ctx, cfg.SocketPath, "events", app.EventsParams{Limit: app.MaxEventsPerCall}, &events); err != nil {
+		return err
+	}
+	return explain(e.stdout, pid, st, events, time.Duration(cfg.Scheduler.ResumeCooldown))
+}
 
 // explain writes why the heavy workload pid is running, paused or queued,
 // using only what the daemon already reports. cooldown is the local
@@ -49,7 +71,7 @@ func explain(w io.Writer, pid int, st app.StatusResult, events []domain.Event, c
 		owner = fmt.Sprintf("%s (pid %d)", h.Owner, h.OwnerPID)
 	}
 	sc := st.Scheduler
-	limits := fmt.Sprintf("heavy limit %d", sc.HeavyLimit)
+	limits := limitText(sc)
 	if sc.PerAgentLimit > 0 {
 		limits += fmt.Sprintf(", per-agent limit %d", sc.PerAgentLimit)
 	}
@@ -58,7 +80,13 @@ func explain(w io.Writer, pid int, st app.StatusResult, events []domain.Event, c
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "state\t%s\n", state)
 	fmt.Fprintf(tw, "owner\t%s\n", owner)
-	fmt.Fprintf(tw, "scheduler\t%s, %s, %d/%d heavy running\n", modeName(sc.Mode), limits, running(st), sc.HeavyLimit)
+	// With the scheduler off the limit is not enforced, so a running/limit
+	// ratio would only mislead.
+	if modeName(sc.Mode) == string(scheduler.ModeOff) {
+		fmt.Fprintf(tw, "scheduler\t%s, %s\n", modeName(sc.Mode), limits)
+	} else {
+		fmt.Fprintf(tw, "scheduler\t%s, %s, %d/%d heavy running\n", modeName(sc.Mode), limits, running(st), sc.HeavyLimit)
+	}
 	fmt.Fprintf(tw, "pressure\t%s\n", st.Pressure)
 	tw.Flush()
 

@@ -17,7 +17,7 @@ Before modifying behavior, read:
 
 - Do not add automatic process control to observe-only paths.
 - Do not signal/kill/suspend unknown processes.
-- Do not add outbound telemetry.
+- Do not add outbound telemetry. The only network access is `throt update`, and only when the user runs it; never check for updates automatically or in the background.
 - Do not read/store prompts, source files, command output, or environment variables for metrics.
 - Do not introduce elevated-privilege requirements without an approved design.
 - Do not couple core scheduling logic to a specific agent vendor.

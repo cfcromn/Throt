@@ -559,3 +559,42 @@ func TestLatency(t *testing.T) {
 		}
 	})
 }
+
+// TestRecoveryAfterSamplingGap checks that a gap in sampling longer than
+// the window (a suspended laptop, a stalled daemon) restarts the recovery
+// dwell: the first sample after the gap is the whole window, and one
+// sample must not de-escalate.
+func TestRecoveryAfterSamplingGap(t *testing.T) {
+	const window = 5 * time.Second // dwell 10s
+	e := New(window, DefaultThresholds())
+	run(t, e, concat(memSeries(0, 3, 0.3), memSeries(3, 10, 0.93)))
+	if e.Level() != domain.PressureHigh {
+		t.Fatalf("setup: level = %v, want high", e.Level())
+	}
+	// Recovery starts at t=15, then sampling stops at t=17 until t=40.
+	if got := run(t, e, memSeries(13, 5, 0.3)); len(got) != 0 {
+		t.Fatalf("transitions before the gap = %+v", got)
+	}
+	got := run(t, e, memSeries(40, 20, 0.3))
+	if len(got) != 1 || got[0].level != domain.PressureNormal || got[0].sec != 50 {
+		t.Fatalf("transitions after the gap = %+v, want normal at t=50 (a full dwell after it)", got)
+	}
+}
+
+func TestWindowFor(t *testing.T) {
+	for _, tc := range []struct{ interval, want time.Duration }{
+		{100 * time.Millisecond, DefaultWindow},
+		{2 * time.Second, DefaultWindow},
+		{3 * time.Second, DefaultWindow},
+		{5 * time.Second, 50 * time.Second},
+		{10 * time.Second, 100 * time.Second},
+		{0, DefaultWindow},
+	} {
+		if got := WindowFor(tc.interval); got != tc.want {
+			t.Errorf("WindowFor(%v) = %v, want %v", tc.interval, got, tc.want)
+		}
+		if got := New(WindowFor(tc.interval), DefaultThresholds()).Window(); got != tc.want {
+			t.Errorf("New(WindowFor(%v)).Window() = %v, want %v", tc.interval, got, tc.want)
+		}
+	}
+}

@@ -270,7 +270,9 @@ func TestOwnerBudgetDoesNotBlockOtherOwners(t *testing.T) {
 	expect(t, s.Decide(Input{Now: at(2), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(2)}))
 	// But work that could run still blocks a newcomer.
 	heavy = []process.WorkloadView{wv(2, "a"), wv(3, "b")}
-	s.lastSwitch = at(3) // hold the resume back with the cooldown
+	// Hold the resume back with the cooldown after a pressure-driven pause,
+	// which 1's exit does not skip.
+	s.lastSwitch, s.lastPressureSwitch = at(3), at(3)
 	heavy = append(heavy, wv(5, "c"))
 	expect(t, s.Decide(Input{Now: at(4), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(2)}),
 		brief{ActionQueue, 5, ReasonQueueWaiting})
@@ -305,4 +307,277 @@ func TestOwnerBudgetResumeSelection(t *testing.T) {
 	s2.Decide(Input{Now: at(1), Pressure: domain.PressureNormal, Heavy: heavy})
 	expect(t, s2.Decide(Input{Now: at(2), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(2, "a")}, Paused: keys(2)}),
 		brief{ActionResume, 2, ReasonSlotAvailable})
+}
+
+func TestAdaptiveThroughputOnly(t *testing.T) {
+	N, E, H := domain.PressureNormal, domain.PressureElevated, domain.PressureHigh
+	type step struct {
+		sec            int
+		pressure       domain.PressureLevel
+		throughputOnly bool
+		limit          int
+	}
+	tests := []struct {
+		name    string
+		steps   []step
+		changes []LimitChange
+	}{
+		{
+			name: "throughput-only elevated adds one per interval up to the ceiling",
+			steps: []step{
+				{0, H, false, 3}, {30, H, false, 1}, {31, E, true, 1}, {59, E, true, 1}, {60, E, true, 2},
+				{90, E, true, 3}, {120, E, true, 4}, {150, E, true, 5}, {180, E, true, 6}, {210, E, true, 6},
+			},
+			changes: []LimitChange{
+				{6, 3, ReasonPressureHigh, at(0)}, {3, 1, ReasonPressureHigh, at(30)},
+				{1, 2, ReasonPressureThroughput, at(60)}, {2, 3, ReasonPressureThroughput, at(90)},
+				{3, 4, ReasonPressureThroughput, at(120)}, {4, 5, ReasonPressureThroughput, at(150)},
+				{5, 6, ReasonPressureThroughput, at(180)},
+			},
+		},
+		{
+			name:    "memory-elevated holds",
+			steps:   []step{{0, H, false, 3}, {30, E, false, 3}, {60, E, false, 3}, {300, E, false, 3}},
+			changes: []LimitChange{{6, 3, ReasonPressureHigh, at(0)}},
+		},
+		{
+			name: "the cause may change between rounds",
+			steps: []step{
+				// The hold at 60 does not use up the interval, so 61 is due.
+				{0, H, false, 3}, {30, E, true, 4}, {60, E, false, 4}, {61, E, true, 5}, {90, E, true, 5}, {91, N, false, 6},
+			},
+			changes: []LimitChange{
+				{6, 3, ReasonPressureHigh, at(0)}, {3, 4, ReasonPressureThroughput, at(30)},
+				{4, 5, ReasonPressureThroughput, at(61)}, {5, 6, ReasonPressureNormal, at(91)},
+			},
+		},
+		{
+			// The flag only matters at elevated.
+			name:    "high still halves",
+			steps:   []step{{0, H, true, 3}, {30, H, true, 1}},
+			changes: []LimitChange{{6, 3, ReasonPressureHigh, at(0)}, {3, 1, ReasonPressureHigh, at(30)}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(adaptive(6))
+			for _, st := range tt.steps {
+				s.Decide(Input{Now: at(st.sec), Pressure: st.pressure, ThroughputOnly: st.throughputOnly})
+				if s.Limit() != st.limit {
+					t.Fatalf("t=%d %v throughputOnly=%v: limit = %d, want %d", st.sec, st.pressure, st.throughputOnly, s.Limit(), st.limit)
+				}
+			}
+			if got := s.Changes(); !slices.Equal(got, tt.changes) {
+				t.Fatalf("changes = %+v, want %+v", got, tt.changes)
+			}
+		})
+	}
+}
+
+func TestAdaptiveStartLimit(t *testing.T) {
+	// The balanced profile on 5 CPUs: start 2, ceiling 5.
+	p := adaptive(5)
+	p.StartLimit = 2
+	s := New(p)
+	if s.Limit() != 2 || s.Policy().StartLimit != 2 {
+		t.Fatalf("initial limit %d, start %d; want 2", s.Limit(), s.Policy().StartLimit)
+	}
+	// CPU-saturated elevated pressure grows it to the ceiling and no further.
+	for sec := 0; sec <= 150; sec += 30 {
+		s.Decide(Input{Now: at(sec), Pressure: domain.PressureElevated, ThroughputOnly: true})
+	}
+	if s.Limit() != 5 {
+		t.Fatalf("limit %d after growth, want the ceiling 5", s.Limit())
+	}
+	if got := len(s.Changes()); got != 3 {
+		t.Fatalf("%d changes, want 3 (2 -> 5)", got)
+	}
+
+	// Off resets to the start; so does turning Adaptive on.
+	s.SetPolicy(Policy{Mode: ModeOff, HeavyLimit: 5, StartLimit: 2, Adaptive: true})
+	s.Decide(Input{Now: at(200)})
+	if s.Limit() != 2 {
+		t.Fatalf("limit %d after off, want 2", s.Limit())
+	}
+	s.SetPolicy(enforce(5))
+	if s.Limit() != 5 {
+		t.Fatalf("non-adaptive limit %d, want the fixed 5", s.Limit())
+	}
+	p.StartLimit = 3
+	s.SetPolicy(p)
+	if s.Limit() != 3 {
+		t.Fatalf("limit %d after turning adaptive on, want start 3", s.Limit())
+	}
+	// Staying adaptive keeps the current limit, capped at the new ceiling.
+	p.HeavyLimit, p.StartLimit = 8, 1
+	s.SetPolicy(p)
+	if s.Limit() != 3 {
+		t.Fatalf("limit %d after a reload that stays adaptive, want 3 kept", s.Limit())
+	}
+}
+
+func TestStartLimitNormalize(t *testing.T) {
+	for _, tc := range []struct {
+		start, want int
+		adaptive    bool
+		limit       int
+	}{
+		{0, 6, true, 6},  // unset: the ceiling
+		{-1, 6, true, 6}, // invalid: the ceiling
+		{9, 6, true, 6},  // above the ceiling: the ceiling
+		{2, 2, true, 2},
+		{2, 2, false, 6}, // ignored without Adaptive
+	} {
+		p := enforce(6)
+		p.Adaptive, p.StartLimit = tc.adaptive, tc.start
+		s := New(p)
+		if s.Policy().StartLimit != tc.want || s.Limit() != tc.limit {
+			t.Errorf("start %d adaptive %v: normalized start %d limit %d, want %d %d",
+				tc.start, tc.adaptive, s.Policy().StartLimit, s.Limit(), tc.want, tc.limit)
+		}
+	}
+}
+
+func TestAdaptiveStartLimitSurvivesWarmUp(t *testing.T) {
+	// The pressure engine reports unknown until it has escalated out of
+	// no_samples, so every daemon start begins with a few unknown rounds.
+	// They are not degraded metrics and must not throw the start limit away.
+	U, N := domain.PressureUnknown, domain.PressureNormal
+	p := adaptive(8)
+	p.StartLimit = 2
+	s := New(p)
+	for sec := range 3 {
+		s.Decide(Input{Now: at(sec), Pressure: U})
+	}
+	if s.Limit() != 2 {
+		t.Fatalf("limit %d after warm-up, want the start limit 2", s.Limit())
+	}
+	if got := s.Changes(); got != nil {
+		t.Fatalf("warm-up changed the limit: %+v", got)
+	}
+	s.Decide(Input{Now: at(3), Pressure: N})
+	if s.Limit() != 3 {
+		t.Fatalf("limit %d after the first normal round, want 3", s.Limit())
+	}
+	// Metrics lost after they were known still fail open.
+	s.Decide(Input{Now: at(4), Pressure: U})
+	if s.Limit() != 8 {
+		t.Fatalf("limit %d with degraded metrics, want the ceiling 8", s.Limit())
+	}
+}
+
+func TestAdaptiveGrowsForWaitingWork(t *testing.T) {
+	// The balanced profile on 5 CPUs: start 2, ceiling 5. Round 0 knows the
+	// pressure and adds one; a burst arrives at 1 and the scheduler queues
+	// what does not fit; round 2 may grow for it.
+	const mb = 1 << 20
+	E, N, H := domain.PressureElevated, domain.PressureNormal, domain.PressureHigh
+	type step struct {
+		sec            int
+		pressure       domain.PressureLevel
+		throughputOnly bool
+		jobs           int    // heavy workloads, PIDs 1..jobs
+		rss            uint64 // RSS of each
+		headroom       uint64
+		reserved       int
+		limit          int
+	}
+	burst := func(p domain.PressureLevel, tp bool, rss1, rss2, headroom uint64, limit int) []step {
+		return []step{
+			{0, E, true, 0, 0, 0, 0, 3},
+			{1, p, tp, 10, rss1, headroom, 0, 3},
+			{2, p, tp, 10, rss2, headroom, 0, limit},
+		}
+	}
+	tests := []struct {
+		name    string
+		steps   []step
+		resumed int
+		reason  string
+	}{
+		{name: "CPU-only burst grows to the ceiling", steps: burst(E, true, 5*mb, 5*mb, 8<<30, 5), resumed: 2, reason: ReasonPressureThroughput},
+		{name: "normal pressure grows to the ceiling", steps: burst(N, false, 5*mb, 5*mb, 8<<30, 5), resumed: 2, reason: ReasonPressureNormal},
+		{name: "memory-elevated holds", steps: burst(E, false, 5*mb, 5*mb, 8<<30, 3)},
+		{name: "headroom for one more", steps: burst(E, true, 1<<30, 1<<30, 3<<29, 4), resumed: 1, reason: ReasonPressureThroughput},
+		{name: "no headroom holds", steps: burst(E, true, 5*mb, 5*mb, 0, 3)},
+		{name: "a growing working set holds", steps: burst(E, true, 512*mb, 1<<30, 8<<30, 3)},
+		{name: "growth within 1/8 counts as settled", steps: burst(E, true, 800*mb, 900*mb, 8<<30, 5), resumed: 2, reason: ReasonPressureThroughput},
+		{name: "unknown RSS holds", steps: burst(E, true, 0, 0, 8<<30, 3)},
+		{
+			name: "only as far as the work waiting",
+			steps: []step{
+				{0, E, true, 0, 0, 0, 0, 3},
+				{1, E, true, 4, 5 * mb, 8 << 30, 0, 3},
+				{2, E, true, 4, 5 * mb, 8 << 30, 0, 4},
+			},
+			resumed: 1, reason: ReasonPressureThroughput,
+		},
+		{
+			name: "leases take fitted slots",
+			steps: []step{
+				{0, E, true, 0, 0, 0, 0, 3},
+				{1, E, true, 2, 1 << 30, 2 << 30, 0, 3},
+				{2, E, true, 4, 1 << 30, 2 << 30, 2, 3},
+			},
+		},
+		{
+			name: "not within an interval of high pressure",
+			steps: []step{
+				{0, H, false, 0, 0, 0, 0, 1},
+				{1, E, true, 10, 5 * mb, 8 << 30, 0, 1},
+				{2, E, true, 10, 5 * mb, 8 << 30, 0, 1},
+				{29, E, true, 10, 5 * mb, 8 << 30, 0, 1},
+				{30, E, true, 10, 5 * mb, 8 << 30, 0, 5},
+			},
+			resumed: 4, reason: ReasonPressureThroughput,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := adaptive(5)
+			p.StartLimit = 2
+			s := New(p)
+			paused := map[int]bool{}
+			resumed := 0
+			for _, st := range tt.steps {
+				in := Input{
+					Now: at(st.sec), Pressure: st.pressure, ThroughputOnly: st.throughputOnly,
+					MemoryHeadroom: st.headroom, Reserved: make([]string, st.reserved),
+				}
+				for pid := 1; pid <= st.jobs; pid++ {
+					v := wv(pid, "a")
+					v.RSS = st.rss
+					in.Heavy = append(in.Heavy, v)
+					if paused[pid] {
+						in.Paused = append(in.Paused, key(pid))
+					}
+				}
+				for _, d := range s.Decide(in) {
+					switch d.Action {
+					case ActionQueue:
+						paused[d.Key.PID] = true
+					case ActionResume:
+						paused[d.Key.PID] = false
+						resumed++
+					}
+					if d.HeavyLimit != s.Limit() {
+						t.Fatalf("t=%d: decision limit %d, effective %d", st.sec, d.HeavyLimit, s.Limit())
+					}
+				}
+				if s.Limit() != st.limit {
+					t.Fatalf("t=%d: limit = %d, want %d", st.sec, s.Limit(), st.limit)
+				}
+			}
+			if resumed != tt.resumed {
+				t.Fatalf("resumed %d, want %d", resumed, tt.resumed)
+			}
+			var last LimitChange
+			if cs := s.Changes(); len(cs) > 0 {
+				last = cs[len(cs)-1]
+			}
+			if tt.reason != "" && last.Reason != tt.reason {
+				t.Fatalf("last change %+v, want reason %s", last, tt.reason)
+			}
+		})
+	}
 }

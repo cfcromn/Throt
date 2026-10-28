@@ -45,10 +45,53 @@ Accepted residual risks:
 - **Directory trust is by mode bits.** ACLs are not inspected, and a custom `socket_path` must not sit under a directory other users can write to (the default `$XDG_RUNTIME_DIR`, `/tmp` with its sticky bit, and the macOS per-user `$TMPDIR` are safe).
 - **Releases are unsigned** and carry no provenance attestation; verify `checksums.txt` over HTTPS from GitHub. The release job uses `goreleaser` `~> v2` (not an exact version) and the Go module cache.
 
+**`throt update`, 2026-10-29** (`internal/update`, `cmd/throt/update.go`). Threat model: a network attacker, a tampered or truncated download, a hostile archive, an interrupted or partial install, an unwritable install directory, and leaking the GitHub token.
+
+| Aspect | Verdict |
+|---|---|
+| Transport | Sound. Every request, redirects included, must be HTTPS (plain `http` is refused), with Go's default TLS verification against `api.github.com` and the asset host it redirects to; a whole-request timeout and at most 5 redirects. The token is sent only as an `Authorization` header to the API host: Go drops it when the asset download redirects to another host. It is never printed, logged or put in an error. |
+| Integrity | Sound. The archive for this OS and architecture is refused unless its SHA-256 equals its entry in the release's `checksums.txt`; a missing `checksums.txt`, a missing or malformed entry, or a mismatch refuses the update before anything is written. Bodies are capped (release list 4 MiB, `checksums.txt` 1 MiB, archive 100 MiB). |
+| Archive | Sound. Read in memory; only `throt` and `throtd` are taken. The whole archive is refused when any entry is absolute or contains `..`, or is anything but a regular file or directory (symlinks, hard links, devices, FIFOs), when a binary is missing, duplicated or over 100 MiB, or when it unpacks to more than 256 MiB. |
+| Replace | Sound. Each binary is written to an `O_EXCL` temporary file in its destination directory, made 0755 and synced, then run with a 10 s timeout (`throt version`, `throtd -version`); it must print the release version. Only when both pass are they renamed over the old files (atomic within a directory), `throtd` first and `throt` last, so a failure leaves either nothing changed or a new `throtd` with the error saying the two differ. An unwritable directory, a failed check, or any earlier error removes the temporary files and changes nothing. Symlinks to the binaries are resolved, so their targets are replaced and the links kept. |
+| Refusals | No install without confirmation: a terminal prompt, or `--yes`; a non-terminal stdin without `--yes` refuses. `go install` and development builds are left to `go install`. It never downgrades unless `--version` asks for it, and never restarts `throtd`. |
+| macOS | Files written by Go carry no `com.apple.quarantine` attribute, so no `xattr` step is needed; the binaries are unsigned as before. |
+
+Accepted residual risk: `checksums.txt` and the archive come from the same release, so the check gives integrity (no corruption or tampering in transit, TLS aside) but not authenticity: whoever can publish a release in the repository can publish matching checksums. Once the repository is public, verify the build provenance too: `gh attestation verify throt_<version>_<os>_<arch>.tar.gz --repo cfcromn/Throt`.
+
+### Follow-up review (v0.9)
+
+**2026-10-29**, at `46d091f` (`feat/v09`), covering code added after the 1.0 review. Scope: `internal/update` (`throt update`), `cmd/throt/hook.go` with `internal/shellwords`, `internal/platform/procargs.go` (`kern.procargs2`), the fair lease waiters in `internal/app`, and `scheduler.start_limit` in `internal/config`. Threat model: as above, plus a hostile release JSON or archive, a GitHub Enterprise login in `gh`, another user who can write the install directory, a same-user process with a crafted argv or environment, and hostile hook input. Method: line-by-line reading, a regression test for each fix, new fuzz targets for archive extraction and `checksums.txt` parsing, 60 s of fuzzing for each of `FuzzExtract` (1.5 M execs), `FuzzChecksumFor` (0.7 M), `FuzzProcargsComm` (1.7 M) and `FuzzSplit` (18 M), all without a failure, real `kern.procargs2` buffers on macOS 26 (all 985 readable processes, plus children exec'd with an empty argv[0]), and the hook run with a stdin that stays open.
+
+| Area | Verdict |
+|---|---|
+| `throt update` | Sound after fixes 1–3. HTTPS only, redirects included; bodies are capped before they are read. The checksum is verified before the archive is opened, so no archive content runs before that check (the version check runs only verified binaries). The tar reader never writes to disk and refuses traversal, absolute names, links, devices, FIFOs, duplicates and oversized entries; PAX headers are capped by `archive/tar` and the whole stream by `maxUnpacked`. A `checksums.txt` entry must be exactly a 64-digit hex sum and the name, and conflicting entries are refused. Valid semver tags are ordered by the spec; nothing is downgraded unless `--version` asks. Staging is `O_EXCL` in the destination directory, then `rename`. |
+| Hook and `shellwords` | Sound; one finding reported (R1). The hook always exits 0, never denies or changes a call, and writes at most one JSON object (built with `encoding/json`) after it has finished waiting. `Split` is linear-time and refuses everything outside its subset; a misparse can only make the advisory wait happen or not. |
+| `kern.procargs2` | Sound after fix 4. Every index is bounds-checked and argc is only compared with 1. The sysctl fails for other users' processes, which go to `ps`. Spoofing argv[0] gains nothing a same-user process cannot already do. |
+| Lease waiters | Sound. Only an identified caller of the daemon's uid (peer PID enforced where the kernel reports it) enters the table, which holds 256 and drops a waiter after 2 s of silence or once its process is gone. |
+| `start_limit` | Sound. It is validated as 0 to `heavy_limit` after profile presets and explicit fields are merged, and a missing or 0 value is derived and capped at `heavy_limit`, on load and reload alike. |
+
+Fixed, each with a regression test:
+1. *Token sent to any asset host (low).* The token was set on every request, including asset URLs taken from the release JSON; only cross-host redirects dropped it. It now goes only to the API host.
+2. *Enterprise token sent to github.com (low).* `gh auth token` answers for gh's default host, which `GH_HOST` or the gh config can point at a GitHub Enterprise server. It is now asked for `--hostname github.com`.
+3. *Install directory writable by everyone (low).* In a directory (or below one) that is other-writable without the sticky bit, another user could swap the verified temporary file between its version check and the rename, so `sudo throt update` installed theirs. Such a directory is now refused before anything is written.
+4. *Environment variable as a process name (low, privacy).* For a process exec'd with an empty argv[0], the parser skipped every NUL after the executable path and returned argv[1], or with argc 1 the first environment variable (`ps` prints the same). argv[0] is now read at its aligned offset, an empty one names the process by its executable path, and unexpected padding falls back to `ps`.
+
+Reported to the owners of code under refactoring, not fixed here:
+- R1 (`cmd/throt/hook.go:163`, low). `readBashCommand` reads stdin with no deadline, so a stdin that stays open keeps the hook running past `--max-wait` (measured: 6 s with `--max-wait 1s`) until Claude Code's hook timeout ends it. Claude Code closes stdin, so this needs a broken caller; the call still runs.
+
+Accepted residual risks:
+- Integrity, not authenticity, of releases (above) is unchanged.
+- Group-writable install directories (Homebrew's `admin`-group `/usr/local/bin`, Debian's `staff` `/usr/local/bin`) are accepted: their group is trusted with the binaries already.
+- New binaries are always 0755, whatever mode the old ones had.
+- The `kern.procargs2` parser relies on 8-byte alignment of argv[0]. Shorter padding falls back to `ps`; a kernel that padded more would name every process by its executable path (`TestProcCommLayout` on the macOS runner catches that).
+- A same-user process can fill the waiter table, as it can the lease table; callers beyond it are still answered but queue behind it.
+
 ## Privacy
 
 Throt is local-first. It collects only the metrics needed to operate, keeps them on the machine, and has **no outbound telemetry**. It does not read or store prompts, model responses, source files, command output, or environment variables.
 
 Diagnostic output (`throt doctor`) is produced only on explicit request. It never collects environment variables or command arguments, names no process except stopped ones throtd did not pause (by executable base name only), and redacts home paths and the user name.
+
+`throt update` is the only command that uses the network, and only when you run it: nothing checks for updates automatically or in the background. It is not telemetry: it is an explicit user action that sends standard HTTPS requests to GitHub (the release list, `checksums.txt` and one archive), with your GitHub token when one is set, and nothing about the machine or its use beyond what any HTTPS client sends (address, `User-Agent: throt-update`).
 
 Any future telemetry requires a public proposal, documented fields, opt-in behavior, and retention/deletion instructions.

@@ -446,7 +446,7 @@ func TestParseRunArgs(t *testing.T) {
 
 func TestRunDispatchPassesArgs(t *testing.T) {
 	// A missing command fails before any daemon call, even with global flags.
-	err := run([]string{"-config", "/nonexistent/throt.json", "run"})
+	err := run(context.Background(), []string{"-config", "/nonexistent/throt.json", "run"}, strings.NewReader(""), io.Discard, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "missing command") {
 		t.Fatalf("err = %v", err)
 	}

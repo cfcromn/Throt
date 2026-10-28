@@ -63,7 +63,7 @@ func TestExplain(t *testing.T) {
 			},
 			want: []string{
 				"make (pid 4312, build)", "QUEUED by scheduler", "claude-1 (pid 1000)",
-				"enforce, heavy limit 2, 1/2 heavy running", "pressure   elevated",
+				"enforce, limit 2, 1/2 heavy running", "pressure   elevated",
 				"14:02:11  scheduler_decision  queue   heavy_slots_exhausted  elevated  2/2",
 				"Queued at 14:02:11 because 2/2 heavy slots were in use under elevated pressure; it resumes when a slot frees (cooldown 10s).",
 			},
@@ -114,7 +114,7 @@ func TestExplain(t *testing.T) {
 		{
 			name:   "running, scheduler off",
 			status: func() app.StatusResult { return explainStatus(scheduler.ModeOff) },
-			want:   []string{"state      running", "off, heavy limit 2, 2/2", "the scheduler is off, so only `throt pause 4312` would stop it."},
+			want:   []string{"state      running", "scheduler  off, limit 2\n", "the scheduler is off, so only `throt pause 4312` would stop it."},
 		},
 		{
 			name:   "running, observe would queue",
@@ -135,7 +135,16 @@ func TestExplain(t *testing.T) {
 				st.Scheduler.PerAgentLimit = 1
 				return st
 			},
-			want: []string{"enforce, heavy limit 2, per-agent limit 1", "Running in one of 2/2 heavy slots under elevated pressure"},
+			want: []string{"enforce, limit 2, per-agent limit 1", "Running in one of 2/2 heavy slots under elevated pressure"},
+		},
+		{
+			name: "adaptive limit",
+			status: func() app.StatusResult {
+				st := explainStatus(scheduler.ModeEnforce)
+				st.Scheduler.Adaptive, st.Scheduler.StartLimit, st.Scheduler.MaxLimit = true, 2, 10
+				return st
+			},
+			want: []string{"scheduler  enforce, limit 2 (adaptive, start 2, max 10), 2/2 heavy running\n"},
 		},
 		{
 			name: "unattributed",

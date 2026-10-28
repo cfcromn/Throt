@@ -44,6 +44,16 @@ func goneBy(ctx context.Context, identity identityFunc, key domain.ProcessKey) (
 	return !start.Equal(key.Start), nil
 }
 
+// pidExited reports whether kill(pid, 0) confirms that no process has pid.
+// Signal 0 checks existence and sends nothing. Any other result, EPERM
+// included, means a process may have it.
+func pidExited(pid int) bool {
+	if pid <= 1 {
+		return false // 0 and negative PIDs address groups
+	}
+	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+}
+
 // verifyThenKill verifies key's identity and then sends sig with kill(2).
 // The PID could in principle be reused between the two steps; callers that
 // can pin the process first (Linux pidfds) should do so.

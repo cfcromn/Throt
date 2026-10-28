@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
+	"github.com/cfcromn/Throt/internal/config"
 )
 
 func TestLightInvocationsDoNotWait(t *testing.T) {
@@ -285,6 +287,61 @@ func TestHookSkipsWithoutDaemon(t *testing.T) {
 	}
 }
 
+// TestHookDebugHints checks that THROT_HOOK_DEBUG=1 explains on stderr why
+// an event was ignored, that stdout stays empty, and that nothing is said
+// without it.
+func TestHookDebugHints(t *testing.T) {
+	cases := map[string]string{
+		`{"tool_name":"Bash","tool_input":{"command":"make"}}`:                                 "no hook_event_name",
+		`{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"make"}}`: `hook_event_name is "PostToolUse"`,
+		`{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{}}`:                  `tool_name is "Edit", not Bash`,
+		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{}}`:                  "no tool_input.command",
+		`not json`: "not a JSON hook event",
+	}
+	for in, want := range cases {
+		for _, debug := range []string{"1", ""} {
+			t.Setenv(hookDebugEnv, debug)
+			var out, errw bytes.Buffer
+			if err := runHook([]string{"claude-code"}, "/nonexistent/config.json", strings.NewReader(in), &out, &errw); err != nil || out.Len() != 0 {
+				t.Errorf("%s: err %v, stdout %q", in, err, out.String())
+			}
+			got := errw.String()
+			if debug == "" && got != "" {
+				t.Errorf("%s: hint without %s: %q", in, hookDebugEnv, got)
+			}
+			if debug == "1" && (!strings.HasPrefix(got, "throt hook: ") || !strings.Contains(got, want) || strings.Count(got, "\n") != 1) {
+				t.Errorf("%s: stderr %q, want one line with %q", in, got, want)
+			}
+		}
+	}
+}
+
+// TestHookStdinHeldOpen checks that a stdin that never ends cannot hold
+// the hook past its deadline: it gives up, writing nothing.
+func TestHookStdinHeldOpen(t *testing.T) {
+	r, w := io.Pipe()
+	defer w.Close()
+	f := &fakeHook{t: t, oks: []bool{false}}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	var out, errw bytes.Buffer
+	h := f.waiter()
+	h.debug = &errw
+	done := make(chan struct{})
+	go func() { defer close(done); h.claudeCode(ctx, r, &out, time.Second) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hook still reading a held-open stdin")
+	}
+	if out.Len() != 0 || f.built != 0 {
+		t.Errorf("output %q, check built %d; want neither", out.String(), f.built)
+	}
+	if !strings.Contains(errw.String(), "stdin did not end") {
+		t.Errorf("hint %q", errw.String())
+	}
+}
+
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) { return 0, errors.New("broken stdin") }
@@ -315,13 +372,25 @@ func TestRunHookFailsOpen(t *testing.T) {
 	}
 }
 
-// TestHookCheckBadConfig checks that an unreadable config means "run now".
-func TestHookCheckBadConfig(t *testing.T) {
+// TestClientConfigBadConfig checks that a broken config warns once and
+// falls back to the default socket, so client commands, the hook included,
+// still reach a throtd running on its last good config.
+func TestClientConfigBadConfig(t *testing.T) {
 	path := t.TempDir() + "/config.json"
-	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"scheduler": {"mode": "enforc"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := hookCheck(path)(context.Background()); err == nil {
-		t.Error("bad config did not fail the check")
+	var errw bytes.Buffer
+	cfg := clientConfig(path, &errw)
+	if cfg.SocketPath != config.DefaultSocketPath() {
+		t.Errorf("socket %q, want the default %q", cfg.SocketPath, config.DefaultSocketPath())
+	}
+	want := "throt: config " + path + ` is invalid: scheduler.mode must be off, observe, or enforce, not "enforc"; using the default socket` + "\n"
+	if errw.String() != want {
+		t.Errorf("stderr %q, want %q", errw.String(), want)
+	}
+	errw.Reset()
+	if clientConfig(t.TempDir()+"/missing.json", &errw); errw.Len() != 0 {
+		t.Errorf("missing file warned: %q", errw.String())
 	}
 }

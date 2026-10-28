@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"github.com/cfcromn/Throt/internal/agent"
-	"github.com/cfcromn/Throt/internal/app"
-	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/shellwords"
 )
@@ -39,6 +37,10 @@ const (
 	defaultHookMaxWait = 50 * time.Second
 )
 
+// hookDebugEnv set to 1 makes the hook explain on stderr why it ignored its
+// input. Claude Code never shows that stderr when the hook exits 0.
+const hookDebugEnv = "THROT_HOOK_DEBUG"
+
 const hookUsage = `Usage: throt hook claude-code [--max-wait D]
 
 Claude Code PreToolUse hook for the Bash tool. When the command is a heavy
@@ -46,7 +48,8 @@ tool (alone, or after "cd DIR &&", variable assignments, or "time"), wait up
 to D for throtd to report capacity for a heavy job, then let it run
 unchanged. Advisory: no slot is reserved. It never blocks, denies, or
 changes a tool call, and returns at once on any error or when throtd is
-unreachable. Keep D below the hook's "timeout" in settings.json.
+unreachable. Keep D below the hook's "timeout" in settings.json. With
+THROT_HOOK_DEBUG=1 it says on stderr why it ignored an event.
 
 Flags:
 `
@@ -58,6 +61,14 @@ type hookWaiter struct {
 	newCheck func() checkFunc
 	now      func() time.Time
 	sleep    func(ctx context.Context, d time.Duration) error
+	// debug, when set, gets a one-line hint about input the hook ignores.
+	debug io.Writer
+}
+
+// cmdHook is 'throt hook'. It touches the config and the daemon only for
+// heavy commands.
+func cmdHook(_ context.Context, e env, args []string) error {
+	return runHook(args, e.cfgPath, e.stdin, e.stdout, e.stderr)
 }
 
 // runHook handles `throt hook AGENT [flags]`. For the supported agent it
@@ -65,7 +76,9 @@ type hookWaiter struct {
 // bad flags (reported on stderr, which Claude never sees on exit 0).
 func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) error {
 	if len(args) == 0 || args[0] != "claude-code" {
-		return fmt.Errorf("usage: throt hook claude-code [--max-wait D]")
+		// Exit 1, not exitUsage: Claude Code blocks the tool call on exit 2,
+		// so a typo in settings.json must not block every Bash command.
+		return exitError{code: 1, msg: "usage: throt hook claude-code [--max-wait D]"}
 	}
 	flags := flag.NewFlagSet("throt hook", flag.ContinueOnError)
 	flags.SetOutput(errw)
@@ -79,13 +92,17 @@ func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) e
 		fmt.Fprintln(errw, "throt hook: bad arguments; not waiting")
 		return nil
 	}
-	// The deadline leaves room for one last bounded check at maxWait.
+	// The deadline leaves room for one last bounded check at maxWait. It
+	// also bounds reading stdin, so input held open cannot overrun it.
 	ctx, cancel := context.WithTimeout(context.Background(), *maxWait+runCallTimeout)
 	defer cancel()
 	h := hookWaiter{
-		newCheck: func() checkFunc { return hookCheck(cfgPath) },
+		newCheck: func() checkFunc { return hookCheck(clientConfig(cfgPath, errw).SocketPath) },
 		now:      time.Now,
 		sleep:    sleepCtx,
+	}
+	if os.Getenv(hookDebugEnv) == "1" {
+		h.debug = errw
 	}
 	h.claudeCode(ctx, in, out, *maxWait)
 	return nil
@@ -94,13 +111,9 @@ func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) e
 // hookCheck is the advisory capacity verdict for the agent found through
 // this process's ancestors. Claude Code runs the hook through a shell, so
 // the agent is usually the grandparent.
-func hookCheck(cfgPath string) checkFunc {
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		return func(context.Context) (bool, app.Verdict, error) { return false, app.Verdict{}, err }
-	}
+func hookCheck(socket string) checkFunc {
 	r := runner{
-		status:    daemonClient{socket: cfg.SocketPath}.Status,
+		status:    daemonClient{socket: socket}.Status,
 		ppid:      os.Getppid(),
 		ancestors: processAncestors,
 	}
@@ -111,8 +124,14 @@ func hookCheck(cfgPath string) checkFunc {
 // waits for capacity. It writes at most one JSON object, after waiting.
 func (h hookWaiter) claudeCode(ctx context.Context, in io.Reader, out io.Writer, maxWait time.Duration) {
 	defer func() { _ = recover() }() // never fail a tool call
-	command, ok := readBashCommand(in)
-	if !ok {
+	data, err := readHookInput(ctx, in)
+	if err != nil {
+		h.hint(err.Error())
+		return
+	}
+	command, why := bashCommand(data)
+	if why != "" {
+		h.hint(why)
 		return
 	}
 	if _, heavy := heavyCommand(command); !heavy || maxWait == 0 {
@@ -157,13 +176,43 @@ func (h hookWaiter) wait(ctx context.Context, maxWait time.Duration) string {
 	}
 }
 
-// readBashCommand extracts the command of a PreToolUse event for the Bash
-// tool, and ok false for anything else.
-func readBashCommand(in io.Reader) (string, bool) {
-	data, err := io.ReadAll(io.LimitReader(in, maxHookInput+1))
-	if err != nil || len(data) > maxHookInput {
-		return "", false
+// hint writes why the hook ignored its input when debugging is on.
+func (h hookWaiter) hint(why string) {
+	if h.debug != nil {
+		fmt.Fprintf(h.debug, "throt hook: %s; not waiting\n", why)
 	}
+}
+
+// readHookInput reads stdin, up to maxHookInput bytes, until EOF or ctx
+// ends. A stdin held open must not hold the tool call past the hook's
+// budget; the reader left behind ends with the process.
+func readHookInput(ctx context.Context, in io.Reader) ([]byte, error) {
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(io.LimitReader(in, maxHookInput+1))
+		done <- result{data, err}
+	}()
+	select {
+	case r := <-done:
+		switch {
+		case r.err != nil:
+			return nil, fmt.Errorf("reading stdin: %w", r.err)
+		case len(r.data) > maxHookInput:
+			return nil, fmt.Errorf("the input is over %d bytes", maxHookInput)
+		}
+		return r.data, nil
+	case <-ctx.Done():
+		return nil, errors.New("stdin did not end within the hook's time budget")
+	}
+}
+
+// bashCommand extracts the command of a PreToolUse event for the Bash
+// tool. For anything else it returns why the event does not count.
+func bashCommand(data []byte) (command, why string) {
 	var ev struct {
 		HookEventName string `json:"hook_event_name"`
 		ToolName      string `json:"tool_name"`
@@ -171,10 +220,19 @@ func readBashCommand(in io.Reader) (string, bool) {
 			Command *string `json:"command"`
 		} `json:"tool_input"`
 	}
-	if json.Unmarshal(data, &ev) != nil || ev.HookEventName != "PreToolUse" || ev.ToolName != "Bash" || ev.ToolInput.Command == nil {
-		return "", false
+	switch {
+	case json.Unmarshal(data, &ev) != nil:
+		return "", "the input is not a JSON hook event"
+	case ev.HookEventName == "":
+		return "", "the input has no hook_event_name; Claude Code sends one to every hook"
+	case ev.HookEventName != "PreToolUse":
+		return "", fmt.Sprintf("hook_event_name is %q, not PreToolUse", ev.HookEventName)
+	case ev.ToolName != "Bash":
+		return "", fmt.Sprintf("tool_name is %q, not Bash; match the hook to the Bash tool", ev.ToolName)
+	case ev.ToolInput.Command == nil:
+		return "", "the Bash event has no tool_input.command"
 	}
-	return *ev.ToolInput.Command, true
+	return *ev.ToolInput.Command, ""
 }
 
 // heavyCommand returns the base name of command's heavy tool, and ok false

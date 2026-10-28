@@ -45,8 +45,11 @@ func toolList() []tool {
 			Title: "Throt status",
 			Description: "Read-only snapshot of local machine pressure from throtd: pressure level and reason, " +
 				"CPU, memory, swap and foreground latency, coding agents with their CPU, memory and child counts, " +
-				"heavy workloads (builds, tests, container builds) with owner and state (running, PAUSED, QUEUED), " +
-				"and the heavy-slot scheduler mode and limit.",
+				"heavy workloads (builds, tests, container builds) with owner, PID and state (running, PAUSED, QUEUED), " +
+				"and the heavy-slot scheduler mode and limit. " +
+				"Call it when you need the whole picture: the machine or your commands feel slow, you plan several heavy jobs " +
+				"in parallel, or you need a workload PID for throt_explain or your agent label for throt_capacity. " +
+				"To decide whether to start one heavy job, call throt_capacity instead.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 			Annotations: readOnly("Throt status"),
 		},
@@ -56,19 +59,55 @@ func toolList() []tool {
 			Description: "Advisory check before starting a heavy job (build, test suite, container build): " +
 				"returns ok_to_start, a reason, current pressure, running heavy workloads versus the scheduler's " +
 				"heavy limit, and a suggestion. Not OK under high or critical pressure, or when the scheduler is on " +
-				"and every heavy slot is taken. Unknown pressure is OK with a caveat. Pass your agent label " +
-				"(as shown by throt_status, e.g. \"claude-1\") to also get your own running heavy count. " +
-				"This only advises; it reserves nothing and controls nothing.",
+				"and every heavy slot is taken. Unknown pressure is OK with a caveat. " +
+				"Call it once, right before you run a heavy command such as make, gradle, cargo build, go test ./..., " +
+				"npm run build or docker build; light commands (git, ls, cat, linting one file) never need it. " +
+				"If ok_to_start is false and the heavy job is your next step, call throt_wait_for_capacity; otherwise do lighter work first. " +
+				"The agent defaults to the one that launched this server; pass a label (as shown by throt_status, e.g. \"claude-1\") " +
+				"to ask about another. This only advises; it reserves nothing and controls nothing.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"agent":{"type":"string","minLength":1,"maxLength":128,` +
 				`"description":"Optional agent instance label, e.g. \"claude-1\", to report that agent's running heavy workloads."}},` +
 				`"additionalProperties":false}`),
 			Annotations: readOnly("Throt capacity check"),
 		},
 		{
+			Name:  "throt_wait_for_capacity",
+			Title: "Throt wait for capacity",
+			Description: "Blocks until a heavy job is OK to start, checking the throt_capacity verdict once a second, " +
+				"or until max_wait_seconds (1 to 600, default 60) pass. Returns the last verdict (as throt_capacity), " +
+				"waited_seconds, checks, and timed_out. " +
+				"Call it only after throt_capacity returned ok_to_start false, when the heavy job is your next step and you have " +
+				"no lighter work to do meanwhile. Keep max_wait_seconds below your client's tool-call timeout (some clients " +
+				"stop a tool call after 60 seconds). On timed_out true, choose: wait again, do lighter work, or run the job anyway " +
+				"(Throt is advisory). It reserves nothing, so another agent can take the slot first; `throt run -- CMD` reserves one. " +
+				"Errors at once when throtd is not reachable. Cancelling the call stops the wait.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{` +
+				`"agent":{"type":"string","minLength":1,"maxLength":128,` +
+				`"description":"Optional agent instance label, e.g. \"claude-1\"; defaults to the agent that launched this server."},` +
+				`"max_wait_seconds":{"type":"integer","minimum":1,"maximum":600,"default":60,` +
+				`"description":"Longest time to wait, in seconds."}},"additionalProperties":false}`),
+			Annotations: readOnly("Throt wait for capacity"),
+		},
+		{
+			Name:  "throt_explain",
+			Title: "Throt explain workload",
+			Description: "Explains why one heavy workload is running, PAUSED, QUEUED or resuming, like `throt explain PID`: " +
+				"its owner, the scheduler mode, limits and running count, pressure, the recent events about it " +
+				"(scheduler decisions with reason, pressure and slots), and a one-line summary of why it is in its state and " +
+				"what resumes it. Call it when throt_status shows a heavy workload PAUSED or QUEUED, or when one of your builds " +
+				"or test runs seems stuck, with the workload's PID from throt_status. It errors, listing the heavy PIDs, " +
+				"when the PID is not a heavy workload.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"pid":{"type":"integer","minimum":1,"maximum":2147483647,` +
+				`"description":"PID of a heavy workload, as listed by throt_status."}},"required":["pid"],"additionalProperties":false}`),
+			Annotations: readOnly("Throt explain workload"),
+		},
+		{
 			Name:  "throt_events",
 			Title: "Throt events",
 			Description: "Read-only list of the newest throtd events (pressure changes, agents discovered or lost, " +
-				"scheduler decisions, pauses and resumes), oldest first, one per line.",
+				"scheduler decisions, pauses and resumes), oldest first, one per line. " +
+				"Call it to learn what throtd did recently, e.g. when pressure changed or what the scheduler decided after a slowdown. " +
+				"For one workload, throt_explain picks out its events for you.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":200,"default":20,` +
 				`"description":"How many of the newest events to return."}},"additionalProperties":false}`),
 			Annotations: readOnly("Throt events"),
@@ -79,7 +118,8 @@ func toolList() []tool {
 			Description: "Read-only per-agent resource accounting since throtd started: for each coding agent instance " +
 				"(label and PID), CPU time used by it and its child processes, peak memory, heavy jobs started, and time its " +
 				"heavy jobs spent queued by the scheduler, most CPU time first, plus all-agent and unattributed totals. " +
-				"Answers which agent cost the machine the most.",
+				"Call it when asked which agent cost the machine the most, or to report what your own work cost. " +
+				"It does not tell you whether to start a job; use throt_capacity for that.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 			Annotations: readOnly("Throt usage stats"),
 		},
@@ -126,9 +166,39 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 	if err := json.Unmarshal(raw, &p); err != nil || p.Name == "" {
 		return nil, &rpcError{Code: codeInvalidParams, Message: "invalid params: expected {\"name\": string, \"arguments\": object}"}
 	}
+	if p.Name == "throt_wait_for_capacity" {
+		// It outlives callTimeout and runs in the background, where the
+		// client can cancel it; each daemon call has its own timeout.
+		var a struct {
+			Agent      string `json:"agent"`
+			MaxSeconds *int   `json:"max_wait_seconds"`
+		}
+		if err := decodeArgs(p.Arguments, &a); err != nil {
+			return errorResult(err.Error()), nil
+		}
+		limit := defaultWait
+		if a.MaxSeconds != nil {
+			if *a.MaxSeconds < 1 || *a.MaxSeconds > int(maxWait/time.Second) {
+				return errorResult(fmt.Sprintf("invalid arguments: max_wait_seconds must be between 1 and %d", int(maxWait/time.Second))), nil
+			}
+			limit = time.Duration(*a.MaxSeconds) * time.Second
+		}
+		return deferred(func(ctx context.Context) toolResult { return s.waitForCapacity(ctx, a.Agent, limit) }), nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	switch p.Name {
+	case "throt_explain":
+		var a struct {
+			PID *int `json:"pid"`
+		}
+		if err := decodeArgs(p.Arguments, &a); err != nil {
+			return errorResult(err.Error()), nil
+		}
+		if a.PID == nil || *a.PID < 1 {
+			return errorResult("invalid arguments: pid must be a positive integer, the PID of a heavy workload from throt_status"), nil
+		}
+		return s.explain(ctx, *a.PID), nil
 	case "throt_status":
 		var a struct{}
 		if err := decodeArgs(p.Arguments, &a); err != nil {
@@ -313,10 +383,12 @@ func (s *Server) status(ctx context.Context) toolResult {
 	return textResult(strings.TrimSuffix(b.String(), "\n"), v)
 }
 
-func (s *Server) capacity(ctx context.Context, agent string) toolResult {
+// verdict assesses heavy-job capacity for agent, which defaults to the
+// agent that launched this server.
+func (s *Server) verdict(ctx context.Context, agent string) (capacity.Verdict, error) {
 	st, err := s.client.Status(ctx)
 	if err != nil {
-		return daemonDown(err)
+		return capacity.Verdict{}, err
 	}
 	if agent == "" {
 		// The model can't know its own label; the agent that launched
@@ -327,19 +399,98 @@ func (s *Server) capacity(ctx context.Context, agent string) toolResult {
 			}
 		}
 	}
-	c := capacity.Assess(st, agent)
+	return capacity.Assess(st, agent), nil
+}
+
+func (s *Server) capacity(ctx context.Context, agent string) toolResult {
+	c, err := s.verdict(ctx, agent)
+	if err != nil {
+		return daemonDown(err)
+	}
+	var b strings.Builder
+	writeVerdict(&b, c, "")
+	b.WriteString("\n(advisory only: this check reserves nothing; reserved slots are held by `throt run` commands about to start, and `throt run -- CMD` waits for and reserves one)")
+	return textResult(b.String(), c)
+}
+
+// writeVerdict writes the text form of c; after, if set, follows the
+// YES or NO.
+func writeVerdict(b *strings.Builder, c capacity.Verdict, after string) {
 	verdict := "NO"
 	if c.OKToStart {
 		verdict = "YES"
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "ok to start a heavy job: %s\nreason: %s\n", verdict, c.Reason)
-	fmt.Fprintf(&b, "running heavy: %d, reserved: %d (limit %d, scheduler %s)\n", c.RunningHeavy, c.Reserved, c.HeavyLimit, c.SchedulerMode)
+	fmt.Fprintf(b, "ok to start a heavy job: %s%s\nreason: %s\n", verdict, after, c.Reason)
+	fmt.Fprintf(b, "running heavy: %d, reserved: %d (limit %d, scheduler %s)\n", c.RunningHeavy, c.Reserved, c.HeavyLimit, c.SchedulerMode)
 	if c.AgentRunningHeavy != nil {
-		fmt.Fprintf(&b, "running heavy for %s: %d\n", c.Agent, *c.AgentRunningHeavy)
+		fmt.Fprintf(b, "running heavy for %s: %d\n", c.Agent, *c.AgentRunningHeavy)
 	}
-	fmt.Fprintf(&b, "suggestion: %s\n(advisory only: this check reserves nothing; reserved slots are held by `throt run` commands about to start, and `throt run -- CMD` waits for and reserves one)", c.Suggestion)
-	return textResult(b.String(), c)
+	fmt.Fprintf(b, "suggestion: %s", c.Suggestion)
+}
+
+const (
+	// defaultWait and maxWait bound throt_wait_for_capacity.
+	defaultWait = 60 * time.Second
+	maxWait     = 600 * time.Second
+	// waitPoll is how often it checks the verdict, like the Claude Code hook.
+	waitPoll = time.Second
+)
+
+// waitView is the structured content of throt_wait_for_capacity.
+type waitView struct {
+	capacity.Verdict
+	WaitedSeconds float64 `json:"waited_seconds"`
+	Checks        int     `json:"checks"`
+	TimedOut      bool    `json:"timed_out"`
+}
+
+// waitForCapacity polls the verdict every waitPoll until a heavy job is OK
+// to start, limit passes, or ctx is cancelled. An unreachable daemon ends
+// the wait at once: Throt fails open.
+func (s *Server) waitForCapacity(ctx context.Context, agent string, limit time.Duration) toolResult {
+	start := s.clock.Now()
+	var v waitView
+	for {
+		if ctx.Err() != nil {
+			// Cancelled: the response is dropped, so don't poll again.
+			return errorResult("cancelled")
+		}
+		pctx, cancel := context.WithTimeout(ctx, callTimeout)
+		c, err := s.verdict(pctx, agent)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return errorResult("cancelled")
+			}
+			return daemonDown(err)
+		}
+		v.Verdict, v.Checks = c, v.Checks+1
+		waited := s.clock.Now().Sub(start)
+		v.WaitedSeconds = math.Round(waited.Seconds()*10) / 10
+		if c.OKToStart {
+			break
+		}
+		if waited >= limit {
+			v.TimedOut = true
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return errorResult("cancelled")
+		case <-s.clock.After(min(waitPoll, limit-waited)):
+		}
+	}
+	var b strings.Builder
+	waited := fmt.Sprintf(" (after waiting %s, %d checks)", secs(v.WaitedSeconds), v.Checks)
+	if v.TimedOut {
+		waited = fmt.Sprintf(" (still, after waiting the full %s, %d checks)", limit, v.Checks)
+	}
+	writeVerdict(&b, v.Verdict, waited)
+	if v.TimedOut {
+		b.WriteString("\ntimed out: wait again, do lighter work first, or run the job anyway (Throt is advisory)")
+	}
+	b.WriteString("\n(advisory only: nothing is reserved, so another agent can take the slot first; `throt run -- CMD` waits for and reserves one)")
+	return textResult(b.String(), v)
 }
 
 func (s *Server) events(ctx context.Context, limit int) toolResult {

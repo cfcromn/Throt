@@ -85,10 +85,13 @@ func TestInitializeVersionNegotiation(t *testing.T) {
 		{"echo 2025-06-18", `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1"}}`, "2025-06-18"},
 		{"echo 2024-11-05", `{"protocolVersion":"2024-11-05"}`, "2024-11-05"},
 		{"echo latest", `{"protocolVersion":"2025-11-25"}`, "2025-11-25"},
-		{"unknown future", `{"protocolVersion":"2099-01-01"}`, latestVersion},
-		{"handshake-free revision", `{"protocolVersion":"2026-07-28"}`, latestVersion},
-		{"missing", `{}`, latestVersion},
-		{"no params", ``, latestVersion},
+		{"unknown future", `{"protocolVersion":"2099-01-01"}`, latestLegacy},
+		// 2025-03-26 requires JSON-RPC batching, which is not supported,
+		// so it is not echoed.
+		{"batching revision", `{"protocolVersion":"2025-03-26"}`, latestLegacy},
+		{"handshake-free revision", `{"protocolVersion":"2026-07-28"}`, latestLegacy},
+		{"missing", `{}`, latestLegacy},
+		{"no params", ``, latestLegacy},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -182,9 +185,20 @@ func TestToolsList(t *testing.T) {
 				t.Errorf("tool %s must not exist: control stays with the CLI", tl.Name)
 			}
 		}
+		// Every description tells the model when to call the tool.
+		if !strings.Contains(tl.Description, "Call it ") {
+			t.Errorf("%s: description lacks guidance on when to call it", tl.Name)
+		}
 	}
-	if len(r.Tools) != 4 || !names["throt_status"] || !names["throt_capacity"] || !names["throt_events"] || !names["throt_stats"] {
+	want := []string{"throt_status", "throt_capacity", "throt_wait_for_capacity", "throt_explain", "throt_events", "throt_stats"}
+	if len(r.Tools) != len(want) {
 		t.Fatalf("tools = %v", names)
+	}
+	for i, w := range want {
+		// A deterministic order lets clients cache the list.
+		if r.Tools[i].Name != w {
+			t.Errorf("tool %d = %s, want %s", i, r.Tools[i].Name, w)
+		}
 	}
 }
 
@@ -197,6 +211,13 @@ func TestProtocolErrors(t *testing.T) {
 		{"unknown method", `{"jsonrpc":"2.0","id":3,"method":"resources/list"}`, "3", codeMethodNotFound},
 		{"malformed JSON", `{"jsonrpc":"2.0","id":4,`, "null", codeParseError},
 		{"batch array", `[{"jsonrpc":"2.0","id":5,"method":"ping"}]`, "null", codeInvalidRequest},
+		// Batches are refused whole, even ones of notifications only, and
+		// so is any other JSON value that is not a request object.
+		{"notification batch", `[{"jsonrpc":"2.0","method":"notifications/initialized"}]`, "null", codeInvalidRequest},
+		{"empty batch", `[]`, "null", codeInvalidRequest},
+		{"null message", `null`, "null", codeInvalidRequest},
+		{"string message", `"ping"`, "null", codeInvalidRequest},
+		{"null id is answered", `{"jsonrpc":"2.0","id":null,"method":"nope"}`, "null", codeMethodNotFound},
 		{"wrong jsonrpc", `{"jsonrpc":"1.0","id":6,"method":"ping"}`, "6", codeInvalidRequest},
 		{"unknown tool", `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"throt_pause"}}`, "7", codeInvalidParams},
 		{"call params not object", `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":[1]}`, "8", codeInvalidParams},

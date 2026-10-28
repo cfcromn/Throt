@@ -34,10 +34,15 @@ type ProcessController interface {
 	// process, or one with another start time. An error means the OS could
 	// not be asked.
 	Gone(ctx context.Context, key domain.ProcessKey) (bool, error)
+	// Exited is a cheap Gone for polling: it never runs a command, and it
+	// reports true only when the OS confirms that key's process is gone,
+	// false when it lives or that cannot be told cheaply. A zombie still
+	// counts as live, as the sampler lists it.
+	Exited(ctx context.Context, key domain.ProcessKey) bool
+	ProcessIdentifier
 }
 
-// ProcessIdentifier looks up one live process. Every ProcessController of
-// this package implements it.
+// ProcessIdentifier looks up one live process.
 type ProcessIdentifier interface {
 	// Identify returns pid's parent, uid and start time, with exactly the
 	// values the platform's ProcessSampler reports (from NewProcessTools on

@@ -272,3 +272,20 @@ func TestReportIsACopy(t *testing.T) {
 		t.Fatal("empty report has nil agents")
 	}
 }
+
+// TestLateAttribution checks that a heavy workload first seen without an
+// owner (its agent missing from one snapshot) is credited to the agent
+// once attribution appears, moved out of unattributed, and counted once
+// even if attribution flickers.
+func TestLateAttribution(t *testing.T) {
+	c1, w := key(10, 1), key(30, 3)
+	owned := process.Snapshot{Agents: []process.AgentView{agent("claude-1", c1, 0, 100)}, Heavy: []process.WorkloadView{heavy(w, "claude-1", 10, 0, 10)}}
+	orphan := process.Snapshot{Agents: []process.AgentView{agent("claude-1", c1, 0, 100)}, Heavy: []process.WorkloadView{heavy(w, "", 0, 0, 10)}}
+	rep := run([]step{{at: 0, snap: orphan}, {at: 1, snap: owned}, {at: 2, snap: orphan}, {at: 3, snap: owned}})
+	if r := find(t, rep, c1); r.HeavyStarted != 1 {
+		t.Errorf("claude-1 heavy started = %d, want 1", r.HeavyStarted)
+	}
+	if rep.Total.HeavyStarted != 1 || rep.Unattributed.HeavyStarted != 0 {
+		t.Errorf("total %d, unattributed %d; want 1 and 0", rep.Total.HeavyStarted, rep.Unattributed.HeavyStarted)
+	}
+}

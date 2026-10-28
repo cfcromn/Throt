@@ -1,13 +1,16 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -81,9 +84,45 @@ func TestCallNoDaemon(t *testing.T) {
 		filepath.Join(t.TempDir(), "no-dir", "missing.sock"),
 	} {
 		err := Call(context.Background(), sock, "ping", nil, nil)
-		if err == nil || !strings.Contains(err.Error(), "is it running") {
-			t.Errorf("%s: err = %v", sock, err)
+		want := "throtd is not running (no socket at " + sock + "); start it with `throtd`"
+		if err == nil || err.Error() != want {
+			t.Errorf("%s: err = %v, want %q", sock, err, want)
 		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s: err = %v does not wrap fs.ErrNotExist", sock, err)
+		}
+	}
+}
+
+// TestCallStaleSocket checks a socket file nobody listens on: the daemon
+// exited without removing it.
+func TestCallStaleSocket(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "stale.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
+	l.Close()
+	err = Call(context.Background(), sock, "ping", nil, nil)
+	want := "throtd is not running (nothing listening on " + sock + "); start it with `throtd`"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Errorf("err = %v does not wrap ECONNREFUSED", err)
+	}
+}
+
+// TestEmptyHandlerError checks that a handler error without a message
+// still reaches the client as an error.
+func TestEmptyHandlerError(t *testing.T) {
+	sock := startServer(t, map[string]Handler{
+		"empty": func(context.Context, json.RawMessage) (any, error) { return nil, errors.New("") },
+	})
+	err := Call(context.Background(), sock, "empty", nil, nil)
+	if err == nil || err.Error() != "empty: failed without a message" {
+		t.Fatalf("err = %v, want a non-empty error", err)
 	}
 }
 
@@ -120,5 +159,21 @@ func TestCheckPrivateDir(t *testing.T) {
 		} else if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 			t.Errorf("%s: err = %v, want %q", tt.dir, err, tt.wantErr)
 		}
+	}
+}
+
+// TestUnknownMethodClipped: an unknown method of nearly maxBodyBytes of
+// "<" was echoed whole, and escaped as < the response grew to 6 MiB,
+// which the client read as a truncated reply instead of the error.
+func TestUnknownMethodClipped(t *testing.T) {
+	req := `{"protocol":1,"method":"` + strings.Repeat("<", maxBodyBytes-64) + `"}`
+	conn := &bufConn{in: bytes.NewReader([]byte(req))}
+	NewServer(nil).handle(context.Background(), conn)
+	if n := conn.out.Len(); n > 1024 {
+		t.Fatalf("response is %d bytes", n)
+	}
+	err := readResponse(&conn.out, nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "unknown method: <<<<") || !strings.HasSuffix(err.Error(), "...") {
+		t.Fatalf("err = %v, want the clipped unknown method", err)
 	}
 }

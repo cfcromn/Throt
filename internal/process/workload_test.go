@@ -140,3 +140,18 @@ func TestWorkloadLatestSnapshotAndCopy(t *testing.T) {
 		t.Error("workload still reported after its process exited")
 	}
 }
+
+func TestLive(t *testing.T) {
+	g := newGraph()
+	g.Update(epoch, samples([]ps{{pid: 5, ppid: 1, name: "go"}, {pid: 7, ppid: 1, name: "sleep"}}))
+	if !g.Live(key(5, 0)) || !g.Live(key(7, 0)) {
+		t.Fatal("live processes reported dead")
+	}
+	g.Update(epoch.Add(1), samples([]ps{{pid: 7, ppid: 1, name: "sleep"}}))
+	if g.Live(key(5, 0)) {
+		t.Error("exited process reported live")
+	}
+	if !g.Live(key(7, 0)) || g.Live(key(7, 1)) {
+		t.Error("liveness must match the process start time")
+	}
+}

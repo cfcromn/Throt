@@ -27,10 +27,30 @@ func TestDefaultAdapters(t *testing.T) {
 		{"cursor-agent", "cursor-agent"},
 		{"goose", "goose"},
 		{"orca", "orca"},
-		// Generic runtimes are ambiguous and stay unknown.
+		{"amp", "amp"},
+		{"copilot", "copilot"},
+		// Generic runtimes are ambiguous and stay unknown, whatever script
+		// they run: argv is never read, so "node gemini.js" and
+		// "python3 -m aider" are not guessed.
 		{"node", ""},
+		{"nodejs", ""},
 		{"python3", ""},
+		{"python3.12", ""},
+		{"Python", ""},
 		{"bun", ""},
+		{"deno", ""},
+		// An editor with gemini.md open is the editor.
+		{"vim", ""},
+		{"code", ""},
+		{"gemini.md", ""},
+		// Look-alikes of built-in names.
+		{"aider_something_else", ""},
+		{"aider-chat", ""},
+		{"github-copilot", ""},
+		{"copilot-language-server", ""},
+		{"ampd", ""},
+		{"gemini-cli", ""},
+		{"codex.js", ""},
 		// Exact names only.
 		{"Claude", ""},
 		{"claude-helper", ""},

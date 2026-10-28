@@ -1,8 +1,10 @@
 name: Bench
 
-# Real-machine benchmarks (internal/bench) on hosted runners. They take
-# several minutes per OS, so they run on demand (gh workflow run bench.yml)
-# and weekly, never on push or pull request.
+# Real-machine benchmarks (internal/bench) on hosted runners: the CPU
+# scenarios, then on macOS the memory scenarios (THROT_BENCH_MEMORY=1),
+# which drive the runner past its RAM. They can take over an hour per OS, so
+# they run on demand (gh workflow run bench.yml) and weekly, never on push
+# or pull request.
 on:
   workflow_dispatch:
   schedule:
@@ -24,7 +26,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # The CPU scenarios take about 10 minutes; each memory run is capped at
+    # 7 minutes (3-minute job cap plus queue aging), 12 runs at worst.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -35,10 +39,14 @@ jobs:
         # Build the test binary and run it directly: under `go test`, the
         # `go` process (itself a heavy build) would be an ancestor of every
         # job and fold them into one workload.
+        # The memory scenarios run on macOS only: on a bare Linux runner
+        # they exhaust RAM and the job is killed, so Linux memory evidence
+        # comes from a container with a memory limit (docker run --memory).
         run: |
           go test -c -o "$RUNNER_TEMP/bench.test" ./internal/bench
+          if [ "$RUNNER_OS" = macOS ]; then export THROT_BENCH_MEMORY=1; fi
           THROT_BENCH=1 THROT_BENCH_OUT="$RUNNER_TEMP/bench-${{ matrix.os }}.md" \
-            "$RUNNER_TEMP/bench.test" -test.run Bench -test.v -test.count=1 -test.timeout 28m
+            "$RUNNER_TEMP/bench.test" -test.run Bench -test.v -test.count=1 -test.timeout 115m
       - name: Summary
         if: always()
         run: |

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"io"
 )
@@ -54,9 +54,14 @@ const agentsParagraph = "Prefix heavy commands (builds, full test suites, contai
 
 const setupUsage = "usage: throt setup claude-code|codex"
 
+// cmdSetup is 'throt setup'.
+func cmdSetup(_ context.Context, e env, args []string) error {
+	return runSetup(args, e.stdout)
+}
+
 func runSetup(args []string, w io.Writer) error {
 	if len(args) != 1 {
-		return errors.New(setupUsage)
+		return usageLine(setupUsage)
 	}
 	switch args[0] {
 	case "claude-code":
@@ -64,7 +69,7 @@ func runSetup(args []string, w io.Writer) error {
 	case "codex":
 		printCodexSetup(w)
 	default:
-		return errors.New(setupUsage)
+		return usageLine(setupUsage)
 	}
 	return nil
 }

@@ -74,6 +74,34 @@ func FuzzPSName(f *testing.F) {
 	})
 }
 
+// FuzzProcargsComm checks that a kern.procargs2 name is never empty, holds
+// no newline, and names the process exactly as its ps names line would.
+func FuzzProcargsComm(f *testing.F) {
+	f.Add(procargs(2, "/usr/local/go/bin/go", "/usr/local/go/bin/go", "build"))
+	f.Add(procargs(1, "/opt/homebrew/bin/node", "npm run build"))
+	f.Add(procargs(1, "/x", "/tmp/evil\n    1 launchd"))
+	f.Add(procargs(1, "/x", ""))
+	f.Add(procargs(1, "/bin/cat", "", "SECRET_TOKEN=hunter2"))
+	f.Add(procargs(0, "/x"))
+	f.Add([]byte{1, 0})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		comm, err := procargsComm(b)
+		if err != nil {
+			return
+		}
+		if comm == "" || strings.Contains(comm, "\n") || strings.TrimSpace(comm) != comm {
+			t.Fatalf("procargsComm = %q", comm)
+		}
+		names, err := parsePSNames(strings.NewReader("  7 " + comm + "\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(names) != 1 || names[7] != psName(comm) {
+			t.Errorf("ps line for %q names %v, procargs names %q", comm, names, psName(comm))
+		}
+	})
+}
+
 func FuzzParsePSTime(f *testing.F) {
 	for _, s := range []string{
 		"0:00.00", "0:01.50", "2:46.63", "2221:05.48", "01:02:03", "3-04:05:06", "1-00:00:00",

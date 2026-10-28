@@ -1,0 +1,108 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/transport"
+)
+
+// PingResult is returned by the "ping" method.
+type PingResult struct {
+	Version  string `json:"version"`
+	Protocol int    `json:"protocol"`
+	PID      int    `json:"pid"`
+	Uptime   string `json:"uptime"`
+}
+
+// ping handles the "ping" method.
+func (d *Daemon) ping(context.Context, json.RawMessage) (any, error) {
+	return PingResult{
+		Version:  Version,
+		Protocol: transport.ProtocolVersion,
+		PID:      os.Getpid(),
+		Uptime:   time.Since(d.started).Round(time.Second).String(),
+	}, nil
+}
+
+// MaxEventsPerCall caps one "events" response so it fits the protocol's
+// message size limit.
+const MaxEventsPerCall = 1000
+
+// EventsParams selects which events the "events" method returns.
+type EventsParams struct {
+	Limit int `json:"limit"`
+	// Since, when > 0, returns only events with a greater seq, oldest first,
+	// up to Limit; poll again with the last seq to get the rest. A Since
+	// beyond the newest event means the daemon restarted, so the newest
+	// events are returned instead and the client sees seq go down.
+	Since uint64 `json:"since,omitempty"`
+}
+
+// recentEvents handles the "events" method.
+func (d *Daemon) recentEvents(_ context.Context, raw json.RawMessage) (any, error) {
+	var p EventsParams
+	if len(raw) > 0 {
+		if err := decodeParams(raw, &p); err != nil {
+			return nil, err
+		}
+	}
+	if p.Limit <= 0 || p.Limit > MaxEventsPerCall {
+		p.Limit = MaxEventsPerCall
+	}
+	if p.Since == 0 {
+		return d.events.Recent(p.Limit), nil
+	}
+	if evs := d.events.Since(p.Since, p.Limit); len(evs) > 0 {
+		return evs, nil
+	}
+	if newest := d.events.Recent(1); len(newest) == 1 && newest[0].Seq < p.Since {
+		return d.events.Recent(p.Limit), nil
+	}
+	return []domain.Event{}, nil
+}
+
+// currentStatus handles the "status" method.
+func (d *Daemon) currentStatus(context.Context, json.RawMessage) (any, error) {
+	d.mu.Lock()
+	st := d.statusWithLeases()
+	d.mu.Unlock()
+	st.Paused = d.ctl.Paused()
+	return st, nil
+}
+
+// statusWithLeases returns a copy of the latest status with the active
+// leases filled in. d.mu is held.
+func (d *Daemon) statusWithLeases() StatusResult {
+	st := d.status
+	st.Scheduler.Leases = d.leases.views()
+	return st
+}
+
+// currentStats handles the "stats" method.
+func (d *Daemon) currentStats(context.Context, json.RawMessage) (any, error) {
+	d.statsMu.Lock()
+	defer d.statsMu.Unlock()
+	return d.acct.Report(), nil
+}
+
+// decodeParams unmarshals a method's params into v.
+func decodeParams(raw json.RawMessage, v any) error {
+	if err := json.Unmarshal(raw, v); err != nil {
+		return fmt.Errorf("invalid params: %w", err)
+	}
+	return nil
+}
+
+// checkPID refuses a pid of init or below, which no workload can have.
+func checkPID(pid int) error {
+	if pid <= 1 {
+		return errors.New("invalid params: pid must be > 1")
+	}
+	return nil
+}

@@ -38,6 +38,7 @@ func restartOnly(key string) bool {
 // SetConfigPath sets the file Reload re-reads. Call it before Run.
 func (d *Daemon) SetConfigPath(path string) { d.cfgPath = path }
 
+// reload handles the "reload" method.
 func (d *Daemon) reload(context.Context, json.RawMessage) (any, error) {
 	return d.Reload()
 }
@@ -103,6 +104,7 @@ func (d *Daemon) Reload() (ReloadResult, error) {
 	return res, nil
 }
 
+// reloadFailed emits a config_reload_failed event and returns err.
 func (d *Daemon) reloadFailed(err error) error {
 	d.emit(domain.EventConfigReloadFailed, "config reload failed, nothing changed: "+err.Error(),
 		map[string]string{"error": err.Error()})

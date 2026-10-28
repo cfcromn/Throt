@@ -1,7 +1,9 @@
 package platform
 
 // Parsers for Linux per-process procfs files. They are pure functions and
-// carry no build constraint so they are tested on every OS.
+// carry no build constraint so they are tested on every OS. They run for
+// every process on every sample, so they split fields in place instead of
+// allocating with strings.Fields.
 
 import (
 	"bufio"
@@ -13,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cfcromn/Throt/internal/domain"
 )
@@ -45,31 +48,47 @@ type pidStat struct {
 // parsePIDStat parses /proc/<pid>/stat. comm is enclosed in parentheses and
 // may itself contain spaces and ')', so it ends at the last ')'.
 func parsePIDStat(b []byte) (pidStat, error) {
+	s, comm, err := parsePIDStatRaw(b)
+	if err != nil {
+		return pidStat{}, err
+	}
+	s.Comm = sanitizeComm(comm)
+	return s, nil
+}
+
+// statFields is the number of /proc/<pid>/stat fields after comm that
+// parsePIDStatRaw reads: state (field 3) through rss (field 24).
+const statFields = 22
+
+// parsePIDStatRaw is parsePIDStat leaving Comm empty: it returns comm's raw
+// bytes instead, a subslice of b, so a caller can compare them with a
+// cached name before allocating a new one.
+func parsePIDStatRaw(b []byte) (pidStat, []byte, error) {
 	open := bytes.IndexByte(b, '(')
 	end := bytes.LastIndexByte(b, ')')
 	if open < 0 || end < open {
-		return pidStat{}, errors.New("parse stat: no comm")
+		return pidStat{}, nil, errors.New("parse stat: no comm")
 	}
 	var s pidStat
 	pid, err := strconv.Atoi(string(bytes.TrimSpace(b[:open])))
 	if err != nil {
-		return pidStat{}, fmt.Errorf("parse stat pid: %w", err)
+		return pidStat{}, nil, fmt.Errorf("parse stat pid: %w", err)
 	}
 	if pid <= 0 {
-		return pidStat{}, fmt.Errorf("parse stat: invalid pid %d", pid)
+		return pidStat{}, nil, fmt.Errorf("parse stat: invalid pid %d", pid)
 	}
-	s.PID, s.Comm = pid, sanitizeComm(b[open+1:end])
+	s.PID = pid
 
 	// rest starts at field 3 (state); field n is rest[n-3].
-	rest := strings.Fields(string(b[end+1:]))
-	if len(rest) < 22 {
-		return pidStat{}, fmt.Errorf("parse stat: %d fields after comm, want >= 22", len(rest))
+	var rest [statFields][]byte
+	if n := splitFields(b[end+1:], rest[:]); n < statFields {
+		return pidStat{}, nil, fmt.Errorf("parse stat: %d fields after comm, want >= %d", n, statFields)
 	}
 	if s.State, err = statState(rest[0]); err != nil {
-		return pidStat{}, err
+		return pidStat{}, nil, err
 	}
 	field := func(n int) (uint64, error) {
-		v, err := strconv.ParseUint(rest[n-3], 10, 64)
+		v, err := strconv.ParseUint(string(rest[n-3]), 10, 64)
 		if err != nil {
 			return 0, fmt.Errorf("parse stat field %d: %w", n, err)
 		}
@@ -77,37 +96,76 @@ func parsePIDStat(b []byte) (pidStat, error) {
 	}
 	ppid, err := field(4)
 	if err != nil {
-		return pidStat{}, err
+		return pidStat{}, nil, err
 	}
 	if ppid > math.MaxInt32 { // pid_t is 32 bits
-		return pidStat{}, fmt.Errorf("parse stat: invalid ppid %d", ppid)
+		return pidStat{}, nil, fmt.Errorf("parse stat: invalid ppid %d", ppid)
 	}
 	utime, err := field(14)
 	if err != nil {
-		return pidStat{}, err
+		return pidStat{}, nil, err
 	}
 	stime, err := field(15)
 	if err != nil {
-		return pidStat{}, err
+		return pidStat{}, nil, err
 	}
 	if s.StartTime, err = field(22); err != nil {
-		return pidStat{}, err
+		return pidStat{}, nil, err
 	}
 	if utime > maxTicks || stime > maxTicks-utime || s.StartTime > maxTicks {
-		return pidStat{}, errors.New("parse stat: times out of range")
+		return pidStat{}, nil, errors.New("parse stat: times out of range")
 	}
 	// rss (field 24) is signed in the kernel; a negative value is malformed.
 	if s.RSSPages, err = field(24); err != nil {
-		return pidStat{}, err
+		return pidStat{}, nil, err
 	}
 	s.PPID, s.CPUTicks = int(ppid), utime+stime
-	return s, nil
+	return s, b[open+1 : end], nil
+}
+
+// splitFields splits b around runs of white space, as bytes.Fields does,
+// and stores the first len(dst) fields in dst. It returns the number of
+// fields, counting no further than len(dst) when b is ASCII, which is all
+// the kernel writes there; it allocates only when b is not.
+func splitFields(b []byte, dst [][]byte) int {
+	for _, c := range b {
+		if c >= utf8.RuneSelf {
+			fields := bytes.Fields(b) // Unicode spaces split too
+			copy(dst, fields)
+			return len(fields)
+		}
+	}
+	n := 0
+	for i := 0; i < len(b) && n < len(dst); {
+		for i < len(b) && asciiSpace(b[i]) {
+			i++
+		}
+		j := i
+		for j < len(b) && !asciiSpace(b[j]) {
+			j++
+		}
+		if j > i {
+			dst[n] = b[i:j]
+			n++
+		}
+		i = j
+	}
+	return n
+}
+
+// asciiSpace reports whether c is an ASCII byte bytes.Fields splits on.
+func asciiSpace(c byte) bool {
+	switch c {
+	case '\t', '\n', '\v', '\f', '\r', ' ':
+		return true
+	}
+	return false
 }
 
 // statState maps field 3 of /proc/<pid>/stat, one state letter, to a
 // ProcessState. T is stopped by a signal; t is stopped by a tracer
 // (ptrace), which a debugger owns, so it is StateOther.
-func statState(f string) (domain.ProcessState, error) {
+func statState(f []byte) (domain.ProcessState, error) {
 	if len(f) != 1 {
 		return "", fmt.Errorf("parse stat: state %q is not one letter", f)
 	}
@@ -127,24 +185,37 @@ func statState(f string) (domain.ProcessState, error) {
 // parseStatusUID returns the real uid from the "Uid:" line of
 // /proc/<pid>/status.
 func parseStatusUID(r io.Reader) (uint32, error) {
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		rest, ok := strings.CutPrefix(sc.Text(), "Uid:")
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return 0, fmt.Errorf("read status: %w", err)
+	}
+	return statusUID(b)
+}
+
+// statusUID returns the real uid from the first line of b, the contents of
+// /proc/<pid>/status, that starts with "Uid:". Lines end at '\n', less a
+// trailing '\r', as bufio.ScanLines splits them.
+func statusUID(b []byte) (uint32, error) {
+	for len(b) > 0 {
+		line := b
+		if i := bytes.IndexByte(b, '\n'); i >= 0 {
+			line, b = b[:i], b[i+1:]
+		} else {
+			b = nil
+		}
+		rest, ok := bytes.CutPrefix(bytes.TrimSuffix(line, []byte{'\r'}), []byte("Uid:"))
 		if !ok {
 			continue
 		}
-		fields := strings.Fields(rest)
-		if len(fields) == 0 {
+		var first [1][]byte
+		if splitFields(rest, first[:]) == 0 {
 			return 0, errors.New("parse status: empty Uid line")
 		}
-		v, err := strconv.ParseUint(fields[0], 10, 32)
+		v, err := strconv.ParseUint(string(first[0]), 10, 32)
 		if err != nil {
 			return 0, fmt.Errorf("parse status Uid: %w", err)
 		}
 		return uint32(v), nil
-	}
-	if err := sc.Err(); err != nil {
-		return 0, fmt.Errorf("read status: %w", err)
 	}
 	return 0, errors.New("parse status: no Uid line")
 }
@@ -171,14 +242,46 @@ func parseBootTime(r io.Reader) (time.Time, error) {
 	return time.Time{}, errors.New("parse /proc/stat: no btime line")
 }
 
-// sanitizeComm replaces control characters, which a process may put in its
-// own comm (e.g. a newline), with '?' as procps does, and keeps other bytes.
+// sanitizeComm returns comm as a string, replacing control characters, which
+// a process may put in its own comm (e.g. a newline), with '?' as procps
+// does, and keeping other bytes.
 func sanitizeComm(b []byte) string {
+	if !hasControl(b) {
+		return string(b)
+	}
 	out := bytes.Clone(b)
 	for i, c := range out {
-		if c < 0x20 || c == 0x7f {
+		if isControl(c) {
 			out[i] = '?'
 		}
 	}
 	return string(out)
 }
+
+// commEqual reports whether sanitizeComm(b) would return s, without
+// allocating.
+func commEqual(b []byte, s string) bool {
+	if len(b) != len(s) {
+		return false
+	}
+	for i, c := range b {
+		if isControl(c) {
+			c = '?'
+		}
+		if c != s[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func hasControl(b []byte) bool {
+	for _, c := range b {
+		if isControl(c) {
+			return true
+		}
+	}
+	return false
+}
+
+func isControl(c byte) bool { return c < 0x20 || c == 0x7f }
