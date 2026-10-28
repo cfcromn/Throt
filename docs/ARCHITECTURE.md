@@ -51,7 +51,7 @@ One structured event model feeds logs, diagnostics, and the TUI timeline: proces
 
 **Inputs:** CPU utilization and load, memory used/available, swap usage and growth, per-process CPU/RSS, ancestry, number of heavy workloads, workload runtime. Later: platform memory-pressure APIs and responsiveness probes.
 
-**Pressure states:** `NORMAL → ELEVATED → HIGH → CRITICAL`. Transitions use rolling windows and hysteresis; a single sample never causes a control action.
+**Pressure states:** `NORMAL → ELEVATED → HIGH → CRITICAL` (plus `UNKNOWN` when no signal is available). Signals are window medians (memory used, CPU, load per CPU) and swap growth rate over a 30s window. Escalation needs 3 consecutive samples; recovery needs every signal below its exit threshold (enter − 0.05 for fractions, half the enter rate for swap growth) for twice the window. Swap growth is the median of rates between adjacent samples, so one jump doesn't count as sustained growth. CPU alone never reaches critical. Thresholds live in `internal/pressure`.
 
 **Workload states:** `DISCOVERED`, `RUNNING`, `QUEUED`, `PAUSED`, `RESUMING`, `EXITED`, `UNKNOWN`.
 
@@ -79,7 +79,7 @@ One structured event model feeds logs, diagnostics, and the TUI timeline: proces
 
 Platform code implements *capabilities* (host metrics, process enumeration, ancestry, per-process resources, suspend/resume, priority) instead of pretending every OS is identical. The scheduler queries capabilities and degrades explicitly.
 
-- **macOS** — first target: enumeration, ancestry, CPU/RSS, memory/swap, process-group handling. No undocumented APIs on the stable path.
+- **macOS** — first target: enumeration, ancestry, CPU/RSS, memory/swap, process-group handling. No undocumented APIs on the stable path. Throt avoids cgo, so host CPU busy time (Mach-only) is currently reported as missing; load average covers CPU saturation.
 - **Linux** — native procfs/cgroup facilities, not macOS semantics.
 - **Windows** — not committed before 1.0.
 

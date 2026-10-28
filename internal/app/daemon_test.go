@@ -16,6 +16,12 @@ import (
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
+type fakeSampler struct{}
+
+func (fakeSampler) SampleHost(context.Context) (domain.HostSample, error) {
+	return domain.HostSample{Time: time.Now(), MemTotal: 100, MemAvailable: 50}, nil
+}
+
 // shortTempDir keeps socket paths under the 104-byte sun_path limit on macOS.
 func shortTempDir(t *testing.T) string {
 	t.Helper()
@@ -33,7 +39,7 @@ func startDaemon(t *testing.T, sock string) (cancel func() error) {
 	cfg.SocketPath = sock
 	ctx, stop := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- NewDaemon(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(ctx) }()
+	go func() { done <- NewDaemon(cfg, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(ctx) }()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for transport.Call(context.Background(), sock, "ping", nil, nil) != nil {
@@ -66,8 +72,16 @@ func TestDaemonLifecycle(t *testing.T) {
 	if err := transport.Call(context.Background(), sock, "events", EventsParams{Limit: 10}, &events); err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Kind != domain.EventDaemonStarted {
+	if len(events) == 0 || events[0].Kind != domain.EventDaemonStarted {
 		t.Errorf("events = %+v", events)
+	}
+
+	var st StatusResult
+	if err := transport.Call(context.Background(), sock, "status", nil, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Host == nil || st.Host.MemTotal != 100 {
+		t.Errorf("status = %+v", st)
 	}
 
 	if err := stop(); err != nil {
@@ -85,7 +99,7 @@ func TestDaemonRefusesSecondInstance(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.SocketPath = sock
-	err := NewDaemon(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	err := NewDaemon(cfg, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("err = %v", err)
 	}
@@ -112,7 +126,7 @@ func TestDaemonKeepsNonSocketFile(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.SocketPath = sock
-	err := NewDaemon(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	err := NewDaemon(cfg, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "not a socket") {
 		t.Fatalf("err = %v", err)
 	}
@@ -129,7 +143,7 @@ func TestDaemonRejectsSharedSocketDir(t *testing.T) {
 	os.Chmod(dir, 0o777) // bypass umask
 	cfg := config.Default()
 	cfg.SocketPath = filepath.Join(dir, "throtd.sock")
-	err := NewDaemon(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	err := NewDaemon(cfg, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "writable by other users") {
 		t.Fatalf("err = %v", err)
 	}

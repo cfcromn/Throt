@@ -11,11 +11,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/monitor"
+	"github.com/cfcromn/Throt/internal/pressure"
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
@@ -39,17 +42,40 @@ type EventsParams struct {
 	Limit int `json:"limit"`
 }
 
+// StatusResult is returned by the "status" method.
+type StatusResult struct {
+	Pressure domain.PressureLevel `json:"pressure"`
+	Reason   string               `json:"reason,omitempty"`
+	// Host is the latest sample; nil until the first sample succeeds.
+	Host *domain.HostSample `json:"host,omitempty"`
+	// Degraded is set when the latest sampling attempt failed.
+	Degraded string `json:"degraded,omitempty"`
+}
+
 // Daemon is throtd's runtime state.
 type Daemon struct {
 	cfg     config.Config
 	log     *slog.Logger
 	events  *domain.EventLog
+	sampler monitor.HostSampler
 	started time.Time
+
+	mu       sync.Mutex // guards the fields below
+	engine   *pressure.Engine
+	status   StatusResult
+	degraded bool
 }
 
-// NewDaemon returns a daemon for cfg logging to log.
-func NewDaemon(cfg config.Config, log *slog.Logger) *Daemon {
-	return &Daemon{cfg: cfg, log: log, events: domain.NewEventLog(cfg.EventHistory)}
+// NewDaemon returns a daemon for cfg that samples the host with sampler and
+// logs to log.
+func NewDaemon(cfg config.Config, sampler monitor.HostSampler, log *slog.Logger) *Daemon {
+	return &Daemon{
+		cfg:     cfg,
+		log:     log,
+		events:  domain.NewEventLog(cfg.EventHistory),
+		sampler: sampler,
+		engine:  pressure.New(pressure.DefaultWindow, pressure.DefaultThresholds()),
+	}
 }
 
 // Run listens on the configured socket and serves clients until ctx is
@@ -67,18 +93,78 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Closing the listener (done by Serve) unlinks the socket.
 
 	d.started = time.Now()
-	d.emit(domain.EventDaemonStarted, "listening on "+d.cfg.SocketPath)
+	d.emit(domain.EventDaemonStarted, "listening on "+d.cfg.SocketPath, nil)
 	srv := transport.NewServer(map[string]transport.Handler{
 		"ping":   d.ping,
 		"events": d.recentEvents,
+		"status": d.currentStatus,
 	})
+
+	ctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		monitor.Run(ctx, time.Duration(d.cfg.SampleInterval), d.sampler, d.observe, d.sampleFailed)
+	}()
 	err = srv.Serve(ctx, l)
-	d.emit(domain.EventDaemonStopped, "shutdown")
+	cancel()
+	wg.Wait()
+	d.emit(domain.EventDaemonStopped, "shutdown", nil)
 	return err
 }
 
-func (d *Daemon) emit(kind domain.EventKind, msg string) {
-	d.events.Append(domain.Event{Time: time.Now(), Kind: kind, Message: msg})
+func (d *Daemon) observe(s domain.HostSample) {
+	d.mu.Lock()
+	level, changed, reason := d.engine.Observe(s)
+	from := d.status.Pressure
+	d.status = StatusResult{Pressure: level, Reason: reason, Host: &s}
+	recovered := d.degraded
+	d.degraded = false
+	d.mu.Unlock()
+
+	if recovered {
+		d.emit(domain.EventRecovered, "host sampling recovered", nil)
+	}
+	if changed {
+		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
+			map[string]string{"from": from.String(), "to": level.String(), "reason": reason})
+	}
+}
+
+// sampleFailed feeds the engine an all-missing sample so stale readings age
+// out of the window and pressure falls back to unknown instead of freezing.
+// The last good host sample stays visible; its Time shows its age.
+func (d *Daemon) sampleFailed(err error) {
+	empty := domain.HostSample{
+		Time:    time.Now(),
+		Missing: []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap},
+	}
+	d.mu.Lock()
+	level, changed, reason := d.engine.Observe(empty)
+	from := d.status.Pressure
+	d.status.Pressure, d.status.Reason, d.status.Degraded = level, reason, err.Error()
+	first := !d.degraded
+	d.degraded = true
+	d.mu.Unlock()
+
+	if first { // log transitions only, not every failed tick
+		d.emit(domain.EventDegraded, "host sampling failed: "+err.Error(), nil)
+	}
+	if changed {
+		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
+			map[string]string{"from": from.String(), "to": level.String(), "reason": reason})
+	}
+}
+
+func (d *Daemon) currentStatus(context.Context, json.RawMessage) (any, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.status, nil
+}
+
+func (d *Daemon) emit(kind domain.EventKind, msg string, attrs map[string]string) {
+	d.events.Append(domain.Event{Time: time.Now(), Kind: kind, Message: msg, Attrs: attrs})
 	d.log.Info(msg, "event", kind)
 }
 
