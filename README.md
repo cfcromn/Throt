@@ -105,6 +105,8 @@ Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.js
 }
 ```
 
+Custom agents can be added with `"agents": [{"name": "myagent", "executables": ["my-agent"]}]`. Generic runtimes such as `node` are refused, because they would match unrelated processes.
+
 `profile` presets the scheduler; explicit keys override it.
 - `performance`: limit = CPUs/2 (at least 2), not adaptive.
 - `balanced` (default): limit = CPUs/4 (at least 2), adaptive.

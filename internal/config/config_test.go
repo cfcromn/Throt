@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ func TestLoad(t *testing.T) {
 		check   func(t *testing.T, c Config)
 	}{
 		{name: "missing file uses defaults", check: func(t *testing.T, c Config) {
-			if c != Default() {
+			if !reflect.DeepEqual(c, Default()) {
 				t.Errorf("got %+v, want defaults", c)
 			}
 		}},
@@ -44,6 +45,14 @@ func TestLoad(t *testing.T) {
 				t.Errorf("got %+v", c.Scheduler)
 			}
 		}},
+		{name: "custom agent", body: `{"agents":[{"name":"myagent","executables":["my-agent","myagent-cli"]}]}`, check: func(t *testing.T, c Config) {
+			if len(c.Agents) != 1 || c.Agents[0].Executables[1] != "myagent-cli" {
+				t.Errorf("got %+v", c.Agents)
+			}
+		}},
+		{name: "custom agent generic runtime", body: `{"agents":[{"name":"x","executables":["node"]}]}`, wantErr: "generic runtime"},
+		{name: "custom agent path", body: `{"agents":[{"name":"x","executables":["/usr/bin/x"]}]}`, wantErr: "bare base name"},
+		{name: "custom agent bad name", body: `{"agents":[{"name":"My Agent","executables":["x"]}]}`, wantErr: "lowercase"},
 		{name: "unknown profile", body: `{"profile":"turbo"}`, wantErr: "profile must be"},
 		{name: "bad scheduler mode", body: `{"scheduler":{"mode":"auto"}}`, wantErr: "scheduler.mode"},
 		{name: "unknown scheduler key", body: `{"scheduler":{"limit":3}}`, wantErr: "unknown field"},

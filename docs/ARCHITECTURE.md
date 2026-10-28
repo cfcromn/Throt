@@ -130,6 +130,27 @@ A scheduler can make graphs calmer while making real work slower, so changes to 
 - **Scenarios:** 1 agent + 1 build; 4 agents with light work; 6–8 agents with overlapping builds; Docker + JVM + JS builds; memory-heavy; long job mixed with short jobs (starvation).
 - **Method:** fixed fixtures, warm-up, repetitions, same machine for baseline vs. Throt, report medians and tails.
 
+## Local protocol
+
+Clients reach `throtd` over its Unix socket (`throt doctor` prints the path). Each connection carries one request and one response, both newline-terminated JSON of at most 1 MiB:
+
+```json
+{"protocol": 1, "method": "status", "params": {}}
+{"protocol": 1, "result": {...}}            // or {"protocol": 1, "error": "..."}
+```
+
+A request for any other protocol version is rejected with an error naming both versions. `protocol` is bumped on any incompatible change; additive fields are not breaking, so clients must ignore unknown fields.
+
+| Method | Params | Result | Privileged |
+|---|---|---|---|
+| `ping` | – | `version`, `protocol`, `pid`, `uptime` | no |
+| `status` | – | `pressure`, `reason`, `host`, `agents`, `heavy`, `paused`, `scheduler`, `degraded` | no |
+| `events` | `limit` (1–1000) | recent events, oldest first: `time`, `kind`, `message`, `attrs` | no |
+| `pause` | `pid` | – | yes |
+| `resume` | `pid` | – | yes |
+
+Privileged methods also require the caller's uid (from peer credentials) to match the daemon's. The Go types in `internal/app` are the reference definitions; `throt mcp` exposes the read-only methods to coding agents.
+
 ## Compatibility
 
 Pre-1.0, CLI/config/protocol may change between minor releases, always documented in the changelog; patch releases don't intentionally break documented behavior. Unknown config keys are errors. Client and daemon negotiate a protocol version and fail with an actionable message on mismatch. `internal/` packages are not a public API.

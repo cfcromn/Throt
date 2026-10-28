@@ -8,6 +8,8 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ### Added
 - Foreground latency probe (timer lateness) as a pressure signal; shown in `throt status` and the TUI.
+- Custom agent adapters via the `agents` config key.
+- Documented local protocol (methods, params, versioning) in `docs/ARCHITECTURE.md`.
 - Adaptive (AIMD) heavy limit, per-agent heavy budgets, and `performance` / `balanced` / `cool` profiles.
 
 ## [0.2.0-rc.1] - 2026-10-28
