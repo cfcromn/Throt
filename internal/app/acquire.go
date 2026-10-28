@@ -90,19 +90,19 @@ func (d *Daemon) acquireCaller(ctx context.Context, pid int) (domain.ProcessSamp
 	// A lease is the caller's own: where the kernel reports the peer PID,
 	// it must be the process the lease is for.
 	if peer, ok := transport.PeerPIDFrom(ctx); ok && peer != pid {
-		return domain.ProcessSample{}, d.refused("acquire", pid, fmt.Sprintf("caller pid %d is not pid %d", peer, pid))
+		return domain.ProcessSample{}, d.refused("acquire", pid, ReasonPeerMismatch, fmt.Sprintf("caller pid %d is not pid %d", peer, pid))
 	}
 	if d.ident == nil {
-		return domain.ProcessSample{}, d.refused("acquire", pid, "cannot identify processes on this platform")
+		return domain.ProcessSample{}, d.refused("acquire", pid, ReasonUnidentified, "cannot identify processes on this platform")
 	}
 	self, err := d.identify(ctx, pid)
 	switch {
 	case err != nil:
-		return self, d.refused("acquire", pid, "cannot identify the caller: "+err.Error())
+		return self, d.refused("acquire", pid, ReasonUnidentified, "cannot identify the caller: "+err.Error())
 	case self.Start.IsZero():
-		return self, d.refused("acquire", pid, "the caller has no start time")
+		return self, d.refused("acquire", pid, ReasonUnidentified, "the caller has no start time")
 	case self.UID != d.uid:
-		return self, d.refused("acquire", pid, "the process belongs to another user")
+		return self, d.refused("acquire", pid, control.ReasonForeignUID, "the process belongs to another user")
 	}
 	return self, nil
 }

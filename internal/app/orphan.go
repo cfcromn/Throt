@@ -27,26 +27,26 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 	d.mu.Unlock()
 	i := slices.IndexFunc(stopped, func(v process.StoppedView) bool { return v.Key.PID == pid && sameStart(params, v.Key) })
 	if i < 0 {
-		return d.refused("resume", pid, "not paused, and not stopped in the latest sample (see `throt doctor`)")
+		return d.refused("resume", pid, control.ReasonNotPaused, "not paused, and not stopped in the latest sample (see `throt doctor`)")
 	}
 	v := stopped[i]
 	recorded := recordedKeys(d.ctl.Paused())
 	switch {
 	case v.UID != d.uid:
-		return d.refused("resume", pid, "owned by another user")
+		return d.refused("resume", pid, control.ReasonForeignUID, "owned by another user")
 	case recorded[v.Key]:
-		return d.refused("resume", pid, "paused by throtd as part of another workload; resume that workload")
+		return d.refused("resume", pid, ReasonPausedMember, "paused by throtd as part of another workload; resume that workload")
 	}
 	o := process.ClassifyOrphan(v, stopped)
 	// A shell job is never resumed without --force, even when it is an
 	// agent's heavy workload: its job stays stopped in the shell.
 	leftPaused := o.AttributedHeavy() && o.Kind == process.OrphanLeftPaused
 	if !leftPaused && !params.Force {
-		reason := "not an attributed heavy workload, so throtd did not pause it; use kill -CONT, or throt resume --force"
+		code, reason := ReasonNeedsForce, "not an attributed heavy workload, so throtd did not pause it; use kill -CONT, or throt resume --force"
 		if o.Kind == process.OrphanJobControl {
-			reason = "likely a shell job stopped with Ctrl-Z; use fg in its shell, or throt resume --force"
+			code, reason = ReasonJobControl, "likely a shell job stopped with Ctrl-Z; use fg in its shell, or throt resume --force"
 		}
-		return d.refused("resume", pid, reason)
+		return d.refused("resume", pid, code, reason)
 	}
 
 	targets := []domain.ProcessKey{v.Key}
@@ -57,16 +57,16 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 	// are skipped, and if none is still stopped the request is refused
 	// rather than reported as resumed again. The top may have been
 	// resumed by hand while its children are still stopped.
-	targets, reason := d.stillStopped(ctx, v.Key, targets)
+	targets, why := d.stillStopped(ctx, v.Key, targets)
 	if len(targets) == 0 {
-		return d.refused("resume", pid, reason)
+		return d.refused("resume", pid, why.code, why.sentence)
 	}
 	resumed, err := d.continueAll(ctx, targets)
 	if err != nil {
 		return d.controlError("resume", pid, err)
 	}
 	if resumed == 0 {
-		return d.refused("resume", pid, "the process is gone")
+		return d.refused("resume", pid, ReasonGone, "the process is gone")
 	}
 	attrs := map[string]string{"action": "resume", "pid": strconv.Itoa(pid), "name": v.Name, "orphan": "true", "processes": strconv.Itoa(resumed)}
 	if v.Owner != "" {
@@ -79,34 +79,38 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 	return nil
 }
 
+// refusal is why a request is refused: a reason code and a sentence.
+type refusal struct{ code, sentence string }
+
 // notStopped checks key's live state with the OS and returns why it cannot
-// be resumed: it is gone, or it is not stopped. It returns "" when it is
-// stopped, or when its state cannot be read (the resume then verifies
-// identity as usual, and continuing a running process is harmless).
-func (d *Daemon) notStopped(ctx context.Context, key domain.ProcessKey) string {
+// be resumed: it is gone, or it is not stopped. It returns a zero refusal
+// when it is stopped, or when its state cannot be read (the resume then
+// verifies identity as usual, and continuing a running process is
+// harmless).
+func (d *Daemon) notStopped(ctx context.Context, key domain.ProcessKey) refusal {
 	if d.ident == nil {
-		return ""
+		return refusal{}
 	}
 	cctx, cancel := context.WithTimeout(ctx, control.CallTimeout)
 	p, err := d.ident.Identify(cctx, key.PID)
 	cancel()
 	switch {
 	case errors.Is(err, domain.ErrProcessGone) || err == nil && !p.Start.Equal(key.Start):
-		return "the process is gone"
+		return refusal{ReasonGone, "the process is gone"}
 	case err != nil || p.State == "" || p.State == domain.StateStopped:
-		return ""
+		return refusal{}
 	}
-	return "not stopped (it is " + string(p.State) + "); nothing to resume"
+	return refusal{ReasonNotStopped, "not stopped (it is " + string(p.State) + "); nothing to resume"}
 }
 
 // stillStopped returns the keys whose live state does not rule out a
 // resume (see notStopped), in order. When none is left, it also returns
 // why top cannot be resumed.
-func (d *Daemon) stillStopped(ctx context.Context, top domain.ProcessKey, keys []domain.ProcessKey) (kept []domain.ProcessKey, topReason string) {
-	topReason = "the process is gone"
+func (d *Daemon) stillStopped(ctx context.Context, top domain.ProcessKey, keys []domain.ProcessKey) (kept []domain.ProcessKey, topReason refusal) {
+	topReason = refusal{ReasonGone, "the process is gone"}
 	for _, k := range keys {
 		reason := d.notStopped(ctx, k)
-		if reason == "" {
+		if reason == (refusal{}) {
 			kept = append(kept, k)
 		} else if k == top {
 			topReason = reason

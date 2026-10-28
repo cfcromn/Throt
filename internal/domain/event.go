@@ -22,6 +22,15 @@ const (
 	EventConfigReloadFailed EventKind = "config_reload_failed"
 )
 
+// EventKinds lists every event kind, as documented in docs/ARCHITECTURE.md.
+var EventKinds = []EventKind{
+	EventDaemonStarted, EventDaemonStopped, EventDegraded, EventRecovered,
+	EventConfigReloaded, EventConfigReloadFailed, EventPressureChanged,
+	EventProcessDiscovered, EventProcessLost, EventAgentDiscovered, EventAgentLost, EventOrphanStopped,
+	EventControlPaused, EventControlResumed, EventControlRefused, EventControlFailed,
+	EventSchedulerDecision, EventSchedulerLimit, EventLeaseGranted, EventLeaseReleased,
+}
+
 // Event is the single structured record that feeds logs, diagnostics, and
 // the TUI timeline.
 type Event struct {

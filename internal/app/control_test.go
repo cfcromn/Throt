@@ -69,6 +69,7 @@ func TestResumeOrphanRefusals(t *testing.T) {
 		pid   int
 		force bool
 		want  string
+		code  string // the event's reason attr
 	}{
 		{
 			name: "owned by another user",
@@ -76,7 +77,7 @@ func TestResumeOrphanRefusals(t *testing.T) {
 				d.stopped = []process.StoppedView{stopped(30, uid+1)}
 			},
 			pid: 30, force: true, // even --force never touches another user's process
-			want: "owned by another user",
+			want: "owned by another user", code: control.ReasonForeignUID,
 		},
 		{
 			name: "member of another paused workload",
@@ -91,7 +92,7 @@ func TestResumeOrphanRefusals(t *testing.T) {
 				d.stopped = []process.StoppedView{stopped(30, uid), stopped(31, uid)}
 			},
 			pid: 31, force: true,
-			want: "paused by throtd as part of another workload",
+			want: "paused by throtd as part of another workload", code: ReasonPausedMember,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,6 +113,9 @@ func TestResumeOrphanRefusals(t *testing.T) {
 			}
 			if n := countEvents(d, domain.EventControlRefused, tc.want); n != 1 {
 				t.Errorf("%d control_refused events naming %q, want 1", n, tc.want)
+			}
+			if ev := eventsOf(d, domain.EventControlRefused); len(ev) == 0 || ev[len(ev)-1].Attrs["reason"] != tc.code {
+				t.Errorf("control_refused events = %v, want reason %q", ev, tc.code)
 			}
 		})
 	}

@@ -53,6 +53,12 @@ const (
 	ReasonNotPaused      = "not_paused"
 )
 
+// Reasons lists every refusal reason code.
+var Reasons = []string{
+	ReasonUnattributed, ReasonNotHeavy, ReasonNoMembers, ReasonTooManyMembers, ReasonInvalidTarget,
+	ReasonForeignUID, ReasonAlreadyPaused, ReasonLimitReached, ReasonNotPaused,
+}
+
 // Record states.
 const (
 	// StatePausing: members are being stopped. Members lists every process

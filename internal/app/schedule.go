@@ -79,7 +79,7 @@ func (d *Daemon) schedule(parent context.Context, in scheduler.Input, orphans []
 		case !inSnapshot[p.Key]:
 			// The top process exited (e.g. killed while stopped); its
 			// children would otherwise stay stopped with nobody to resume them.
-			d.schedulerResume(parent, p.Key, p.Name, p.Owner, "top_exited")
+			d.schedulerResume(parent, p.Key, p.Name, p.Owner, ReasonTopExited)
 		default:
 			in.Paused = append(in.Paused, p.Key)
 		}
@@ -116,7 +116,7 @@ func (d *Daemon) schedulerPause(parent context.Context, dec scheduler.Decision) 
 	}
 	if len(target.Members) > maxQueueMembers {
 		d.emit(domain.EventControlRefused, fmt.Sprintf("scheduler %s %s refused: %d processes exceeds %d", dec.Action, dec.Name, len(target.Members), maxQueueMembers),
-			map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action), "reason": "too_many_members"})
+			map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action), "reason": control.ReasonTooManyMembers})
 		return
 	}
 	ctx, cancel := context.WithTimeout(parent, sampleTimeout)

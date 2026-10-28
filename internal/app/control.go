@@ -36,14 +36,14 @@ func (d *Daemon) pause(ctx context.Context, raw json.RawMessage) (any, error) {
 	pid := params.PID
 	key, ok := d.heavyKey(pid)
 	if !ok {
-		return nil, d.refused("pause", pid, "not a heavy workload in the latest sample (see `throt status`)")
+		return nil, d.refused("pause", pid, control.ReasonNotHeavy, "not a heavy workload in the latest sample (see `throt status`)")
 	}
 	if !sameStart(params, key) {
-		return nil, d.refused("pause", pid, "the process changed since it was shown (PID reused)")
+		return nil, d.refused("pause", pid, ReasonStartMismatch, "the process changed since it was shown (PID reused)")
 	}
 	target, ok := d.workload(key)
 	if !ok {
-		return nil, d.refused("pause", pid, "workload is gone")
+		return nil, d.refused("pause", pid, ReasonGone, "workload is gone")
 	}
 	if err := d.ctl.Pause(ctx, target); err != nil {
 		return nil, d.controlError("pause", pid, err)
@@ -106,15 +106,41 @@ func (d *Daemon) heavyKey(pid int) (domain.ProcessKey, bool) {
 	return domain.ProcessKey{}, false
 }
 
-// refused emits a control_refused event for action on pid and returns the
-// error the client sees.
-func (d *Daemon) refused(action string, pid int, reason string) error {
-	return d.refusedCode(action, pid, reason, reason)
-}
+// Refusal reason codes of checks the daemon makes itself; the controller's
+// are in package control. Both are the reason attr of control_refused
+// events, stable for the local protocol, and listed in RefusalReasons.
+const (
+	// ReasonStartMismatch: the PID now belongs to a process with another
+	// start time than the client sent.
+	ReasonStartMismatch = "start_mismatch"
+	// ReasonGone: the process exited.
+	ReasonGone = "gone"
+	// ReasonPeerMismatch: an acquire for a PID other than the caller's own.
+	ReasonPeerMismatch = "peer_mismatch"
+	// ReasonUnidentified: the caller's identity or start time cannot be
+	// read from the OS.
+	ReasonUnidentified = "unidentified"
+	// ReasonPausedMember: the process is paused as part of another
+	// workload.
+	ReasonPausedMember = "paused_member"
+	// ReasonNeedsForce: a stopped process throtd did not pause and that is
+	// not an attributed heavy workload; resume --force continues it.
+	ReasonNeedsForce = "needs_force"
+	// ReasonJobControl: as ReasonNeedsForce, for a job a shell stopped.
+	ReasonJobControl = "job_control"
+	// ReasonNotStopped: a process to resume is not stopped.
+	ReasonNotStopped = "not_stopped"
+)
 
-// refusedCode is refused with a reason code for the event's reason attr
-// and a sentence for people.
-func (d *Daemon) refusedCode(action string, pid int, code, sentence string) error {
+// RefusalReasons lists every reason code of control_refused events.
+var RefusalReasons = append(slices.Clone(control.Reasons),
+	ReasonStartMismatch, ReasonGone, ReasonPeerMismatch, ReasonUnidentified,
+	ReasonPausedMember, ReasonNeedsForce, ReasonJobControl, ReasonNotStopped)
+
+// refused emits a control_refused event for action on pid, with a reason
+// code for the event's reason attr and a sentence for people, and returns
+// the error the client sees.
+func (d *Daemon) refused(action string, pid int, code, sentence string) error {
 	p := strconv.Itoa(pid)
 	d.emit(domain.EventControlRefused, action+" pid "+p+" refused: "+sentence,
 		map[string]string{"action": action, "pid": p, "reason": code})
@@ -126,7 +152,7 @@ func (d *Daemon) refusedCode(action string, pid int, code, sentence string) erro
 func (d *Daemon) controlError(action string, pid int, err error) error {
 	var r *control.RefusedError
 	if errors.As(err, &r) {
-		return d.refusedCode(action, pid, r.Reason, control.Describe(r.Reason))
+		return d.refused(action, pid, r.Reason, control.Describe(r.Reason))
 	}
 	p := strconv.Itoa(pid)
 	d.emit(domain.EventControlFailed, action+" pid "+p+" failed: "+err.Error(),

@@ -6,6 +6,9 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Changed
+- The `reason` attr of every `control_refused` event is now a stable code. Refusals throtd decides itself used to put a sentence there; they now use `start_mismatch`, `gone`, `peer_mismatch`, `unidentified`, `paused_member`, `needs_force`, `job_control` or `not_stopped` (or the controller's `not_heavy`, `foreign_uid`, `not_paused`). The sentence stays in the event message and the error the client sees.
+
 ### Security
 - macOS process names replace control characters with `?`, as on Linux, so a process cannot put terminal escapes into names that `throt doctor`, `throt status` or events print.
 

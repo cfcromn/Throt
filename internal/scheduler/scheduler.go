@@ -78,6 +78,19 @@ const (
 	ReasonWorkloadExited = "workload_exited"
 )
 
+// DecisionReasons lists every reason code a Decision can carry.
+var DecisionReasons = []string{
+	ReasonSlotsExhausted, ReasonQueueWaiting, ReasonPressureHigh, ReasonPressureCritical,
+	ReasonSlotAvailable, ReasonAged, ReasonOwnerBudget, ReasonPressureNormal,
+	ReasonPressureThroughput, ReasonWorkloadExited,
+}
+
+// LimitReasons lists every reason code a LimitChange can carry.
+var LimitReasons = []string{
+	ReasonPressureNormal, ReasonPressureThroughput, ReasonPressureHigh, ReasonPressureCritical,
+	ReasonPressureUnknown, ReasonPolicyChanged,
+}
+
 // Policy defaults.
 const (
 	DefaultHeavyLimit     = 2

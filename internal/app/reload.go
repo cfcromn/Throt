@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/cfcromn/Throt/internal/config"
@@ -24,6 +25,14 @@ type ReloadResult struct {
 // ReasonEnforceDisabled is the reason code for resuming queued work when
 // the scheduler leaves enforce mode.
 const ReasonEnforceDisabled = "enforce_disabled"
+
+// ReasonTopExited is the reason code for resuming a queued workload whose
+// top process exited, so its children are not left stopped.
+const ReasonTopExited = "top_exited"
+
+// DecisionReasons lists every reason code of scheduler_decision events:
+// the scheduler's, and those of resumes the daemon decides itself.
+var DecisionReasons = append(slices.Clone(scheduler.DecisionReasons), ReasonEnforceDisabled, ReasonTopExited)
 
 // restartOnly reports keys fixed for the daemon's lifetime: the socket and
 // its lock, the sampling ticker, and the event ring's capacity.
