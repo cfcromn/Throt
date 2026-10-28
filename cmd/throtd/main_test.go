@@ -95,6 +95,7 @@ func TestGoroutineLogInterval(t *testing.T) {
 		"yes": time.Minute,
 		"-1s": 0,
 		"0s":  0,
+		"1ns": time.Second,
 	} {
 		if got := goroutineLogInterval(v); got != want {
 			t.Errorf("goroutineLogInterval(%q) = %s, want %s", v, got, want)

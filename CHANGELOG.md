@@ -15,6 +15,8 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - `throtd -log-format text|json` (default `text`) and `-log-level debug|info|warn|error` (default `info`), documented in `throtd -h`.
 
 ### Changed
+- `throt hook claude-code` lets version, help and dry-run invocations, and read-only subcommands such as `go env`, `npm view` and `cargo metadata`, through without waiting.
+- macOS: programs that exec in place (`throt`, `env`, `nice`, `nohup`, `timeout`) are re-named every sample, so `throt run -- npm run build` is recognized as `npm` immediately.
 - throtd logs each event at a level that fits it, with its attributes: heavy workloads starting and exiting and admission leases are now `debug` (they come and go with every build), failures, refusals and processes left stopped are `warn`, and the rest stays `info`. The event log is unchanged.
 - macOS: throtd caches process names by PID and start time and asks `ps` only about newly seen processes, with a full names pass every 15th sample, roughly halving the CPU cost of a process sample (about 85 ms to 45 ms with 1,150 processes). The process graph allocates its table once per update instead of once per process.
 

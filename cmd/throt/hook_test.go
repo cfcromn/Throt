@@ -13,6 +13,25 @@ import (
 	"github.com/cfcromn/Throt/internal/app"
 )
 
+func TestLightInvocationsDoNotWait(t *testing.T) {
+	for _, in := range []string{
+		"go version", "go env GOPATH", "go fmt ./...", "go list ./...", "go doc fmt",
+		"npm --version", "npm view react", "npm config get prefix", "npm ls",
+		"cargo --version", "cargo metadata --format-version 1", "cargo tree",
+		"make -n", "make --dry-run all", "java -version", "dotnet --info", "gradle tasks",
+		"mvn -v", "make --help", "pytest --version", "cd x && go version",
+	} {
+		if name, ok := heavyCommand(in); ok {
+			t.Errorf("heavyCommand(%q) = %q, want light", in, name)
+		}
+	}
+	for _, in := range []string{"go build ./...", "go test ./...", "npm run build", "cargo build", "make", "make -j8", "gradle test", "pytest"} {
+		if _, ok := heavyCommand(in); !ok {
+			t.Errorf("heavyCommand(%q) is light, want heavy", in)
+		}
+	}
+}
+
 func TestHeavyCommand(t *testing.T) {
 	tests := []struct {
 		in   string

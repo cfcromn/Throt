@@ -201,7 +201,52 @@ func heavyCommand(command string) (string, bool) {
 	if !isHeavy(name) {
 		return "", false
 	}
+	args := make([]string, 0, len(words)-i-1)
+	for _, w := range words[i+1:] {
+		args = append(args, w.Raw)
+	}
+	if lightInvocation(name, args) {
+		return "", false
+	}
 	return name, true
+}
+
+// lightFlags make any heavy tool return at once: agents run these
+// constantly, and waiting for a heavy slot would stall them for nothing.
+var lightFlags = map[string]bool{
+	"-v": true, "-V": true, "--version": true, "-version": true, "version": true,
+	"-h": true, "--help": true, "-help": true, "help": true,
+	"-n": true, "--dry-run": true, "--just-print": true,
+}
+
+// lightSubcommands are per-tool first arguments that only read state.
+// ponytail: a short allowlist of the commonest cases; anything unlisted
+// still waits (the safe direction), extend when agents hit one often.
+var lightSubcommands = map[string]map[string]bool{
+	"go":     {"version": true, "env": true, "fmt": true, "doc": true, "list": true, "mod": true},
+	"npm":    {"view": true, "config": true, "ls": true, "list": true, "outdated": true, "root": true, "bin": true, "prefix": true, "info": true},
+	"pnpm":   {"view": true, "config": true, "ls": true, "list": true, "outdated": true, "root": true, "info": true},
+	"yarn":   {"info": true, "config": true, "list": true, "why": true, "bin": true},
+	"bun":    {"pm": true},
+	"cargo":  {"metadata": true, "tree": true, "search": true, "locate-project": true, "pkgid": true},
+	"gradle": {"tasks": true, "projects": true, "properties": true},
+	"dotnet": {"--info": true, "--list-sdks": true, "--list-runtimes": true},
+}
+
+// lightInvocation reports whether args make a heavy tool's run trivial.
+func lightInvocation(name string, args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if lightFlags[args[0]] {
+		return true
+	}
+	for _, a := range args {
+		if a == "--version" || a == "--help" || a == "--dry-run" {
+			return true
+		}
+	}
+	return lightSubcommands[name][args[0]]
 }
 
 // isHeavy reports whether an executable base name is a heavy workload.

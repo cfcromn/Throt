@@ -158,7 +158,10 @@ func goroutineLogInterval(v string) time.Duration {
 	if err != nil {
 		return time.Minute
 	}
-	return max(d, 0)
+	if d <= 0 {
+		return 0
+	}
+	return max(d, time.Second) // a tiny interval would flood the log
 }
 
 // logGoroutines logs runtime.NumGoroutine() at debug level every interval

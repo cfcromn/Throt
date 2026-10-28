@@ -115,6 +115,16 @@ type psNameCache struct {
 	sinceFull int
 }
 
+// execsInPlace names programs that usually exec another program under the
+// same PID and start time, so a cached name would hide the real one (for
+// `throt run -- npm run build`, the build would read as "throt" until the
+// next full refresh). They are never cached and are re-read every sample.
+// ponytail: shells also exec, but are too numerous and long-lived to
+// re-read every sample; they rely on the periodic full refresh.
+var execsInPlace = map[string]bool{
+	"throt": true, "env": true, "nice": true, "nohup": true, "timeout": true, "caffeinate": true,
+}
+
 // psNameLookup returns names for pids, as parsePSNames maps them. It may
 // return names for other PIDs too; those are ignored.
 type psNameLookup func(pids []int) (map[int]string, error)
@@ -152,7 +162,7 @@ func (c *psNameCache) name(procs []domain.ProcessSample, lookup psNameLookup) er
 			name, ok = got[p.PID]
 		}
 		p.Name = name
-		if ok {
+		if ok && !execsInPlace[name] {
 			next[p.Key()] = name
 		}
 	}

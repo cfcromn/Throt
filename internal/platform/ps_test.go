@@ -340,3 +340,24 @@ func TestPSState(t *testing.T) {
 		}
 	}
 }
+
+func TestPSNameCacheRereadsExecingPrograms(t *testing.T) {
+	// `throt run -- npm run build` execs in place: same PID and start time.
+	var c psNameCache
+	f := &fakeNames{table: map[int]string{700: "throt"}}
+	procs := []domain.ProcessSample{proc(700, 5)}
+	if err := c.name(procs, f.lookup); err != nil || procs[0].Name != "throt" {
+		t.Fatalf("first sample: %q, %v", procs[0].Name, err)
+	}
+	f.table[700] = "npm"
+	procs = []domain.ProcessSample{proc(700, 5)}
+	if err := c.name(procs, f.lookup); err != nil || procs[0].Name != "npm" {
+		t.Fatalf("after exec the name is %q, want npm (%v)", procs[0].Name, err)
+	}
+	// Once it is npm, it is cached like any other name.
+	f.table[700] = "changed"
+	procs = []domain.ProcessSample{proc(700, 5)}
+	if err := c.name(procs, f.lookup); err != nil || procs[0].Name != "npm" {
+		t.Fatalf("npm not cached: %q, %v", procs[0].Name, err)
+	}
+}
