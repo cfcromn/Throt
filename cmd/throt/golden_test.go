@@ -712,8 +712,9 @@ fi
 `, stderr: ""},
 		"config check invalid": {code: 1, stdout: "", stderr: `throt: config $DIR/bad.json: scheduler.mode must be off, observe, or enforce, not "sometimes"
 `},
-		"config check no file": {code: 1, stdout: "", stderr: `throt: no config file at $DIR/xdg/throt/config.json (throtd would use the defaults)
-`},
+		"config check no file": {code: 0, stdout: `no config file at $DIR/xdg/throt/config.json; defaults apply
+same as the defaults
+`, stderr: ""},
 		"config show": {code: 0, stdout: `file:    $DIR/cool.json
 profile: cool
 KEY                          VALUE                     SOURCE

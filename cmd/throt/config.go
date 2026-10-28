@@ -62,11 +62,9 @@ func runConfig(args []string, cfgPath string, w io.Writer) error {
 
 // configCheck validates the file at path and prints "ok", what it changes
 // from the defaults, and warnings about settings that are allowed but risky
-// or ineffective. An invalid or missing file is an error.
+// or ineffective. An invalid file is an error; a missing one is not, since
+// throtd then uses the defaults.
 func configCheck(w io.Writer, path string, ncpu int) error {
-	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("no config file at %s (throtd would use the defaults)", path)
-	}
 	cfg, settings, err := config.Effective(path)
 	if err != nil {
 		return err
@@ -75,7 +73,11 @@ func configCheck(w io.Writer, path string, ncpu int) error {
 	for _, s := range settings {
 		source[s.Key] = s.Source
 	}
-	fmt.Fprintln(w, "ok: "+path)
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(w, "no config file at %s; defaults apply\n", path)
+	} else {
+		fmt.Fprintln(w, "ok: "+path)
+	}
 	changes := config.Diff(config.Default(), cfg)
 	if len(changes) == 0 {
 		fmt.Fprintln(w, "same as the defaults")

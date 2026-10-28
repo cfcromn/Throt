@@ -65,8 +65,13 @@ func TestConfigCheckInvalid(t *testing.T) {
 			}
 		})
 	}
-	if err := configCheck(&bytes.Buffer{}, filepath.Join(t.TempDir(), "missing.json"), 8); err == nil {
-		t.Error("missing file: want an error")
+	var b bytes.Buffer
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if err := configCheck(&b, missing, 8); err != nil {
+		t.Errorf("missing file: %v", err)
+	}
+	if want := "no config file at " + missing + "; defaults apply\nsame as the defaults\n"; b.String() != want {
+		t.Errorf("missing file: output %q, want %q", b.String(), want)
 	}
 }
 
