@@ -45,12 +45,50 @@ type Handler func(ctx context.Context, params json.RawMessage) (any, error)
 
 // Server dispatches requests to registered handlers.
 type Server struct {
-	handlers map[string]Handler
+	handlers   map[string]Handler
+	privileged map[string]bool
+	// peerUID reports the caller's uid; tests replace it to simulate a
+	// foreign caller.
+	peerUID func(net.Conn) (uint32, error)
+}
+
+// ServerOption configures a Server.
+type ServerOption func(*Server)
+
+// WithPrivileged marks methods that only the user running the daemon may
+// call. Before such a handler runs, the server verifies the caller's uid with
+// the kernel and refuses the request if it differs or cannot be read.
+func WithPrivileged(methods ...string) ServerOption {
+	return func(s *Server) {
+		for _, m := range methods {
+			s.privileged[m] = true
+		}
+	}
 }
 
 // NewServer returns a server for the given method table.
-func NewServer(handlers map[string]Handler) *Server {
-	return &Server{handlers: handlers}
+func NewServer(handlers map[string]Handler, opts ...ServerOption) *Server {
+	s := &Server{handlers: handlers, privileged: make(map[string]bool), peerUID: PeerUID}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// authorize permits a privileged method only for a caller with the daemon's
+// own uid.
+func (s *Server) authorize(conn net.Conn, method string) error {
+	if !s.privileged[method] {
+		return nil
+	}
+	uid, err := s.peerUID(conn)
+	if err != nil {
+		return fmt.Errorf("permission denied: cannot verify caller uid: %w", err)
+	}
+	if int64(uid) != int64(os.Getuid()) {
+		return fmt.Errorf("permission denied: caller uid %d does not own throtd", uid)
+	}
+	return nil
 }
 
 // Serve accepts connections until ctx is cancelled, then closes l and waits
@@ -103,6 +141,8 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		resp.Error = fmt.Sprintf("protocol mismatch: client speaks v%d, daemon speaks v%d; upgrade throt and throtd to the same release", req.Protocol, ProtocolVersion)
 	} else if h, ok := s.handlers[req.Method]; !ok {
 		resp.Error = "unknown method: " + req.Method
+	} else if err := s.authorize(conn, req.Method); err != nil {
+		resp.Error = err.Error()
 	} else if v, err := h(ctx, req.Params); err != nil {
 		resp.Error = err.Error()
 	} else if resp.Result, err = json.Marshal(v); err != nil {

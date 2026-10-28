@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strconv"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/domain"
@@ -17,29 +20,62 @@ import (
 // NewProcessSampler returns a process sampler for the current OS. On Linux
 // it reads /proc/<pid>/stat and /proc/<pid>/status for every numeric entry
 // in /proc.
-func NewProcessSampler() ProcessSampler { return &linuxProcessSampler{} }
+func NewProcessSampler() ProcessSampler { return &linuxProcessSampler{boot: &bootClock{}} }
+
+// NewProcessController returns a process controller for the current OS. On
+// Linux Identity reads /proc/<pid>/stat and /proc/<pid>/status. It caches
+// boot time independently of any sampler; use NewProcessTools when Identity
+// must match a sampler's Start values.
+func NewProcessController() ProcessController {
+	return linuxProcessController{boot: &bootClock{}}
+}
+
+// NewProcessTools returns a sampler and a controller that share one boot-time
+// cache, so Identity reports exactly the Start the sampler reports.
+func NewProcessTools() (ProcessSampler, ProcessController) {
+	boot := &bootClock{}
+	return &linuxProcessSampler{boot: boot}, linuxProcessController{boot: boot}
+}
+
+// bootClock caches the boot time. It is read once: the kernel derives btime
+// from the wall clock, so re-reading it after a clock step would shift every
+// process's Start and change every identity at once. It is safe for
+// concurrent use because a sampler and a controller may share it.
+type bootClock struct {
+	mu   sync.Mutex
+	boot time.Time
+}
+
+// get returns the cached boot time, reading /proc/stat until it succeeds once.
+func (b *bootClock) get() (time.Time, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.boot.IsZero() {
+		var boot time.Time
+		if err := withFile("/proc/stat", func(r io.Reader) (err error) {
+			boot, err = parseBootTime(r)
+			return err
+		}); err != nil {
+			return time.Time{}, err
+		}
+		b.boot = boot
+	}
+	return b.boot, nil
+}
 
 // linuxProcessSampler is not safe for concurrent use.
 type linuxProcessSampler struct {
-	// boot is read once: the kernel derives btime from the wall clock, so
-	// re-reading it after a clock step would shift every process's Start and
-	// change every identity at once.
-	boot time.Time
+	boot *bootClock
 }
 
 func (s *linuxProcessSampler) SampleProcesses(ctx context.Context) ([]domain.ProcessSample, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)
 	}
-	if s.boot.IsZero() {
-		if err := withFile("/proc/stat", func(r io.Reader) (err error) {
-			s.boot, err = parseBootTime(r)
-			return err
-		}); err != nil {
-			return nil, fmt.Errorf("sample processes: %w", err)
-		}
+	boot, err := s.boot.get()
+	if err != nil {
+		return nil, fmt.Errorf("sample processes: %w", err)
 	}
-	boot := s.boot
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)
@@ -65,6 +101,35 @@ func (s *linuxProcessSampler) SampleProcesses(ctx context.Context) ([]domain.Pro
 		return nil, errors.New("sample processes: /proc listed no readable processes")
 	}
 	return out, nil
+}
+
+type linuxProcessController struct {
+	unixSignaler
+	boot *bootClock
+}
+
+func (c linuxProcessController) Identity(ctx context.Context, pid int) (time.Time, uint32, error) {
+	if err := checkIdentityPID(pid); err != nil {
+		return time.Time{}, 0, err
+	}
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, err)
+	}
+	boot, err := c.boot.get()
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, err)
+	}
+	// The same reader as the sampler, so Start and UID match it exactly.
+	p, err := readLinuxProcess("/proc/"+strconv.Itoa(pid), boot, uint64(os.Getpagesize()))
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH):
+		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, domain.ErrProcessGone)
+	case err != nil:
+		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, err)
+	case p.PID != pid:
+		return time.Time{}, 0, fmt.Errorf("identity of pid %d: stat reports pid %d", pid, p.PID)
+	}
+	return p.Start, p.UID, nil
 }
 
 // readLinuxProcess reads one process directory such as /proc/123.
