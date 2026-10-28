@@ -306,11 +306,14 @@ type sizing struct {
 // host's, not the quota. On a CI runner, which has no CPU limit, it scales
 // to the machine: 4x NumCPU jobs at once, and a stream of as many whose
 // arrival rate asks for about twice the CPUs, so both oversubscribe.
-// THROT_BENCH_JOBS and THROT_BENCH_REPS override the job count of both
-// scenarios and the repetitions, for a quick run.
+// THROT_BENCH_DEFAULTS=1 sizes a container the same way, with the shipped
+// defaults; give it a cpuset (docker run --cpuset-cpus) so NumCPU, and so
+// the balanced profile, matches its CPUs. THROT_BENCH_JOBS and
+// THROT_BENCH_REPS override the job count of both scenarios and the
+// repetitions, for a quick run.
 func sizeFor(container bool) (sizing, error) {
 	z := sizing{cpus: 2, burst: 8, stagger: 10, every: time.Second, heavyLimit: 2, reps: defaultReps}
-	if !container {
+	if !container || os.Getenv("THROT_BENCH_DEFAULTS") == "1" {
 		n := runtime.NumCPU()
 		// On a real machine measure what a user gets: the default profile
 		// (adaptive, ceiling = CPUs), sample interval and cooldown.

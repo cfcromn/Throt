@@ -465,3 +465,119 @@ func TestAdaptiveStartLimitSurvivesWarmUp(t *testing.T) {
 		t.Fatalf("limit %d with degraded metrics, want the ceiling 8", s.Limit())
 	}
 }
+
+func TestAdaptiveGrowsForWaitingWork(t *testing.T) {
+	// The balanced profile on 5 CPUs: start 2, ceiling 5. Round 0 knows the
+	// pressure and adds one; a burst arrives at 1 and the scheduler queues
+	// what does not fit; round 2 may grow for it.
+	const mb = 1 << 20
+	E, N, H := domain.PressureElevated, domain.PressureNormal, domain.PressureHigh
+	type step struct {
+		sec            int
+		pressure       domain.PressureLevel
+		throughputOnly bool
+		jobs           int    // heavy workloads, PIDs 1..jobs
+		rss            uint64 // RSS of each
+		headroom       uint64
+		reserved       int
+		limit          int
+	}
+	burst := func(p domain.PressureLevel, tp bool, rss1, rss2, headroom uint64, limit int) []step {
+		return []step{
+			{0, E, true, 0, 0, 0, 0, 3},
+			{1, p, tp, 10, rss1, headroom, 0, 3},
+			{2, p, tp, 10, rss2, headroom, 0, limit},
+		}
+	}
+	tests := []struct {
+		name    string
+		steps   []step
+		resumed int
+		reason  string
+	}{
+		{name: "CPU-only burst grows to the ceiling", steps: burst(E, true, 5*mb, 5*mb, 8<<30, 5), resumed: 2, reason: ReasonPressureThroughput},
+		{name: "normal pressure grows to the ceiling", steps: burst(N, false, 5*mb, 5*mb, 8<<30, 5), resumed: 2, reason: ReasonPressureNormal},
+		{name: "memory-elevated holds", steps: burst(E, false, 5*mb, 5*mb, 8<<30, 3)},
+		{name: "headroom for one more", steps: burst(E, true, 1<<30, 1<<30, 3<<29, 4), resumed: 1, reason: ReasonPressureThroughput},
+		{name: "no headroom holds", steps: burst(E, true, 5*mb, 5*mb, 0, 3)},
+		{name: "a growing working set holds", steps: burst(E, true, 512*mb, 1<<30, 8<<30, 3)},
+		{name: "growth within 1/8 counts as settled", steps: burst(E, true, 800*mb, 900*mb, 8<<30, 5), resumed: 2, reason: ReasonPressureThroughput},
+		{name: "unknown RSS holds", steps: burst(E, true, 0, 0, 8<<30, 3)},
+		{
+			name: "only as far as the work waiting",
+			steps: []step{
+				{0, E, true, 0, 0, 0, 0, 3},
+				{1, E, true, 4, 5 * mb, 8 << 30, 0, 3},
+				{2, E, true, 4, 5 * mb, 8 << 30, 0, 4},
+			},
+			resumed: 1, reason: ReasonPressureThroughput,
+		},
+		{
+			name: "leases take fitted slots",
+			steps: []step{
+				{0, E, true, 0, 0, 0, 0, 3},
+				{1, E, true, 2, 1 << 30, 2 << 30, 0, 3},
+				{2, E, true, 4, 1 << 30, 2 << 30, 2, 3},
+			},
+		},
+		{
+			name: "not within an interval of high pressure",
+			steps: []step{
+				{0, H, false, 0, 0, 0, 0, 1},
+				{1, E, true, 10, 5 * mb, 8 << 30, 0, 1},
+				{2, E, true, 10, 5 * mb, 8 << 30, 0, 1},
+				{29, E, true, 10, 5 * mb, 8 << 30, 0, 1},
+				{30, E, true, 10, 5 * mb, 8 << 30, 0, 5},
+			},
+			resumed: 4, reason: ReasonPressureThroughput,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := adaptive(5)
+			p.StartLimit = 2
+			s := New(p)
+			paused := map[int]bool{}
+			resumed := 0
+			for _, st := range tt.steps {
+				in := Input{
+					Now: at(st.sec), Pressure: st.pressure, ThroughputOnly: st.throughputOnly,
+					MemoryHeadroom: st.headroom, Reserved: make([]string, st.reserved),
+				}
+				for pid := 1; pid <= st.jobs; pid++ {
+					v := wv(pid, "a")
+					v.RSS = st.rss
+					in.Heavy = append(in.Heavy, v)
+					if paused[pid] {
+						in.Paused = append(in.Paused, key(pid))
+					}
+				}
+				for _, d := range s.Decide(in) {
+					switch d.Action {
+					case ActionQueue:
+						paused[d.Key.PID] = true
+					case ActionResume:
+						paused[d.Key.PID] = false
+						resumed++
+					}
+					if d.HeavyLimit != s.Limit() {
+						t.Fatalf("t=%d: decision limit %d, effective %d", st.sec, d.HeavyLimit, s.Limit())
+					}
+				}
+				if s.Limit() != st.limit {
+					t.Fatalf("t=%d: limit = %d, want %d", st.sec, s.Limit(), st.limit)
+				}
+			}
+			if resumed != tt.resumed {
+				t.Fatalf("resumed %d, want %d", resumed, tt.resumed)
+			}
+			var last LimitChange
+			if cs := s.Changes(); len(cs) > 0 {
+				last = cs[len(cs)-1]
+			}
+			if tt.reason != "" && last.Reason != tt.reason {
+				t.Fatalf("last change %+v, want reason %s", last, tt.reason)
+			}
+		})
+	}
+}

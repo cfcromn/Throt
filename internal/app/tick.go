@@ -60,6 +60,7 @@ func (d *Daemon) tick(parent context.Context) {
 			Now:            s.now,
 			Pressure:       level,
 			ThroughputOnly: d.engine.ThroughputOnly(),
+			MemoryHeadroom: d.engine.MemoryHeadroom(),
 			Heavy:          r.snap.Heavy,
 			Exited:         r.exited,
 			Reserved:       reserved,

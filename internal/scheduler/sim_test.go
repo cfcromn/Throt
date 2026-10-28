@@ -17,6 +17,7 @@ type simJob struct {
 	arrive int
 	dur    int  // seconds of work; a paused job makes no progress
 	pre    bool // already running when the scheduler starts (arrive must be 0)
+	rss    uint64
 }
 
 type simScenario struct {
@@ -26,6 +27,10 @@ type simScenario struct {
 	pressure func(t int) domain.PressureLevel
 	// throughputOnly, when set, is Input.ThroughputOnly at each tick.
 	throughputOnly func(t int) bool
+	// memory, when set, is the host's memory: Input.MemoryHeadroom is what
+	// is left of 3/4 of it (the elevated exit threshold) after the RSS of
+	// every job that has arrived and not finished, paused or not.
+	memory uint64
 	// wantPreempt requires at least one preemption.
 	wantPreempt bool
 	// noBound skips the makespan bound, for scenarios where pressure
@@ -106,16 +111,21 @@ func runSim(t *testing.T, sc simScenario) simResult {
 		if sc.throughputOnly != nil {
 			in.ThroughputOnly = sc.throughputOnly(tick)
 		}
+		var used uint64
 		for i, j := range sc.jobs {
 			if finish[i] == tick {
 				in.Exited = append(in.Exited, keyOf(i))
 			}
 			if j.arrive <= tick && finish[i] < 0 {
-				in.Heavy = append(in.Heavy, process.WorkloadView{Key: keyOf(i), Name: "build", Class: domain.ClassBuild, Owner: j.owner})
+				in.Heavy = append(in.Heavy, process.WorkloadView{Key: keyOf(i), Name: "build", Class: domain.ClassBuild, Owner: j.owner, RSS: j.rss})
+				used += j.rss
 				if paused[i] {
 					in.Paused = append(in.Paused, keyOf(i))
 				}
 			}
+		}
+		if room := sc.memory / 4 * 3; room > used {
+			in.MemoryHeadroom = room - used
 		}
 		preemptedNow = false
 		decisions := s.Decide(in)
@@ -351,6 +361,26 @@ func TestSimulation(t *testing.T) {
 		burst = append(burst, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 1, dur: 5})
 	}
 
+	// A burst of short CPU-only builds under the balanced profile on 5
+	// CPUs, as on the macOS CI runner: 20 jobs of 5s at once, start 2,
+	// ceiling 5, default cooldown and adapt interval. The +1 per 30s alone
+	// held 3 slots for the whole burst, 1.8x the baseline makespan; with
+	// 50 MiB jobs on 16 GiB the limit may grow to the ceiling at once.
+	const gib = 1 << 30
+	shortPolicy := base
+	shortPolicy.HeavyLimit, shortPolicy.StartLimit, shortPolicy.Adaptive = 5, 2, true
+	var short []simJob
+	for i := range 20 {
+		short = append(short, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 1, dur: 5, rss: 50 << 20})
+	}
+	// The same burst with jobs of 22% of memory each, while the memory
+	// signals still read calm (they lag the working set): the headroom
+	// keeps the limit from growing at once.
+	var heavyMem []simJob
+	for i := range 8 {
+		heavyMem = append(heavyMem, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 1, dur: 6, rss: 16 * gib * 22 / 100})
+	}
+
 	scenarios := []simScenario{
 		{name: "1 agent, 1 build", policy: base, jobs: []simJob{{owner: "agent-0", arrive: 1, dur: 120}}, pressure: normalPressure},
 		{name: "6 agents, 12 overlapping builds", policy: base, jobs: overlap, pressure: normalPressure},
@@ -405,6 +435,27 @@ func TestSimulation(t *testing.T) {
 		{
 			name: "same, elevated by memory", policy: base, jobs: burst,
 			pressure: oversubPressure, throughputOnly: memoryElevated,
+		},
+		{
+			name: "short CPU-only burst, 5 CPUs", policy: shortPolicy, jobs: short, memory: 16 * gib,
+			pressure: oversubPressure, throughputOnly: cpuOnly, noBound: true,
+			check: func(t *testing.T, r simResult) {
+				// 20 x 5s on 5 CPUs packs into 20s.
+				if r.limitEnd != 5 || r.makespan > 22 {
+					t.Errorf("limit ended at %d, makespan %ds; want the ceiling 5 within 10%% of 20s", r.limitEnd, r.makespan)
+				}
+			},
+		},
+		{
+			name: "same, 22% of memory per job", policy: shortPolicy, jobs: heavyMem, memory: 16 * gib,
+			pressure: oversubPressure, throughputOnly: cpuOnly, noBound: true,
+			check: func(t *testing.T, r simResult) {
+				// Only the first calm round's +1; the rest is too short for
+				// another interval.
+				if r.limitMax != 3 {
+					t.Errorf("limit reached %d, want 3: the jobs do not fit in the headroom", r.limitMax)
+				}
+			},
 		},
 		{
 			name: "owner budget, 1 agent floods", policy: budgetPolicy, jobs: flood, pressure: normalPressure,

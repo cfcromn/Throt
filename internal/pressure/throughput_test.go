@@ -95,3 +95,37 @@ func TestThroughputOnlyIgnoresStaleSample(t *testing.T) {
 		t.Fatal("a stale sample changed ThroughputOnly")
 	}
 }
+
+func TestMemoryHeadroom(t *testing.T) {
+	// sig.sample uses a total of 1,000,000 bytes; the elevated exit
+	// threshold for memory used is 0.75.
+	noMem := []domain.Metric{domain.MetricMemory}
+	disabled := DefaultThresholds()
+	disabled.Elevated.MemoryUsed = 0
+	tests := []struct {
+		name string
+		th   Thresholds
+		sigs []sig
+		want uint64
+	}{
+		{"no samples", DefaultThresholds(), nil, 0},
+		{"steady", DefaultThresholds(), memSeries(0, 5, 0.5), 250_000},
+		{"growing counts at its fullest", DefaultThresholds(), concat(memSeries(0, 5, 0.25), memSeries(5, 2, 0.5)), 250_000},
+		{"at the exit threshold", DefaultThresholds(), memSeries(0, 5, 0.75), 0},
+		{"above it", DefaultThresholds(), memSeries(0, 5, 0.9), 0},
+		{"a full sample left the window", DefaultThresholds(), concat(memSeries(0, 1, 0.5), memSeries(40, 2, 0.25)), 500_000},
+		{"memory missing", DefaultThresholds(), []sig{{sec: 0, mem: 0.25, missing: noMem}}, 0},
+		{"threshold disabled", disabled, memSeries(0, 5, 0.25), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := New(30*time.Second, tt.th)
+			for _, g := range tt.sigs {
+				e.Observe(g.sample())
+			}
+			if got := e.MemoryHeadroom(); got != tt.want {
+				t.Fatalf("MemoryHeadroom = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

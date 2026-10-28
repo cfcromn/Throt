@@ -9,7 +9,10 @@
 // With Policy.Adaptive the number of heavy slots follows pressure (AIMD):
 // HeavyLimit is the ceiling, the effective limit starts at StartLimit and grows by one per
 // AdaptInterval under normal pressure, or elevated pressure caused by
-// throughput signals only, and halves under high or critical pressure. Limit changes are not decisions; the daemon drains them with
+// throughput signals only, and halves under high or critical pressure.
+// Under the same calm pressure it also grows at once to make room for
+// waiting work, as far as memory headroom allows (see Input.MemoryHeadroom).
+// Limit changes are not decisions; the daemon drains them with
 // Changes and reports them as events.
 //
 // The package is deterministic: it makes no OS calls, starts no goroutines,
@@ -199,6 +202,11 @@ type Input struct {
 	// process lives on (regrouped, or reclassified as light) still uses
 	// what it used.
 	Exited []domain.ProcessKey
+	// MemoryHeadroom is the bytes of memory the host can still fill before
+	// memory pressure would no longer be calm (see
+	// pressure.Engine.MemoryHeadroom); 0 when unknown. With Adaptive it
+	// bounds how far the limit may grow at once for waiting work.
+	MemoryHeadroom uint64
 	// Waiters are the `throt run` callers waiting for an admission lease.
 	// They share one FIFO with queued workloads (see Policy.FirstInLine):
 	// a queued workload is not resumed, and a newcomer not admitted, while a
@@ -321,6 +329,9 @@ type Scheduler struct {
 	// it, unknown pressure is the pressure engine warming up, not degraded
 	// metrics, so it does not reset the adaptive limit.
 	pressureKnown bool
+	// lastMaxRSS is the largest heavy workload RSS of the previous round,
+	// 0 when there was none; see grow.
+	lastMaxRSS uint64
 }
 
 // New returns a scheduler with policy p.
@@ -427,6 +438,62 @@ func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel, throughp
 	}
 }
 
+// grow raises the adaptive limit at once, without waiting for
+// AdaptInterval, so that waiting work can start while pressure is calm
+// (normal, or elevated by throughput only). The +1 per AdaptInterval of
+// adapt is sized for the pressure window, which takes that long to show
+// what one more workload does to memory; a burst of short builds is over
+// before the limit catches up, and leaves cores idle that the CPU signals
+// say are only throughput. grow uses evidence that is available at once
+// instead: each new slot is assumed to take as much memory as the largest
+// heavy workload (running or not), and the slots must fit in
+// in.MemoryHeadroom. It does nothing:
+//
+//   - unless Adaptive, pressure is calm and has been known;
+//   - within AdaptInterval of a round at high or critical pressure or of a
+//     preemption, so a decrease is not undone at once;
+//   - while the largest heavy RSS is unknown, or grew more than 1/8 since
+//     the previous round: a workload still building its working set (or
+//     one that just started) would be undercounted;
+//   - beyond the work waiting (queued, new, or lease waiters: demand), the
+//     memory that fits, or HeavyLimit.
+//
+// Lease reservations count as running but have not used memory yet, so
+// each takes one fitted slot.
+func (s *Scheduler) grow(in Input, cands []*cand, running, demand int) {
+	var maxRSS uint64
+	for _, c := range cands {
+		maxRSS = max(maxRSS, c.v.RSS)
+	}
+	last := s.lastMaxRSS
+	s.lastMaxRSS = maxRSS
+	p := s.policy
+	calm := in.Pressure == domain.PressureNormal || (in.Pressure == domain.PressureElevated && in.ThroughputOnly)
+	if !p.Adaptive || !calm || !s.pressureKnown || demand == 0 || s.limit >= p.HeavyLimit {
+		return
+	}
+	if !s.lastPressureSwitch.IsZero() && in.Now.Sub(s.lastPressureSwitch) < p.AdaptInterval {
+		return
+	}
+	if maxRSS == 0 || last == 0 || maxRSS > last+last/8 {
+		return
+	}
+	fit := int(min(in.MemoryHeadroom/maxRSS, uint64(p.HeavyLimit))) - len(in.Reserved)
+	if fit <= 0 {
+		return
+	}
+	next := min(p.HeavyLimit, running+min(demand, fit))
+	if next <= s.limit {
+		return
+	}
+	reason := ReasonPressureNormal
+	if in.Pressure == domain.PressureElevated {
+		reason = ReasonPressureThroughput
+	}
+	s.lastAdapt = in.Now
+	s.setLimit(next, reason, in.Now)
+}
+
 // setLimit changes the effective limit and records the change.
 func (s *Scheduler) setLimit(limit int, reason string, at time.Time) {
 	if limit == s.limit {
@@ -474,7 +541,6 @@ func (s *Scheduler) Decide(in Input) []Decision {
 	s.lastRound = in.Now
 	s.adapt(in.Now, in.Pressure, in.ThroughputOnly)
 	s.pressureKnown = s.pressureKnown || in.Pressure != domain.PressureUnknown
-	limit := s.limit
 
 	paused := keySet(in.Paused)
 	held := keySet(in.Held)
@@ -502,6 +568,8 @@ func (s *Scheduler) Decide(in Input) []Decision {
 			c.e.running = true
 		}
 	}
+	s.grow(in, cands, running, len(queued)+len(admissible)+len(in.Waiters))
+	limit := s.limit
 
 	var out []Decision
 	add := func(a Action, c *cand, reason string) {
@@ -781,6 +849,7 @@ func (s *Scheduler) reset() {
 	clear(s.seen)
 	s.limit = s.policy.start()
 	s.lastAdapt = time.Time{}
+	s.lastMaxRSS = 0
 	s.changes = nil
 }
 

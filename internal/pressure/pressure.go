@@ -163,6 +163,7 @@ type point struct {
 	commit                                       float64
 	latency                                      time.Duration
 	swap                                         uint64
+	memTotal                                     uint64
 	kernel                                       domain.MemoryPressure
 	memStall, ioStall, cpuStall                  domain.Stall
 	hasCPU, hasLoad, hasMem, hasSwap, hasLatency bool
@@ -247,6 +248,35 @@ func (e *Engine) Level() domain.PressureLevel { return e.level }
 // a memory signal that is recovering but not yet clear still disqualifies.
 // It is false at every other level. It does not change Observe's reason.
 func (e *Engine) ThroughputOnly() bool { return e.throughputOnly }
+
+// MemoryHeadroom returns how many bytes of memory the host can still fill
+// before memory used reaches its elevated exit threshold, in the fullest
+// sample of the window, so a working set that is still growing counts at its
+// latest size. It is 0 when no sample in the window reports memory, when
+// memory used is at or above that threshold, or when the elevated memory
+// threshold is disabled.
+func (e *Engine) MemoryHeadroom() uint64 {
+	enter := e.th.Elevated.MemoryUsed
+	if enter <= 0 {
+		return 0
+	}
+	exit := e.exitThreshold(enter, kindFraction)
+	var room uint64
+	seen := false
+	for _, p := range e.samples {
+		if !p.hasMem {
+			continue
+		}
+		r := uint64(0)
+		if p.mem < exit {
+			r = uint64((exit - p.mem) * float64(p.memTotal))
+		}
+		if !seen || r < room {
+			room, seen = r, true
+		}
+	}
+	return room
+}
 
 // Observe adds a sample and returns the current stable level, whether this
 // sample changed it, and a short machine-readable reason for the level
@@ -349,6 +379,9 @@ func (e *Engine) add(s domain.HostSample) {
 		load:    s.Load1,
 		swap:    s.SwapUsed,
 		latency: s.Latency,
+	}
+	if p.hasMem {
+		p.memTotal = s.MemTotal
 	}
 	p.hasLatency = s.Has(domain.MetricLatency)
 	p.kernel, p.hasKernel = s.MemoryPressure, s.HasMemoryPressure()
