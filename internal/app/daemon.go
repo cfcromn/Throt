@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,7 +34,40 @@ import (
 )
 
 // Version is the release version, set at build time with -ldflags "-X".
+// A build without it (go install) reports its build info instead.
 var Version = "dev"
+
+func init() {
+	bi, ok := debug.ReadBuildInfo()
+	Version = buildVersion(Version, bi, ok)
+}
+
+// buildVersion returns v unless it is "dev", the unstamped default. Then it
+// returns the module version from bi, e.g. v0.8.0 for go install
+// github.com/cfcromn/Throt/cmd/throtd@v0.8.0, or for a build from a
+// checkout, "dev-" and the short VCS revision, with "-dirty" when the tree
+// had uncommitted changes.
+func buildVersion(v string, bi *debug.BuildInfo, ok bool) string {
+	if v != "dev" || !ok || bi == nil {
+		return v
+	}
+	if bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	var rev, dirty string
+	for _, s := range bi.Settings {
+		switch {
+		case s.Key == "vcs.revision":
+			rev = s.Value[:min(len(s.Value), 7)]
+		case s.Key == "vcs.modified" && s.Value == "true":
+			dirty = "-dirty"
+		}
+	}
+	if rev == "" {
+		return v
+	}
+	return v + "-" + rev + dirty
+}
 
 // PingResult is returned by the "ping" method.
 type PingResult struct {
@@ -147,6 +181,11 @@ type Daemon struct {
 	reloadMu sync.Mutex
 	live     config.Config
 	policyCh chan scheduler.Policy
+
+	// writeFile and rename persist paused.json; tests replace them to
+	// inject filesystem failures.
+	writeFile func(path string, data []byte) error
+	rename    func(oldpath, newpath string) error
 }
 
 // NewDaemon returns a daemon for cfg using the given samplers and process
@@ -170,6 +209,9 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		reported: map[domain.ProcessKey]bool{},
 		live:     cfg,
 		policyCh: make(chan scheduler.Policy, 1),
+
+		writeFile: writeFileAtomic,
+		rename:    os.Rename,
 	}
 	d.ctl = control.New(sig, d.uid, time.Now, d.saveState)
 	d.ident, _ = sig.(ProcessIdentifier)

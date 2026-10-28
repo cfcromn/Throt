@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -100,5 +103,73 @@ func TestGoroutineLogInterval(t *testing.T) {
 		if got := goroutineLogInterval(v); got != want {
 			t.Errorf("goroutineLogInterval(%q) = %s, want %s", v, got, want)
 		}
+	}
+}
+
+// TestRunStopsBeforeServing covers the paths where run returns before
+// starting a daemon: -version, -h, bad flags, and a config that does not
+// load. None of them may create a socket.
+func TestRunStopsBeforeServing(t *testing.T) {
+	dir := t.TempDir()
+	invalid := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(invalid, []byte(`{"socket_path": "`+filepath.Join(dir, "throtd.sock")+`", "scheduler": {"mode": "sometimes"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unparsable := filepath.Join(dir, "broken.json")
+	if err := os.WriteFile(unparsable, []byte(`{`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		args []string
+		want string // "" means no error
+	}{
+		{[]string{"-version"}, ""},
+		{[]string{"-version", "-config", unparsable}, ""}, // -version never reads the config
+		{[]string{"-h"}, flag.ErrHelp.Error()},
+		{[]string{"-log-level", "loud"}, "-log-level must be"},
+		{[]string{"-config", unparsable}, "parse config"},
+		{[]string{"-config", invalid}, `scheduler.mode must be off, observe, or enforce, not "sometimes"`},
+	} {
+		err := run(tc.args)
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("run(%q) = %v, want nil", tc.args, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("run(%q) = %v, want an error containing %q", tc.args, err, tc.want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "throtd.sock")); !os.IsNotExist(err) {
+		t.Errorf("socket created: %v", err)
+	}
+}
+
+func TestLogGoroutines(t *testing.T) {
+	count := func(b *bytes.Buffer) int { return strings.Count(b.String(), "msg=goroutines n=") }
+	var b bytes.Buffer
+	log := newLogger(&b, options{logFormat: "text", logLevel: slog.LevelDebug})
+
+	// It logs at once, so even a short-lived daemon reports a count.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	logGoroutines(ctx, log, time.Hour)
+	if n := count(&b); n != 1 {
+		t.Fatalf("%d lines with a cancelled context, want 1:\n%s", n, b.String())
+	}
+
+	b.Reset()
+	ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	logGoroutines(ctx, log, 10*time.Millisecond)
+	if n := count(&b); n < 3 {
+		t.Errorf("%d lines in 100ms at 10ms, want several:\n%s", n, b.String())
+	}
+
+	// At the default info level the debug lines are dropped.
+	b.Reset()
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	logGoroutines(ctx, newLogger(&b, options{logFormat: "text", logLevel: slog.LevelInfo}), time.Hour)
+	if b.Len() != 0 {
+		t.Errorf("info logger wrote %q", b.String())
 	}
 }

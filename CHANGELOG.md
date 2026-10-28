@@ -17,6 +17,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ### Changed
 - Releases: reproducible builds (`-trimpath`, file times from the commit), `CHANGELOG.md` in every archive, release notes taken from this file's section for the tag (a release without one fails), and build provenance attestations for the archives and `checksums.txt` (`gh attestation verify`, published while the repository is public).
+- Builds without release ldflags (`go install`, `go build`) report the module version, or `dev-<revision>` with `-dirty` for uncommitted changes, instead of `dev`, in `throt version`, `throtd -version` and `ping`.
 - `throt hook claude-code` lets version, help and dry-run invocations, and read-only subcommands such as `go env`, `npm view` and `cargo metadata`, through without waiting.
 - macOS: programs that exec in place (`throt`, `env`, `nice`, `nohup`, `timeout`) are re-named every sample, so `throt run -- npm run build` is recognized as `npm` immediately.
 - throtd logs each event at a level that fits it, with its attributes: heavy workloads starting and exiting and admission leases are now `debug` (they come and go with every build), failures, refusals and processes left stopped are `warn`, and the rest stays `info`. The event log is unchanged.

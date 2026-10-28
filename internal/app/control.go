@@ -307,7 +307,7 @@ func (d *Daemon) saveState(state []byte) error {
 		}
 		return nil
 	}
-	if err := writeFileAtomic(path, state); err != nil {
+	if err := d.writeFile(path, state); err != nil {
 		d.log.Warn("save paused state", "err", err)
 		return err
 	}
@@ -364,10 +364,12 @@ func (d *Daemon) recoverPaused(ctx context.Context) {
 	errs := d.ctl.RestoreAndResume(ctx, b)
 	if len(errs) == 1 && errors.Is(errs[0], control.ErrMalformedState) {
 		bad := path + ".invalid"
-		if rerr := os.Rename(path, bad); rerr != nil {
+		where := "; moved to " + bad
+		if rerr := d.rename(path, bad); rerr != nil {
 			d.log.Warn("move aside paused state", "err", rerr)
+			where = "; left in place: " + rerr.Error()
 		}
-		d.emit(domain.EventControlFailed, "recover paused workloads: "+errs[0].Error()+"; moved to "+bad, nil)
+		d.emit(domain.EventControlFailed, "recover paused workloads: "+errs[0].Error()+where, nil)
 		return
 	}
 	if len(errs) > 0 {
