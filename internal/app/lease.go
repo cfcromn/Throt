@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/transport"
@@ -241,7 +242,7 @@ func (d *Daemon) ancestry(ctx context.Context, ppid int) []int {
 				break
 			}
 			lookups++
-			s, err := d.ident.Identify(ctx, next)
+			s, err := d.identify(ctx, next)
 			if err != nil {
 				break
 			}
@@ -250,6 +251,15 @@ func (d *Daemon) ancestry(ctx context.Context, ppid int) []int {
 		next = pp
 	}
 	return chain
+}
+
+// identify looks up one process with its own deadline. The request context
+// has none, so without it a hung ps would hold the acquire, and one of the
+// server's few connection slots, forever.
+func (d *Daemon) identify(ctx context.Context, pid int) (domain.ProcessSample, error) {
+	ctx, cancel := context.WithTimeout(ctx, control.CallTimeout)
+	defer cancel()
+	return d.ident.Identify(ctx, pid)
 }
 
 // nearestAgent returns the label of the first agent in chain.
@@ -297,7 +307,7 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 	if d.ident == nil {
 		return nil, d.refused("acquire", p.PID, "cannot identify processes on this platform")
 	}
-	self, err := d.ident.Identify(ctx, p.PID)
+	self, err := d.identify(ctx, p.PID)
 	switch {
 	case err != nil:
 		return nil, d.refused("acquire", p.PID, "cannot identify the caller: "+err.Error())
