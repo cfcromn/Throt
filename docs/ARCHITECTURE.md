@@ -75,7 +75,7 @@ Besides `paused.json`, the daemon keeps per-agent resource accounting (`internal
 
 Rows are keyed by the agent process's identity, because labels such as `claude-1` are reused after an instance exits; `throt stats` shows the label and PID. At most 256 instances are retained: beyond that the one seen least recently is evicted (among equals, the one first seen most recently, so more than 256 live agents cannot churn rows with history). An *all agents* total, which still includes evicted instances, and an *unattributed* bucket for heavy workloads no agent owns are kept alongside.
 
-Accounting is in memory only and starts with the daemon: the window resets on restart. Persisting it would need a file format, versioning and recovery for a convenience figure, and it would outlive the processes it describes. It holds nothing beyond what `status` already shows (labels, PIDs, start times, and numbers).
+Accounting is in memory only and starts with the daemon: the window resets on restart. Persisting it would need a file format, versioning and recovery for a convenience figure, and it would outlive the processes it describes. It holds nothing beyond what `status` already shows (labels, PIDs, start times, and numbers). CPU time is integrated from per-sample rates, so processes that start and exit between two samples (most single compiler invocations) are not counted: treat it as a lower bound and a ranking, not an exact bill.
 
 ## Concurrency
 

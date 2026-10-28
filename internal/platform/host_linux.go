@@ -125,8 +125,7 @@ func (s *linuxSampler) SampleHost(ctx context.Context) (domain.HostSample, error
 		}
 	}
 
-	memDir, _, _ := tightestLimit(s.cgDirs, "memory.max", parseCgroupLimit)
-	applyStalls(&out, &fails, "/proc/pressure", memDir, dir)
+	applyStalls(&out, &fails, "/proc/pressure", memoryPressureDir(s.cgDirs), dir)
 
 	return out, fails.finish(&out)
 }

@@ -388,8 +388,11 @@ func medianOf(vals []float64) float64 {
 // thresholds or, when exit is true, the lower exit thresholds.
 //
 // A kernel memory signal in the window (the macOS verdict or Linux memory
-// PSI) takes precedence over memory used unless MemoryUsedWhenKernelSignal
-// is set. The macOS verdict never reaches critical on its own.
+// PSI) takes precedence over memory used for elevated and high unless
+// MemoryUsedWhenKernelSignal is set. Memory used still counts toward
+// critical: without swap, memory can fill with little reclaim stall until
+// the OOM killer acts, so near-exhaustion must stay visible. The macOS
+// verdict never reaches critical on its own.
 func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
 	kernelMem := st.hasKernel || st.hasMemStall
 	useMem := st.hasMem && (!kernelMem || e.th.MemoryUsedWhenKernelSignal)
@@ -411,7 +414,7 @@ func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
 			{"kernel_memory_pressure", st.kernel, float64(lv.th.KernelMemory), st.hasKernel && lv.l != domain.PressureCritical, kindVerdict},
 			{"memory_stall_full", st.memFull, lv.th.MemoryStallFull, st.hasMemStall, kindStall},
 			{"memory_stall_some", st.memSome, lv.th.MemoryStallSome, st.hasMemStall, kindStall},
-			{"memory_used", st.mem, lv.th.MemoryUsed, useMem, kindFraction},
+			{"memory_used", st.mem, lv.th.MemoryUsed, useMem || (st.hasMem && lv.l == domain.PressureCritical), kindFraction},
 			{"swap_growth", st.swap, lv.th.SwapGrowth, st.hasSwap, kindRate},
 			{"io_stall_full", st.ioFull, lv.th.IOStallFull, st.hasIOStall, kindStall},
 			{"load", st.load, lv.th.Load, st.hasLoad, kindFraction},

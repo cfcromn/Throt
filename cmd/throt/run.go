@@ -22,6 +22,9 @@ import (
 const (
 	runPollInterval   = time.Second
 	runNoticeInterval = 10 * time.Second
+	// defaultRunTimeout matches the scheduler's default max_queue_wait, so
+	// an admission wait gives up no later than queued work would age.
+	defaultRunTimeout = 5 * time.Minute
 	// runCallTimeout bounds one status call so a stuck daemon cannot hold a
 	// command back for long.
 	runCallTimeout = 2 * time.Second
@@ -37,14 +40,17 @@ const runUsage = `Usage: throt run [--timeout D] [--no-wait] [--] CMD [ARGS...]
 Wait until throtd reports capacity for a heavy job, then exec CMD in place
 of throt (same PID, signals, and exit status). Advisory: it never pauses
 anything, and two commands checking at the same moment can both start. If
-throtd is unreachable, CMD runs immediately.
+throtd is unreachable, CMD runs immediately. By default it waits at most 5m
+(the scheduler's default max_queue_wait) and then runs anyway, so a stuck
+queue never hangs a build; --timeout 0 waits forever. Unlike a shell, CMD
+found only through "." in PATH is refused (exit 126).
 
 Flags:
 `
 
 // runOptions are the parsed arguments of `throt run`.
 type runOptions struct {
-	timeout time.Duration // 0 waits forever
+	timeout time.Duration // 0 waits forever; default defaultRunTimeout
 	noWait  bool
 	argv    []string
 }
@@ -54,7 +60,7 @@ func parseRunArgs(args []string, errw io.Writer) (runOptions, error) {
 	flags := flag.NewFlagSet("throt run", flag.ContinueOnError)
 	flags.SetOutput(errw)
 	flags.Usage = func() { fmt.Fprint(errw, runUsage); flags.PrintDefaults() }
-	flags.DurationVar(&o.timeout, "timeout", 0, "stop waiting after this long and run anyway (0 waits forever)")
+	flags.DurationVar(&o.timeout, "timeout", defaultRunTimeout, "stop waiting after this long and run anyway (0 waits forever)")
 	flags.BoolVar(&o.noWait, "no-wait", false, "check capacity once, print the verdict, and run regardless")
 	if err := flags.Parse(args); err != nil {
 		return o, err

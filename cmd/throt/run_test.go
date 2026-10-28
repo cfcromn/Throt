@@ -260,11 +260,12 @@ func TestParseRunArgs(t *testing.T) {
 		want    runOptions
 		wantErr string
 	}{
-		{args: []string{"--", "npm", "run", "build"}, want: runOptions{argv: []string{"npm", "run", "build"}}},
-		{args: []string{"make", "-j8"}, want: runOptions{argv: []string{"make", "-j8"}}},
+		{args: []string{"--", "npm", "run", "build"}, want: runOptions{timeout: defaultRunTimeout, argv: []string{"npm", "run", "build"}}},
+		{args: []string{"make", "-j8"}, want: runOptions{timeout: defaultRunTimeout, argv: []string{"make", "-j8"}}},
+		{args: []string{"--timeout", "0", "make"}, want: runOptions{argv: []string{"make"}}}, // explicit: wait forever
 		{args: []string{"--timeout", "30s", "--", "go", "test", "--", "-run", "X"},
 			want: runOptions{timeout: 30 * time.Second, argv: []string{"go", "test", "--", "-run", "X"}}},
-		{args: []string{"--no-wait", "--", "--weird-name"}, want: runOptions{noWait: true, argv: []string{"--weird-name"}}},
+		{args: []string{"--no-wait", "--", "--weird-name"}, want: runOptions{timeout: defaultRunTimeout, noWait: true, argv: []string{"--weird-name"}}},
 		{args: []string{"-timeout=1m", "cargo", "--timeout", "5"}, want: runOptions{timeout: time.Minute, argv: []string{"cargo", "--timeout", "5"}}},
 		{args: []string{}, wantErr: "missing command"},
 		{args: []string{"--"}, wantErr: "missing command"},

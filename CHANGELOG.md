@@ -6,6 +6,11 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Changed
+- Memory used still raises pressure to critical (≥ 95%) while a kernel memory signal (macOS verdict or Linux PSI) is present, so memory exhaustion without swap is never hidden.
+- `throt run` waits at most 5m by default (`--timeout 0` waits forever).
+- Linux memory PSI is read from the same cgroup level as the memory figures (least headroom).
+
 ## [0.5.0-rc.1] - 2026-10-28
 
 Accurate pressure everywhere: cgroup-aware Linux, the macOS kernel verdict, and a CPU policy driven by benchmark evidence. Also hardening: fuzzing, a patched toolchain, and a pinned supply chain.

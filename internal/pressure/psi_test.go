@@ -83,10 +83,18 @@ func TestStallSignals(t *testing.T) {
 
 		// Precedence over memory used.
 		{
-			name:   "memory PSI present: memory used ignored",
-			script: series(0, 20, memStall(0.97, steady(stall(0, 0)))),
+			name:   "memory PSI present: memory used ignored below critical",
+			script: series(0, 20, memStall(0.93, steady(stall(0, 0)))),
 			want:   []transition{{level: N, reason: "below_thresholds"}},
 			final:  N,
+		},
+		{
+			// Without swap, memory fills with little reclaim stall until the
+			// OOM killer acts, so near-exhaustion still reaches critical.
+			name:   "memory PSI present: near-exhausted memory still critical",
+			script: series(0, 20, memStall(0.97, steady(stall(0, 0)))),
+			want:   []transition{{level: C, reason: "memory_used>=0.95"}},
+			final:  C,
 		},
 		{
 			name:    "memory used kept when MemoryUsedWhenKernelSignal is set",
