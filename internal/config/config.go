@@ -24,6 +24,11 @@ import (
 // reading and swap growth (a rate between samples) is never measured.
 const MaxSampleInterval = pressure.DefaultWindow / 3
 
+// MaxResumeCooldown is the longest resume_cooldown. The scheduler resumes
+// at most one queued workload per cooldown, so a longer one would leave
+// queued work stopped for no benefit.
+const MaxResumeCooldown = 10 * time.Minute
+
 // Config is the user-facing configuration. Unknown keys are rejected.
 type Config struct {
 	// SocketPath is the daemon's Unix socket. Empty means DefaultSocketPath.
@@ -214,7 +219,7 @@ func load(path string, ncpu int) (Config, error) {
 		} `json:"scheduler"`
 	}
 	if err := json.Unmarshal(b, &head); err != nil {
-		return cfg, fmt.Errorf("parse config %s: %w", path, err)
+		return cfg, parseError(path, b, err)
 	}
 	if head.Profile != "" {
 		apply, ok := profiles[head.Profile]
@@ -226,7 +231,7 @@ func load(path string, ncpu int) (Config, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		return cfg, fmt.Errorf("parse config %s: %w", path, err)
+		return cfg, parseError(path, b, err)
 	}
 	if cfg.SocketPath == "" {
 		cfg.SocketPath = DefaultSocketPath()
@@ -296,6 +301,10 @@ func (c Config) Validate() error {
 	}
 	if c.Scheduler.ResumeCooldown < 0 || c.Scheduler.MaxQueueWait < Duration(time.Second) {
 		return errors.New("scheduler.resume_cooldown must be >= 0 and scheduler.max_queue_wait >= 1s")
+	}
+	if time.Duration(c.Scheduler.ResumeCooldown) > MaxResumeCooldown {
+		// Resumes are spaced by the cooldown, so a huge one freezes the queue.
+		return fmt.Errorf("scheduler.resume_cooldown must be at most %v", MaxResumeCooldown)
 	}
 	return nil
 }

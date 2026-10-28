@@ -26,7 +26,7 @@ func TestLoad(t *testing.T) {
 				t.Errorf("got %+v", c)
 			}
 		}},
-		{name: "unknown key", body: `{"sample_intervl":"5s"}`, wantErr: "unknown field"},
+		{name: "unknown key", body: `{"sample_intervl":"5s"}`, wantErr: `unknown key "sample_intervl" at the top level; did you mean "sample_interval"?`},
 		{name: "bad duration", body: `{"sample_interval":"soon"}`, wantErr: "invalid duration"},
 		{name: "interval too small", body: `{"sample_interval":"1ms"}`, wantErr: "at least 100ms"},
 		// Longer intervals leave the 30s pressure window a single sample:
@@ -69,7 +69,13 @@ func TestLoad(t *testing.T) {
 			}
 		}},
 		{name: "bad scheduler mode", body: `{"scheduler":{"mode":"auto"}}`, wantErr: "scheduler.mode"},
-		{name: "unknown scheduler key", body: `{"scheduler":{"limit":3}}`, wantErr: "unknown field"},
+		{name: "unknown scheduler key", body: `{"scheduler":{"limit":3}}`, wantErr: `unknown key "limit" in scheduler`},
+		{name: "resume cooldown too long", body: `{"scheduler":{"resume_cooldown":"11m"}}`, wantErr: "scheduler.resume_cooldown must be at most 10m0s"},
+		{name: "longest resume cooldown", body: `{"scheduler":{"resume_cooldown":"10m"}}`, check: func(t *testing.T, c Config) {
+			if time.Duration(c.Scheduler.ResumeCooldown) != 10*time.Minute {
+				t.Errorf("got %v", c.Scheduler.ResumeCooldown)
+			}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -91,5 +97,50 @@ func TestLoad(t *testing.T) {
 			}
 			tt.check(t, c)
 		})
+	}
+}
+
+// TestLoadErrorLocation checks that parse errors say where the problem is:
+// line and column for malformed JSON and wrong types, the section and the
+// closest known key for an unknown one.
+func TestLoadErrorLocation(t *testing.T) {
+	tests := []struct {
+		name, body, want string
+	}{
+		{"syntax", "{\n  \"profile\": \"cool\",\n  \"scheduler\": {\"mode\" \"enforce\"}\n}", "line 3, column 24: invalid character"},
+		{"syntax first line", `{"profile" "cool"}`, "line 1, column 12: invalid character"},
+		{"truncated", "{\n  \"profile\": \"cool\"", "line 2, column 20: unexpected end of JSON input"},
+		{"wrong type", "{\n  \"scheduler\": {\"heavy_limit\": \"3\"}\n}", "line 2, column 34: json: cannot unmarshal string"},
+		{"scheduler typo", `{"scheduler":{"mode":"enforce","heavy_limt":3}}`, `unknown key "heavy_limt" in scheduler; did you mean "heavy_limit"?`},
+		{"agents typo", `{"agents":[{"name":"x","executable":["x"]}]}`, `unknown key "executable" in agents[0]; did you mean "executables"?`},
+		{"no suggestion", `{"scheduler":{"turbo":true}}`, `unknown key "turbo" in scheduler`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(tt.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want containing %q", err, tt.want)
+			}
+			if strings.Contains(err.Error(), "did you mean") != strings.Contains(tt.want, "did you mean") {
+				t.Errorf("err = %v: unexpected suggestion", err)
+			}
+		})
+	}
+}
+
+func TestEditDistance(t *testing.T) {
+	for _, tt := range []struct {
+		a, b string
+		want int
+	}{
+		{"", "", 0}, {"abc", "", 3}, {"", "ab", 2}, {"kitten", "sitting", 3}, {"heavy_limt", "heavy_limit", 1}, {"mode", "mode", 0},
+	} {
+		if got := editDistance(tt.a, tt.b); got != tt.want {
+			t.Errorf("editDistance(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+		}
 	}
 }
