@@ -114,7 +114,9 @@ func skipReason() string {
 	case os.Getenv("CI") != "true" && !inContainer():
 		return "THROT_E2E is set, but this is neither CI (CI=true) nor a container. The test daemons " +
 			"pause real processes, so run the suite only in a disposable environment, e.g. " +
-			"docker run --rm -v \"$PWD\":/src -w /src golang:1.26.10-alpine sh -c 'THROT_E2E=1 go test ./internal/e2e'"
+			"docker run --rm -v \"$PWD\":/src -w /src golang:1.26.10-alpine sh -c " +
+			"'go test -c -o /tmp/e2e.test ./internal/e2e && THROT_E2E=1 /tmp/e2e.test -test.v' " +
+			"(run the binary directly: under go test, the go process would own every job)"
 	}
 	return ""
 }
