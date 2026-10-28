@@ -161,6 +161,56 @@ type Input struct {
 	// round. They move into the slot the lease held, so they are never
 	// queued, not even behind workloads that queued meanwhile.
 	Admitted []domain.ProcessKey
+	// Waiters are the `throt run` callers waiting for an admission lease.
+	// They share one FIFO with queued workloads (see Policy.FirstInLine):
+	// a queued workload is not resumed, and a newcomer not admitted, while a
+	// waiter that could take the slot is ahead in line.
+	Waiters []Waiter
+}
+
+// Waiter is one entry in the line for a heavy slot: a queued workload, or a
+// `throt run` caller refused an admission lease (Lease set).
+type Waiter struct {
+	Key   domain.ProcessKey
+	Owner string
+	// Since is when it started waiting: when the workload was queued, or
+	// when the caller first asked.
+	Since time.Time
+	Lease bool
+}
+
+// ahead reports whether a comes before b in the line: entries waiting at
+// least MaxQueueWait come first, then the longer wait; ties go to queued
+// workloads, then to the lower key. p must be normalized.
+func (p Policy) ahead(now time.Time, a, b Waiter) bool {
+	agedA, agedB := now.Sub(a.Since) >= p.MaxQueueWait, now.Sub(b.Since) >= p.MaxQueueWait
+	return cmp.Or(
+		-cmpBool(agedA, agedB),
+		a.Since.Compare(b.Since),
+		cmpBool(a.Lease, b.Lease),
+		cmpKey(a.Key, b.Key),
+	) < 0
+}
+
+// FirstInLine reports whether w comes first in the one FIFO shared by lease
+// waiters and queued workloads: no entry of line (w itself is skipped) is
+// ahead of it, counting only entries whose owner is within its
+// PerOwnerLimit, given perOwner (running and reserved heavy work per owner).
+// Work held back only by its owner's budget does not block other owners.
+func (p Policy) FirstInLine(now time.Time, w Waiter, line []Waiter, perOwner map[string]int) bool {
+	p = p.normalized()
+	for _, o := range line {
+		if o.Key == w.Key && o.Lease == w.Lease {
+			continue
+		}
+		if p.PerOwnerLimit > 0 && perOwner[o.Owner] >= p.PerOwnerLimit {
+			continue
+		}
+		if p.ahead(now, o, w) {
+			return false
+		}
+	}
+	return true
 }
 
 // Decision is one action with the facts that justify it.
@@ -194,6 +244,7 @@ type LimitChange struct {
 // entry is what the scheduler remembers about one heavy workload. Entries
 // are pruned as soon as the workload leaves the snapshot.
 type entry struct {
+	owner     string
 	firstSeen time.Time
 	// queuedSince is when the workload started waiting; zero when running.
 	queuedSince time.Time
@@ -253,6 +304,19 @@ func (s *Scheduler) SetPolicy(p Policy) {
 // Limit returns the effective heavy limit: Policy().HeavyLimit unless
 // Adaptive lowered it.
 func (s *Scheduler) Limit() int { return s.limit }
+
+// Queued returns the workloads waiting in line (queued or preempted) as of
+// the latest round, for Policy.FirstInLine.
+func (s *Scheduler) Queued() []Waiter {
+	var out []Waiter
+	for k, e := range s.seen {
+		if !e.queuedSince.IsZero() {
+			out = append(out, Waiter{Key: k, Owner: e.owner, Since: e.queuedSince})
+		}
+	}
+	slices.SortFunc(out, func(a, b Waiter) int { return cmpKey(a.Key, b.Key) })
+	return out
+}
 
 // Changes returns the limit changes since the previous call, oldest first,
 // and forgets them. At most MaxLimitChanges are kept. A change made by
@@ -399,11 +463,12 @@ func (s *Scheduler) Decide(in Input) []Decision {
 				reason = ReasonOwnerBudget
 			case running >= limit:
 				reason = ReasonSlotsExhausted
-			case slices.ContainsFunc(queued, func(q *cand) bool { return !s.atBudget(q, perOwner) }):
-				// Earlier workloads that could run are waiting; a newcomer
-				// must not overtake them, or a long queue could starve.
-				// Work held back only by its owner's budget does not block
-				// other owners.
+			case slices.ContainsFunc(queued, func(q *cand) bool { return !s.atBudget(q, perOwner) }),
+				slices.ContainsFunc(in.Waiters, func(w Waiter) bool { return !s.ownerAtBudget(w.Owner, perOwner) }):
+				// Earlier workloads or lease waiters that could run are
+				// waiting; a newcomer must not overtake them, or a long
+				// queue could starve. Work held back only by its owner's
+				// budget does not block other owners.
 				reason = ReasonQueueWaiting
 			}
 		}
@@ -475,6 +540,7 @@ func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessK
 			c.isNew = s.baselined && !c.held && !ok
 		}
 		c.e = e
+		e.owner = v.Owner
 		switch {
 		case c.paused:
 			if e.queuedSince.IsZero() {
@@ -531,7 +597,8 @@ func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner m
 	}
 	switch in.Pressure {
 	case domain.PressureNormal, domain.PressureElevated:
-		if running < s.limit {
+		// An older lease waiter gets the free slot through acquire.
+		if running < s.limit && !s.yields(in, best, perOwner) {
 			return best, reason
 		}
 	case domain.PressureHigh:
@@ -545,7 +612,7 @@ func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner m
 	case domain.PressureUnknown:
 		// Fail open: resume with a free slot, and resume aged workloads
 		// regardless of slots so nothing waits forever on bad metrics.
-		if running < s.limit || aged(best) {
+		if (running < s.limit && !s.yields(in, best, perOwner)) || (running >= s.limit && aged(best)) {
 			return best, reason
 		}
 	}
@@ -555,7 +622,20 @@ func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner m
 // atBudget reports whether c's owner already runs PerOwnerLimit heavy
 // workloads.
 func (s *Scheduler) atBudget(c *cand, perOwner map[string]int) bool {
-	return s.policy.PerOwnerLimit > 0 && perOwner[c.v.Owner] >= s.policy.PerOwnerLimit
+	return s.ownerAtBudget(c.v.Owner, perOwner)
+}
+
+func (s *Scheduler) ownerAtBudget(owner string, perOwner map[string]int) bool {
+	return s.policy.PerOwnerLimit > 0 && perOwner[owner] >= s.policy.PerOwnerLimit
+}
+
+// yields reports whether a lease waiter that could take a free slot is
+// ahead of c in line, so c must not be resumed into that slot.
+func (s *Scheduler) yields(in Input, c *cand, perOwner map[string]int) bool {
+	me := Waiter{Key: c.v.Key, Owner: c.v.Owner, Since: c.e.queuedSince}
+	return slices.ContainsFunc(in.Waiters, func(w Waiter) bool {
+		return !s.ownerAtBudget(w.Owner, perOwner) && s.policy.ahead(in.Now, w, me)
+	})
 }
 
 // cooledDown reports whether ResumeCooldown has elapsed since the last

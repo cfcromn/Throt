@@ -160,6 +160,12 @@ type Daemon struct {
 	mu     sync.Mutex
 	status StatusResult
 	leases leaseTable
+	// waiting holds the lease waiters; queuedLine and linePolicy are the
+	// scheduler's queue and policy as of its latest round, so acquire can
+	// place a waiter in the line it shares with queued workloads.
+	waiting    waitList
+	queuedLine []scheduler.Waiter
+	linePolicy scheduler.Policy
 	// stopped is the latest snapshot's stopped processes, for resuming an
 	// orphan beyond the MaxOrphans that status lists.
 	stopped []process.StoppedView
@@ -215,6 +221,7 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 	}
 	d.ctl = control.New(sig, d.uid, time.Now, d.saveState)
 	d.ident, _ = sig.(ProcessIdentifier)
+	d.linePolicy = d.sched.Policy()
 	return d
 }
 
@@ -349,10 +356,13 @@ func (d *Daemon) tick(parent context.Context) {
 		d.status.Orphans, d.status.OrphanCount = orphans, orphanCount
 		d.stopped = snap.Stopped
 		ended = d.leases.observe(sampled, now, procs, snap.Heavy)
+		d.waiting.prune(now, sampled, procs)
 	} else {
 		ended = d.leases.expire(now)
+		d.waiting.prune(now, sampled, nil)
 	}
 	reserved := d.leases.owners()
+	waiters := d.waiting.line()
 	d.mu.Unlock()
 	d.emitLeaseEnds(ended)
 
@@ -364,12 +374,14 @@ func (d *Daemon) tick(parent context.Context) {
 	if perr == nil {
 		// Only schedule on a fresh process snapshot: acting on stale data
 		// could queue a workload that already finished.
-		d.schedule(parent, now, level, snap.Heavy, reserved, admitted(ended), stoppedOrphans)
+		d.schedule(parent, now, level, snap.Heavy, reserved, admitted(ended), waiters, stoppedOrphans)
 		d.account(now, snap)
 	}
 	sched := d.schedulerStatus()
+	line, linePolicy := d.sched.Queued(), d.sched.Policy()
 	d.mu.Lock()
 	d.status.Scheduler = sched
+	d.queuedLine, d.linePolicy = line, linePolicy
 	d.mu.Unlock()
 }
 

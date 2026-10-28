@@ -9,7 +9,8 @@ package e2e
 //	docker run --rm --cpus=2 -v "$PWD":/src -w /src golang:1.26.10-alpine sh -c \
 //	  'go test -c -o /tmp/e2e.test ./internal/e2e && THROT_SOAK=1 /tmp/e2e.test -test.run=TestSoak -test.v -test.timeout=30m'
 //
-// THROT_SOAK_DURATION (default 10m) sets the churn phase's length, and
+// THROT_SOAK_DURATION (default 10m) sets the churn phase's length,
+// THROT_SOAK_NO_LULL=1 removes the agents' lulls, and
 // THROT_SOAK_LOGDIR, when set, keeps throtd's output there.
 
 import (
@@ -34,7 +35,8 @@ import (
 
 // soakAgentSource drives churn from inside an agent. "jobs SEED N" runs N
 // workers, each repeatedly starting a make job (sleep or burn, 0.2-3s of
-// work) and reporting "start PID", with a lull of 10s in every 30s. "lite N"
+// work) and reporting "start PID", with a lull of 10s in every 30s unless
+// THROT_SOAK_NO_LULL=1, which keeps the queue busy throughout. "lite N"
 // runs N loops that start the
 // light helper back to back, and finally reports "lite COUNT MAXPID WRAPS",
 // where WRAPS counts how often the PID space wrapped, so PIDs were reused.
@@ -77,13 +79,14 @@ func main() {
 	switch os.Args[1] {
 	case "jobs":
 		seed, _ := strconv.ParseUint(os.Args[2], 10, 64)
+		lulls := os.Getenv("THROT_SOAK_NO_LULL") != "1"
 		for w := range n {
 			wg.Go(func() {
 				r := rand.New(rand.NewPCG(seed, uint64(w)))
 				for !stopped() {
-					// Every agent pauses 10s in each 30s, so the queue drains
-					// and throt run callers can be granted leases.
-					for time.Now().Unix()%30 >= 20 && !stopped() {
+					// Every agent pauses 10s in each 30s, so the queue drains,
+					// unless THROT_SOAK_NO_LULL=1.
+					for lulls && time.Now().Unix()%30 >= 20 && !stopped() {
 						time.Sleep(100 * time.Millisecond)
 					}
 					mode := "sleep"
