@@ -12,6 +12,7 @@ Accurate pressure everywhere: cgroup-aware Linux, the macOS kernel verdict, and 
 
 ### Added
 - Run-at-login (launchd, systemd) and upgrade/rollback instructions.
+- `internal/e2e`: end-to-end tests of the built `throtd` and `throt` binaries against real processes (observe, manual pause/resume, crash recovery, graceful shutdown, enforce scheduler and reload, `throt mcp`), run on Linux CI with `THROT_E2E=1`.
 - `make bench`: containerized real-kernel benchmark (baseline vs enforce), with results in `docs/ARCHITECTURE.md`.
 - macOS kernel memory-pressure verdict (`kern.memorystatus_vm_pressure_level`) as a pressure signal (warning → elevated, critical → high), shown in `throt status` and the TUI.
 - More heavy tools classified: ninja, cmake, swiftc, kotlinc, dotnet, msbuild, zig, ghc, scalac, sbt, bazelisk, buck2, turbo, nx, rollup, webpack-cli, next, nuxt, rspack (build); rspec, mocha, playwright, cypress, phpunit, ctest (test); buildctl, buildah, kaniko (container build).
