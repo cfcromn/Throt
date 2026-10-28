@@ -12,15 +12,19 @@ import (
 	"text/tabwriter"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/transport"
+	"github.com/cfcromn/Throt/internal/tui"
 )
 
-const usage = `Usage: throt [flags] <command>
+const usage = `Usage: throt [flags] [command]
 
 Commands:
+  top        open the terminal UI (the default with no command)
   status     show host resources and pressure
   ping       check that throtd is reachable
   events     print recent daemon events as JSON lines
@@ -45,11 +49,14 @@ func run(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if fs.NArg() > 1 {
 		fs.Usage()
 		return fmt.Errorf("expected one command")
 	}
-	cmd := fs.Arg(0)
+	cmd := "top"
+	if fs.NArg() == 1 {
+		cmd = fs.Arg(0)
+	}
 	if cmd == "version" {
 		fmt.Println(app.Version)
 		return nil
@@ -57,6 +64,11 @@ func run(args []string) error {
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
+		return err
+	}
+	if cmd == "top" {
+		// Quitting the TUI only ends this client; throtd keeps running.
+		_, err := tea.NewProgram(tui.New(daemonClient{socket: cfg.SocketPath}, cfg.SocketPath)).Run()
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -89,6 +101,21 @@ func run(args []string) error {
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 	return nil
+}
+
+// daemonClient implements tui.Client over the local protocol.
+type daemonClient struct{ socket string }
+
+func (c daemonClient) Status(ctx context.Context) (app.StatusResult, error) {
+	var st app.StatusResult
+	err := transport.Call(ctx, c.socket, "status", nil, &st)
+	return st, err
+}
+
+func (c daemonClient) Events(ctx context.Context, limit int) ([]domain.Event, error) {
+	var events []domain.Event
+	err := transport.Call(ctx, c.socket, "events", app.EventsParams{Limit: limit}, &events)
+	return events, err
 }
 
 func printStatus(w io.Writer, st app.StatusResult) {
