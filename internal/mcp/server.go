@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
@@ -44,7 +45,9 @@ const latestVersion = "2025-11-25"
 // this server speaks.
 func supportedVersion(v string) bool {
 	switch v {
-	case latestVersion, "2025-06-18", "2025-03-26", "2024-11-05":
+	// 2025-03-26 is omitted: it requires JSON-RPC batching, which is not
+	// supported.
+	case latestVersion, "2025-06-18", "2024-11-05":
 		return true
 	}
 	return false
@@ -63,12 +66,15 @@ type Server struct {
 	client  Client
 	version string
 	log     *slog.Logger
+	// parent is the PID of the process that launched the server, normally
+	// the agent itself; it is the default agent for throt_capacity.
+	parent int
 }
 
 // New returns a server that reports version as its serverInfo version and
 // logs to log.
 func New(client Client, version string, log *slog.Logger) *Server {
-	return &Server{client: client, version: version, log: log}
+	return &Server{client: client, version: version, log: log, parent: os.Getppid()}
 }
 
 type request struct {

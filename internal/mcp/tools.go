@@ -374,6 +374,12 @@ func assessCapacity(st app.StatusResult, agent string) capacityView {
 	case st.Pressure >= domain.PressureHigh:
 		c.Reason = "pressure is " + pressure
 		c.Suggestion = "pressure is " + pressure + "; wait or run a lighter task"
+	case mode != scheduler.ModeOff && agent != "" && st.Scheduler.PerAgentLimit > 0 && agentRunning >= st.Scheduler.PerAgentLimit:
+		c.Reason = fmt.Sprintf("%s already runs %d heavy jobs (per-agent limit %d)", agent, agentRunning, st.Scheduler.PerAgentLimit)
+		c.Suggestion = "wait for one of your heavy jobs to finish; a new one would wait for your budget"
+	case mode != scheduler.ModeOff && len(st.Scheduler.Queued) > 0:
+		c.Reason = fmt.Sprintf("%d heavy jobs are already queued", len(st.Scheduler.Queued))
+		c.Suggestion = "new heavy jobs queue behind waiting ones; wait or run a lighter task"
 	case mode != scheduler.ModeOff && running >= st.Scheduler.HeavyLimit:
 		c.Reason = fmt.Sprintf("all heavy slots are in use (%d running, limit %d)", running, st.Scheduler.HeavyLimit)
 		if mode == scheduler.ModeEnforce {
@@ -418,6 +424,15 @@ func (s *Server) capacity(ctx context.Context, agent string) toolResult {
 	st, err := s.client.Status(ctx)
 	if err != nil {
 		return daemonDown(err)
+	}
+	if agent == "" {
+		// The model can't know its own label; the agent that launched
+		// this server can be found by PID.
+		for _, a := range st.Agents {
+			if a.Key.PID == s.parent {
+				agent = a.Agent
+			}
+		}
 	}
 	c := assessCapacity(st, agent)
 	verdict := "NO"

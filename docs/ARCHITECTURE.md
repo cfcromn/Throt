@@ -145,7 +145,7 @@ A request for any other protocol version is rejected with an error naming both v
 |---|---|---|---|
 | `ping` | – | `version`, `protocol`, `pid`, `uptime` | no |
 | `status` | – | `pressure`, `reason`, `host`, `agents`, `heavy`, `paused`, `scheduler`, `degraded` | no |
-| `events` | `limit` (1–1000) | recent events, oldest first: `time`, `kind`, `message`, `attrs` | no |
+| `events` | `limit` (0 or > 1000 means 1000) | recent events, oldest first: `time`, `kind`, `message`, `attrs` | no |
 | `pause` | `pid` | – | yes |
 | `resume` | `pid` | – | yes |
 

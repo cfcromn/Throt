@@ -51,6 +51,7 @@ func TestLoad(t *testing.T) {
 			}
 		}},
 		{name: "custom agent generic runtime", body: `{"agents":[{"name":"x","executables":["node"]}]}`, wantErr: "generic runtime"},
+		{name: "custom agent build tool", body: `{"agents":[{"name":"x","executables":["go"]}]}`, wantErr: "build tool"},
 		{name: "custom agent path", body: `{"agents":[{"name":"x","executables":["/usr/bin/x"]}]}`, wantErr: "bare base name"},
 		{name: "custom agent bad name", body: `{"agents":[{"name":"My Agent","executables":["x"]}]}`, wantErr: "lowercase"},
 		{name: "unknown profile", body: `{"profile":"turbo"}`, wantErr: "profile must be"},

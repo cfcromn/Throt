@@ -92,7 +92,7 @@ throt resume PID
 - `throt_capacity`: an advisory `ok_to_start` with a reason and suggestion.
 - `throt_events`: recent daemon events.
 
-None of them pauses, resumes, or changes configuration; control stays with you through the CLI. `throtd` must be running.
+None of them pauses, resumes, or changes configuration; control stays with you through the CLI. `throtd` must be running. `throt_capacity` defaults to the agent that launched the server. Tool output, including process names and PIDs, goes into the agent's context, so it reaches your model provider.
 
 ```bash
 claude mcp add throt -- throt mcp
@@ -126,7 +126,7 @@ Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.js
 }
 ```
 
-Custom agents can be added with `"agents": [{"name": "myagent", "executables": ["my-agent"]}]`. Generic runtimes such as `node` are refused, because they would match unrelated processes.
+Custom agents can be added with `"agents": [{"name": "myagent", "executables": ["my-agent"]}]`. Generic runtimes such as `node` and build tools such as `go` are refused, because they would match unrelated processes. On Linux, executable names are truncated to 15 characters.
 
 `profile` presets the scheduler; explicit keys override it.
 - `performance`: limit = CPUs/2 (at least 2), not adaptive.

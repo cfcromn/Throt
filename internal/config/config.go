@@ -12,6 +12,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/cfcromn/Throt/internal/agent"
+	"github.com/cfcromn/Throt/internal/domain"
 	"time"
 )
 
@@ -46,6 +49,7 @@ type Agent struct {
 var genericRuntimes = map[string]bool{
 	"node": true, "python": true, "python3": true, "bun": true, "deno": true,
 	"ruby": true, "java": true, "sh": true, "bash": true, "zsh": true, "fish": true,
+	"perl": true, "php": true, "lua": true, "env": true, "npx": true, "uvx": true, "tsx": true,
 }
 
 // Scheduler is the automatic scheduling policy. It is off by default.
@@ -217,6 +221,10 @@ func (c Config) Validate() error {
 				return fmt.Errorf("agents.%s: executable %q must be a bare base name", a.Name, e)
 			case genericRuntimes[e]:
 				return fmt.Errorf("agents.%s: %q is a generic runtime and would match unrelated processes", a.Name, e)
+			case agent.Classify(domain.ProcessSample{Name: e}).Heavy():
+				// It would turn every such build into an "agent" and take
+				// real agents' builds away from them.
+				return fmt.Errorf("agents.%s: %q is a build tool, not an agent", a.Name, e)
 			}
 		}
 	}

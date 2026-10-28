@@ -393,6 +393,7 @@ func TestCapacity(t *testing.T) {
 		wantRunning    int
 		wantAgent      *int
 		reason, suggst string
+		keepQueued     bool // sampleStatus queues pid 300; most cases clear it
 	}{
 		{
 			name:   "normal, slot free",
@@ -459,9 +460,27 @@ func TestCapacity(t *testing.T) {
 			args:   `{"agent":"ghost"}`,
 			wantOK: true, wantRunning: 2, wantAgent: ptr(0), suggst: `agent "ghost" is not currently detected`,
 		},
+		{
+			name:   "queued work waits first",
+			status: sampleStatus(domain.PressureNormal, scheduler.ModeEnforce, 3), keepQueued: true,
+			wantOK: false, wantRunning: 2, reason: "1 heavy jobs are already queued", suggst: "queue behind waiting ones",
+		},
+		{
+			name: "agent at its budget",
+			status: func() app.StatusResult {
+				st := sampleStatus(domain.PressureNormal, scheduler.ModeEnforce, 3)
+				st.Scheduler.PerAgentLimit = 1
+				return st
+			}(),
+			args:   `{"agent":"claude-1"}`,
+			wantOK: false, wantRunning: 2, wantAgent: ptr(1), reason: "per-agent limit 1", suggst: "budget",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if !tt.keepQueued {
+				tt.status.Scheduler.Queued = nil
+			}
 			r, sc := call(t, &fakeClient{status: tt.status}, "throt_capacity", tt.args)
 			if r.IsError {
 				t.Fatalf("isError: %s", r.Content[0].Text)
@@ -498,6 +517,17 @@ func TestCapacity(t *testing.T) {
 }
 
 func ptr(i int) *int { return &i }
+
+func TestCapacityDefaultsToParentAgent(t *testing.T) {
+	st := sampleStatus(domain.PressureNormal, scheduler.ModeEnforce, 3)
+	st.Scheduler.Queued = nil
+	s := New(&fakeClient{status: st}, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.parent = st.Agents[0].Key.PID
+	r := s.capacity(context.Background(), "")
+	if !strings.Contains(r.Content[0].Text, "running heavy for "+st.Agents[0].Agent) {
+		t.Fatalf("text:\n%s", r.Content[0].Text)
+	}
+}
 
 func TestEventsTool(t *testing.T) {
 	ts := time.Date(2026, 10, 28, 14, 2, 52, 0, time.UTC)

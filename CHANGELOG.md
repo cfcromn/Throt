@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+## [0.4.0-rc.1] - 2026-10-28
+
+Adaptive scheduling and agent integration. The scheduler remains opt-in.
+
 ### Added
 - Foreground latency probe (timer lateness) as a pressure signal; shown in `throt status` and the TUI.
 - Custom agent adapters via the `agents` config key.
