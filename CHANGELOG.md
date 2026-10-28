@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+## [0.9.0-rc.1] - 2026-10-29
+
+Evidence from real machines and fixes from it: CI benchmarks and soak, `throt update`, a scheduler that no longer serializes admission, memory-pressure fixes, a fuzzed and hardened input surface, and a TUI that fits every terminal.
+
 ### Added
 - `throt update [--check] [--version vX.Y.Z] [--pre] [--yes]` installs a GitHub release in place: it locates the running `throt` and the `throtd` next to it, picks the newest release (prereleases with `--pre`, or when the running version is one; any release, older ones included, with `--version`), downloads the archive for this platform, refuses it unless its SHA-256 matches `checksums.txt`, checks that both new binaries run and report the expected version, then renames them over the old ones, `throtd` first. Any failure before that changes nothing, as does an unwritable directory. It asks for confirmation on a terminal and refuses on a non-terminal stdin without `--yes`. `--check` only reports, exiting 0 when up to date and 10 when an update is available. The private repository needs a token from `GH_TOKEN`, `GITHUB_TOKEN` or `gh auth token`. `go install` and development builds get the `go install` commands instead. A running `throtd` is never restarted; the command to restart it is printed. This is the only network access in Throt, and only when you run it.
 - Real-machine benchmarks: the `Bench` workflow (`gh workflow run bench.yml`, also weekly) runs `internal/bench` on hosted Linux and macOS runners, sized to the runner (4× its CPUs per scenario), and writes the medians of three runs to the job summary and an artifact. The benchmark now runs on macOS (CI only) as well as in a Linux container.
@@ -183,7 +187,8 @@ First observe-only release candidate. Throt does not control any process.
 - `throt doctor` sanitized diagnostics.
 - Release automation: macOS/Linux archives, checksums, and SBOMs via GoReleaser.
 
-[Unreleased]: https://github.com/cfcromn/Throt/compare/v0.8.0-rc.1...HEAD
+[Unreleased]: https://github.com/cfcromn/Throt/compare/v0.9.0-rc.1...HEAD
+[0.9.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.8.0-rc.1...v0.9.0-rc.1
 [0.8.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.7.0-rc.1...v0.8.0-rc.1
 [0.7.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.6.0-rc.1...v0.7.0-rc.1
 [0.6.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.5.0-rc.1...v0.6.0-rc.1

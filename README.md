@@ -32,7 +32,7 @@ Principles:
 
 Throt is not a coding agent, a container orchestrator, or a cloud scheduler, and it never kills processes: it only pauses and resumes them.
 
-**Status: pre-1.0.** The latest release is v0.8.0-rc.1, a release candidate; v0.9 is in progress. macOS and Linux (amd64/arm64). Expect breaking changes before 1.0; the policy from 1.0 on is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#compatibility).
+**Status: pre-1.0.** The latest release is v0.9.0-rc.1, a release candidate. macOS and Linux (amd64/arm64). Expect breaking changes before 1.0; the policy from 1.0 on is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#compatibility).
 
 ## Quickstart
 
@@ -110,7 +110,7 @@ Without them `go install` fails, typically with `not found` from the proxy or `t
 |---|---|
 | `throt update --check` | Print the current and latest version. Exit 0 when up to date, 10 when an update is available. |
 | `throt update` | Download, verify and replace `throt` and `throtd`. Asks first; `--yes` skips the question. |
-| `throt update --version v0.8.0-rc.1` | Install a specific release, newer or older (this is the rollback). |
+| `throt update --version v0.9.0-rc.1` | Install a specific release, newer or older (this is the rollback). |
 | `throt update --pre` | Include prereleases (the default when the running version is one). |
 
 `throt update` finds the running `throt` (symlinks resolved) and the `throtd` next to it, downloads the archive for this OS and architecture with `checksums.txt`, and refuses unless the SHA-256 matches. It runs both new binaries to check their version, then renames them into place, `throtd` first and `throt` last. Any earlier failure, or a directory you can't write, leaves the old binaries untouched. Without `--yes` it refuses when stdin is not a terminal. Binaries from `go install` and development builds are left alone; it prints the `go install` commands instead.
@@ -429,7 +429,7 @@ Outcomes, not dates.
 | v0.6 Cooperative admission | Let agents wait instead of being paused | `throt run`, `throt stats`, Linux PSI, TUI drilldown and sparklines, real-binary e2e tests | shipped |
 | v0.7 Admission leases | Race-free admission, no hidden stopped work | admission leases for `throt run`, reporting of stopped processes Throt did not pause | shipped |
 | v0.8 Integration and readiness | Wait for capacity without being told | Claude Code hook, `throt setup`, `throt config check`/`show`, `throt version --json`, log levels, soak test | shipped (v0.8.0-rc.1) |
-| v0.9 Evidence and upkeep | Measure on real machines and stay current | `throt update`, real-machine CPU and memory benchmarks, soak on CI runners, an adaptive limit that grows under CPU-only load, `start_limit`, MCP `2026-07-28` with `throt_wait_for_capacity` and `throt_explain`, TUI scheduler line and event filter | in progress |
+| v0.9 Evidence and upkeep | Measure on real machines and stay current | `throt update`, real-machine CPU and memory benchmarks, soak on CI runners, an adaptive limit that grows under CPU-only load, `start_limit`, MCP `2026-07-28` with `throt_wait_for_capacity` and `throt_explain`, TUI scheduler line and event filter | shipped (v0.9.0-rc.1) |
 | 1.0 | Turn the scheduler on confidently under an explicit profile | stable compatibility policy, real-machine benchmarks; the scheduler stays opt-in, as the benchmark evidence decided | planned |
 
 **1.0** means the scheduler is ready to turn on with confidence under an explicit `scheduler.mode` and `profile`; it stays off by default (see "Default decision" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#results)). It requires two supported OS families, the [compatibility policy](docs/ARCHITECTURE.md#compatibility) in force, no known process-loss bug, reproducible benchmarks, and a security review of IPC and process-control boundaries.
