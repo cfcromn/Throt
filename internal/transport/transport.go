@@ -23,9 +23,12 @@ const ProtocolVersion = 1
 
 const (
 	maxConns     = 16
-	ioTimeout    = 5 * time.Second
 	maxBodyBytes = 1 << 20
 )
+
+// ioTimeout bounds one request/response exchange on both ends, so a
+// stalled peer cannot hold a connection slot. Tests shorten it.
+var ioTimeout = 5 * time.Second
 
 // Request is sent by a client.
 type Request struct {
