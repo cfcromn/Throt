@@ -68,8 +68,9 @@ type Policy struct {
 	// HeavyLimit is the maximum number of concurrently running heavy
 	// workloads. Values < 1 are treated as 1.
 	HeavyLimit int
-	// ResumeCooldown is the minimum time between two resumes, which avoids
-	// oscillation. Negative values are treated as 0.
+	// ResumeCooldown is the minimum time between two resumes, two
+	// preemptions, or a preemption and a resume in either order, which
+	// avoids oscillation. Negative values are treated as 0.
 	ResumeCooldown time.Duration
 	// PauseOnCritical allows pausing a running workload under critical
 	// pressure.
@@ -151,9 +152,10 @@ type Scheduler struct {
 	policy Policy
 	// baselined is false until the first round after start or a policy
 	// change; that round adopts every workload as pre-existing.
-	baselined  bool
-	seen       map[domain.ProcessKey]*entry
-	lastResume time.Time
+	baselined bool
+	seen      map[domain.ProcessKey]*entry
+	// lastSwitch is when the last resume or preemption was decided.
+	lastSwitch time.Time
 }
 
 // New returns a scheduler with policy p.
@@ -189,9 +191,9 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		s.reset()
 		return nil
 	}
-	if !s.lastResume.IsZero() && in.Now.Before(s.lastResume) {
+	if !s.lastSwitch.IsZero() && in.Now.Before(s.lastSwitch) {
 		// The clock went backwards; do not let the cooldown block forever.
-		s.lastResume = time.Time{}
+		s.lastSwitch = time.Time{}
 	}
 
 	paused := keySet(in.Paused)
@@ -233,7 +235,7 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		perOwner[c.v.Owner]++
 		add(ActionResume, c, reason)
 		queued = slices.DeleteFunc(queued, func(q *cand) bool { return q == c })
-		s.lastResume = in.Now
+		s.lastSwitch = in.Now
 	}
 
 	// Admit or queue new workloads in a stable order.
@@ -267,20 +269,25 @@ func (s *Scheduler) Decide(in Input) []Decision {
 	}
 
 	// Preempt at most one running attributed workload under critical
-	// pressure: the youngest, ties broken by the higher PID.
-	if in.Pressure == domain.PressureCritical && p.PauseOnCritical {
+	// pressure: the youngest, ties broken by the higher PID. The last
+	// running attributed workload is never preempted, so work always
+	// progresses, and preemptions share the resume cooldown.
+	if in.Pressure == domain.PressureCritical && p.PauseOnCritical && s.cooledDown(in.Now) {
 		var victim *cand
+		eligible := 0
 		for _, c := range cands {
 			// New workloads were queued above, under critical pressure.
 			if c.held || c.paused || c.isNew || c.v.Owner == "" {
 				continue
 			}
+			eligible++
 			if victim == nil || c.e.firstSeen.After(victim.e.firstSeen) ||
 				(c.e.firstSeen.Equal(victim.e.firstSeen) && c.v.Key.PID > victim.v.Key.PID) {
 				victim = c
 			}
 		}
-		if victim != nil {
+		if eligible > 1 {
+			s.lastSwitch = in.Now
 			victim.e.queuedSince = in.Now
 			victim.e.preemptPending = true
 			add(ActionPreempt, victim, ReasonPressureCritical)
@@ -351,7 +358,7 @@ func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner m
 	if len(queued) == 0 {
 		return nil, ""
 	}
-	if !s.lastResume.IsZero() && in.Now.Sub(s.lastResume) < p.ResumeCooldown {
+	if !s.cooledDown(in.Now) {
 		return nil, ""
 	}
 	aged := func(c *cand) bool { return in.Now.Sub(c.e.queuedSince) >= p.MaxQueueWait }
@@ -383,9 +390,15 @@ func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner m
 	return nil, ""
 }
 
+// cooledDown reports whether ResumeCooldown has elapsed since the last
+// resume or preemption.
+func (s *Scheduler) cooledDown(now time.Time) bool {
+	return s.lastSwitch.IsZero() || now.Sub(s.lastSwitch) >= s.policy.ResumeCooldown
+}
+
 func (s *Scheduler) reset() {
 	s.baselined = false
-	s.lastResume = time.Time{}
+	s.lastSwitch = time.Time{}
 	clear(s.seen)
 }
 

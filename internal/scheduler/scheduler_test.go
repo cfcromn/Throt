@@ -215,7 +215,7 @@ func TestResumeConditions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := New(enforce(2))
-			s.baselined, s.lastResume = true, at(20)
+			s.baselined, s.lastSwitch = true, at(20)
 			var heavy []process.WorkloadView
 			for i := range tt.running {
 				heavy = append(heavy, wv(1+i, "a"))
@@ -335,7 +335,7 @@ func TestResumeAtMostOnePerRound(t *testing.T) {
 func TestPreemptUnderCritical(t *testing.T) {
 	crit := enforce(4)
 	crit.PauseOnCritical = true
-	t.Run("youngest first, then higher PID, one per round", func(t *testing.T) {
+	t.Run("youngest first, then higher PID, with cooldown and floor", func(t *testing.T) {
 		s := New(crit)
 		s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "a")}})
 		heavy := []process.WorkloadView{wv(1, "a"), wv(5, "b"), wv(4, "c"), wv(9, "")}
@@ -345,26 +345,38 @@ func TestPreemptUnderCritical(t *testing.T) {
 		if got[0].RunningHeavy != 4 {
 			t.Fatalf("RunningHeavy = %d, want 4", got[0].RunningHeavy)
 		}
-		expect(t, s.Decide(Input{Now: at(3), Pressure: domain.PressureCritical, Heavy: heavy, Paused: keys(5)}),
+		// Two preemptions are at least one cooldown apart.
+		expect(t, s.Decide(Input{Now: at(11), Pressure: domain.PressureCritical, Heavy: heavy, Paused: keys(5)}))
+		expect(t, s.Decide(Input{Now: at(12), Pressure: domain.PressureCritical, Heavy: heavy, Paused: keys(5)}),
 			brief{ActionPreempt, 4, ReasonPressureCritical})
-		expect(t, s.Decide(Input{Now: at(4), Pressure: domain.PressureCritical, Heavy: heavy, Paused: keys(4, 5)}),
-			brief{ActionPreempt, 1, ReasonPressureCritical})
-		// Only the unattributed workload is left running: never preempted.
-		expect(t, s.Decide(Input{Now: at(5), Pressure: domain.PressureCritical, Heavy: heavy, Paused: keys(1, 4, 5)}))
-		if s.seen[key(5)].preemptions != 1 || s.seen[key(4)].preemptions != 1 || s.seen[key(1)].preemptions != 1 {
+		// 1 is the last attributed workload running (9 is unattributed):
+		// it is never preempted.
+		expect(t, s.Decide(Input{Now: at(30), Pressure: domain.PressureCritical, Heavy: heavy, Paused: keys(4, 5)}))
+		if s.seen[key(5)].preemptions != 1 || s.seen[key(4)].preemptions != 1 || s.seen[key(1)].preemptions != 0 {
 			t.Fatal("preemptions not counted")
 		}
-		// Recovery resumes one at a time; the preempted share ranks by
-		// fairness and then wait.
-		expect(t, s.Decide(Input{Now: at(6), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(1, 4, 5)}),
-			brief{ActionResume, 5, ReasonSlotAvailable})
 	})
-	t.Run("new workloads queue instead of being preempted", func(t *testing.T) {
+	t.Run("preempt and resume share the cooldown", func(t *testing.T) {
+		s := New(crit)
+		heavy := []process.WorkloadView{wv(1, "a"), wv(2, "b"), wv(3, "c")}
+		s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: heavy})
+		expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureCritical, Heavy: heavy}),
+			brief{ActionPreempt, 3, ReasonPressureCritical})
+		// Preempt then resume: the resume waits for the cooldown.
+		expect(t, s.Decide(Input{Now: at(10), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(3)}))
+		expect(t, s.Decide(Input{Now: at(11), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(3)}),
+			brief{ActionResume, 3, ReasonSlotAvailable})
+		// Resume then preempt: the preempt waits for the cooldown.
+		expect(t, s.Decide(Input{Now: at(20), Pressure: domain.PressureCritical, Heavy: heavy}))
+		expect(t, s.Decide(Input{Now: at(21), Pressure: domain.PressureCritical, Heavy: heavy}),
+			brief{ActionPreempt, 3, ReasonPressureCritical})
+	})
+	t.Run("new workloads queue and the last running one is kept", func(t *testing.T) {
 		s := New(crit)
 		s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "a")}})
 		heavy := []process.WorkloadView{wv(1, "a"), wv(2, "b")}
 		expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureCritical, Heavy: heavy}),
-			brief{ActionQueue, 2, ReasonPressureCritical}, brief{ActionPreempt, 1, ReasonPressureCritical})
+			brief{ActionQueue, 2, ReasonPressureCritical})
 	})
 	t.Run("disabled by default", func(t *testing.T) {
 		s := New(enforce(4))
@@ -380,29 +392,34 @@ func TestPreemptUnderCritical(t *testing.T) {
 	})
 	t.Run("unexecuted preempt is not counted", func(t *testing.T) {
 		s := New(crit)
-		heavy := []process.WorkloadView{wv(1, "a")}
+		heavy := []process.WorkloadView{wv(1, "a"), wv(2, "b")}
 		s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: heavy})
-		s.Decide(Input{Now: at(1), Pressure: domain.PressureCritical, Heavy: heavy})
+		expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureCritical, Heavy: heavy}),
+			brief{ActionPreempt, 2, ReasonPressureCritical})
 		s.Decide(Input{Now: at(2), Pressure: domain.PressureNormal, Heavy: heavy})
-		if e := s.seen[key(1)]; e.preemptions != 0 || !e.queuedSince.IsZero() || e.preemptPending {
+		if e := s.seen[key(2)]; e.preemptions != 0 || !e.queuedSince.IsZero() || e.preemptPending {
 			t.Fatalf("entry = %+v", e)
 		}
 	})
 }
 
 func TestHeldWorkloadsAreNeverTouched(t *testing.T) {
-	crit := enforce(1)
+	crit := enforce(2)
 	crit.PauseOnCritical = true
 	s := New(crit)
-	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "a")}, Held: keys(1)})
-	// 1 is held, so it does not take the slot: 2 runs.
-	heavy := []process.WorkloadView{wv(1, "a"), wv(2, "b"), wv(3, "c")}
+	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "a"), wv(4, "d")}, Held: keys(1)})
+	// 1 is held, so it does not take a slot: 2 runs. 3 is held on arrival
+	// and is never queued.
+	heavy := []process.WorkloadView{wv(1, "a"), wv(4, "d"), wv(2, "b"), wv(3, "c")}
 	got := s.Decide(Input{Now: at(1), Pressure: domain.PressureNormal, Heavy: heavy, Held: keys(1, 3)})
 	expect(t, got)
-	// Under critical pressure only 2 is a candidate, even if 1 is also
-	// (wrongly) listed as scheduler-paused.
+	// Under critical pressure 1 is never a candidate, even if it is also
+	// (wrongly) listed as scheduler-paused, and does not count toward the
+	// one workload kept running.
 	got = s.Decide(Input{Now: at(2), Pressure: domain.PressureCritical, Heavy: heavy, Held: keys(1, 3), Paused: keys(1)})
 	expect(t, got, brief{ActionPreempt, 2, ReasonPressureCritical})
+	got = s.Decide(Input{Now: at(30), Pressure: domain.PressureCritical, Heavy: heavy, Held: keys(1, 3), Paused: keys(1, 2)})
+	expect(t, got)
 	// A held workload is never resumed by the scheduler.
 	got = s.Decide(Input{Now: at(60), Pressure: domain.PressureNormal, Heavy: heavy, Held: keys(1, 3), Paused: keys(1, 2)})
 	expect(t, got, brief{ActionResume, 2, ReasonSlotAvailable})
@@ -474,8 +491,8 @@ func TestDuplicateSnapshotEntriesAndSortedOutput(t *testing.T) {
 	crit := enforce(5)
 	crit.PauseOnCritical = true
 	s = New(crit)
-	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "a")}})
+	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "a"), wv(3, "c")}})
 	got = s.Decide(Input{Now: at(1), Pressure: domain.PressureCritical,
-		Heavy: []process.WorkloadView{wv(1, "a"), wv(2, "b")}})
-	expect(t, got, brief{ActionQueue, 2, ReasonPressureCritical}, brief{ActionPreempt, 1, ReasonPressureCritical})
+		Heavy: []process.WorkloadView{wv(3, "c"), wv(1, "a"), wv(2, "b")}})
+	expect(t, got, brief{ActionQueue, 2, ReasonPressureCritical}, brief{ActionPreempt, 3, ReasonPressureCritical})
 }

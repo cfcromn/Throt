@@ -61,6 +61,7 @@ func runSim(t *testing.T, sc simScenario) simResult {
 	limit := s.Policy().HeavyLimit
 	cooldown := int(s.Policy().ResumeCooldown / time.Second)
 	maxQueueWait := int(s.Policy().MaxQueueWait / time.Second)
+	lastSwitch, preemptedNow := -1, false
 	var res simResult
 	done := 0
 	tick := 0
@@ -78,7 +79,15 @@ func runSim(t *testing.T, sc simScenario) simResult {
 				}
 			}
 		}
+		preemptedNow = false
 		for _, d := range s.Decide(in) {
+			if d.Action != ActionQueue {
+				// Resumes and preemptions are at least one cooldown apart.
+				if lastSwitch >= 0 && tick-lastSwitch < cooldown {
+					t.Fatalf("%s t=%d: %s %ds after the previous switch", sc.name, tick, d.Action, tick-lastSwitch)
+				}
+				lastSwitch = tick
+			}
 			i := index[d.Key]
 			j := sc.jobs[i]
 			switch d.Action {
@@ -97,6 +106,7 @@ func runSim(t *testing.T, sc simScenario) simResult {
 					res.queued++
 				} else {
 					res.preempted++
+					preemptedNow = true
 				}
 			case ActionResume:
 				if !paused[i] {
@@ -112,17 +122,23 @@ func runSim(t *testing.T, sc simScenario) simResult {
 				}
 			}
 		}
-		running, exempt := 0, 0
+		running, exempt, attributed := 0, 0, 0
 		for i, j := range sc.jobs {
 			if j.arrive <= tick && finish[i] < 0 && !paused[i] {
 				running++
 				if j.owner == "" || j.pre {
 					exempt++
 				}
+				if j.owner != "" {
+					attributed++
+				}
 			}
 		}
 		// Exempt jobs are never paused, so only the controlled ones are
 		// bound by the limit.
+		if preemptedNow && attributed == 0 {
+			t.Fatalf("%s t=%d: preemption left no attributed job running", sc.name, tick)
+		}
 		if running-exempt > limit {
 			t.Fatalf("%s t=%d: %d controlled jobs running over limit %d", sc.name, tick, running-exempt, limit)
 		}
