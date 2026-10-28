@@ -389,6 +389,44 @@ func TestAuthHeader(t *testing.T) {
 	}
 }
 
+// An asset URL on another host than the API gets no token, even though it
+// comes from the release JSON rather than from a redirect.
+func TestTokenStaysOnAPIHost(t *testing.T) {
+	api := newFakeGitHub(t)
+	archive := releaseArchive(t, "0.9.0")
+	name := ArchiveName("v0.9.0", "linux", "amd64")
+	sums := fmt.Appendf(nil, "%x  %s\n", sha256.Sum256(archive), name)
+	var mu sync.Mutex
+	var auths []string
+	other := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auths = append(auths, r.Header.Get("Authorization"))
+		mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/checksums.txt") {
+			w.Write(sums)
+			return
+		}
+		w.Write(archive)
+	}))
+	t.Cleanup(other.Close)
+	rel := Release{TagName: "v0.9.0", Assets: []Asset{
+		{Name: name, Size: int64(len(archive)), URL: other.URL + "/a/" + name},
+		{Name: "checksums.txt", Size: int64(len(sums)), URL: other.URL + "/a/checksums.txt"},
+	}}
+	c := &Client{HTTP: api.srv.Client(), BaseURL: api.srv.URL, Token: "secret-token"}
+	if _, err := c.Download(context.Background(), rel, "linux", "amd64"); err != nil {
+		t.Fatal(err)
+	}
+	if len(auths) != 2 {
+		t.Fatalf("requests %d, want 2", len(auths))
+	}
+	for _, got := range auths {
+		if got != "" {
+			t.Errorf("asset host got Authorization %q", got)
+		}
+	}
+}
+
 func TestPrivateRepoNotFound(t *testing.T) {
 	for _, token := range []string{"", "secret-token"} {
 		g := newFakeGitHub(t)

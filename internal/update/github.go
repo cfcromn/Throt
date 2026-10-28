@@ -86,8 +86,8 @@ type Client struct {
 	HTTP    *http.Client
 	BaseURL string
 	Repo    string
-	// Token authenticates requests when set. It is never logged or put in
-	// an error.
+	// Token authenticates requests to the API host when set. It is never
+	// logged or put in an error.
 	Token string
 }
 
@@ -111,7 +111,9 @@ func (c *Client) get(ctx context.Context, u, accept string, limit int64) ([]byte
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", "throt-update")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if c.Token != "" {
+	// The token goes only to the API host. Asset URLs come from the
+	// release JSON, so one naming another host gets no token.
+	if c.Token != "" && c.isAPIHost(pu) {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 	hc := c.HTTP
@@ -151,6 +153,13 @@ func (c *Client) base() string {
 		return DefaultBaseURL
 	}
 	return strings.TrimRight(c.BaseURL, "/")
+}
+
+// isAPIHost reports whether u is on the API host of c.base(), port
+// included.
+func (c *Client) isAPIHost(u *url.URL) bool {
+	b, err := url.Parse(c.base())
+	return err == nil && b.Scheme == "https" && strings.EqualFold(u.Host, b.Host)
 }
 
 func (c *Client) repo() string {
