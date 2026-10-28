@@ -15,6 +15,7 @@ const (
 	EventDaemonStarted EventKind = "daemon_started"
 	EventDaemonStopped EventKind = "daemon_stopped"
 	EventDegraded      EventKind = "degraded"
+	EventRecovered     EventKind = "recovered"
 )
 
 // Event is the single structured record that feeds logs, diagnostics, and

@@ -32,6 +32,14 @@ func TestParseProcStat(t *testing.T) {
 	}
 }
 
+func TestParseProcStatHugeIntrLine(t *testing.T) {
+	in := "cpu 1 0 1 8 0 0 0 0\ncpu0 1 0 1 8 0 0 0 0\nintr" + strings.Repeat(" 0", 100_000) + "\n"
+	got, ncpu, err := parseProcStat(strings.NewReader(in))
+	if err != nil || got.Total != 10 || ncpu != 1 {
+		t.Fatalf("got %+v, ncpu=%d, err=%v", got, ncpu, err)
+	}
+}
+
 func TestParseProcStatOldKernel(t *testing.T) {
 	// Kernels before 2.6 report only user, nice, system, idle.
 	got, ncpu, err := parseProcStat(strings.NewReader("cpu 1 2 3 4\n"))

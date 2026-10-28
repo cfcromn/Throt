@@ -42,9 +42,14 @@ func parseProcStat(r io.Reader) (cpuTimes, int, error) {
 		ncpu  int
 	)
 	sc := bufio.NewScanner(r)
+	// The intr line grows with the IRQ count and can exceed the 64 KiB default.
+	sc.Buffer(nil, 16<<20)
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
 		if len(fields) == 0 || !strings.HasPrefix(fields[0], "cpu") {
+			if found {
+				break // cpu lines come first; later lines (e.g. intr) can be huge
+			}
 			continue
 		}
 		if fields[0] != "cpu" {

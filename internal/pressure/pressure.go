@@ -217,6 +217,7 @@ func (e *Engine) add(s domain.HostSample) {
 		load:    s.Load1,
 		swap:    s.SwapUsed,
 	}
+
 	if p.hasMem {
 		avail := min(s.MemAvailable, s.MemTotal)
 		p.mem = 1 - float64(avail)/float64(s.MemTotal)
@@ -235,30 +236,36 @@ func (e *Engine) add(s domain.HostSample) {
 	}
 }
 
-// stats computes medians for level-like signals and the swap growth rate
-// between the first and last samples that report swap.
+// stats computes medians for level-like signals and for the swap growth rate
+// between adjacent samples that report swap, so one jump in swap usage does
+// not dominate the whole window.
 func (e *Engine) stats() stats {
 	var st stats
 	st.mem, st.hasMem = e.median(func(p point) (float64, bool) { return p.mem, p.hasMem })
 	st.cpu, st.hasCPU = e.median(func(p point) (float64, bool) { return p.cpu, p.hasCPU })
 	st.load, st.hasLoad = e.median(func(p point) (float64, bool) { return p.load, p.hasLoad })
 
-	first, last := -1, -1
+	// Rates go in e.scratch, which median also uses; compute them last.
+	e.scratch = e.scratch[:0]
+	prev := -1
 	for i, p := range e.samples {
-		if p.hasSwap {
-			if first < 0 {
-				first = i
-			}
-			last = i
+		if !p.hasSwap {
+			continue
 		}
-	}
-	if first >= 0 {
 		st.hasSwap = true
-		a, b := e.samples[first], e.samples[last]
-		if dt := b.t.Sub(a.t).Seconds(); dt > 0 && b.swap > a.swap {
-			st.swap = float64(b.swap-a.swap) / dt
+		if prev >= 0 {
+			a := e.samples[prev]
+			if dt := p.t.Sub(a.t).Seconds(); dt > 0 {
+				rate := 0.0
+				if p.swap > a.swap {
+					rate = float64(p.swap-a.swap) / dt
+				}
+				e.scratch = append(e.scratch, rate)
+			}
 		}
+		prev = i
 	}
+	st.swap = medianOf(e.scratch)
 	st.has = st.hasMem || st.hasCPU || st.hasLoad || st.hasSwap
 	return st
 }
@@ -270,15 +277,23 @@ func (e *Engine) median(get func(point) (float64, bool)) (float64, bool) {
 			e.scratch = append(e.scratch, v)
 		}
 	}
-	n := len(e.scratch)
-	if n == 0 {
+	if len(e.scratch) == 0 {
 		return 0, false
 	}
-	slices.Sort(e.scratch)
-	if n%2 == 1 {
-		return e.scratch[n/2], true
+	return medianOf(e.scratch), true
+}
+
+// medianOf sorts vals in place and returns their median, or 0 if empty.
+func medianOf(vals []float64) float64 {
+	n := len(vals)
+	if n == 0 {
+		return 0
 	}
-	return (e.scratch[n/2-1] + e.scratch[n/2]) / 2, true
+	slices.Sort(vals)
+	if n%2 == 1 {
+		return vals[n/2]
+	}
+	return (vals[n/2-1] + vals[n/2]) / 2
 }
 
 // classify returns the highest level any present signal reaches, using enter

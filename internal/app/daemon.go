@@ -124,7 +124,7 @@ func (d *Daemon) observe(s domain.HostSample) {
 	d.mu.Unlock()
 
 	if recovered {
-		d.emit(domain.EventDegraded, "host sampling recovered", nil)
+		d.emit(domain.EventRecovered, "host sampling recovered", nil)
 	}
 	if changed {
 		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
@@ -132,14 +132,28 @@ func (d *Daemon) observe(s domain.HostSample) {
 	}
 }
 
+// sampleFailed feeds the engine an all-missing sample so stale readings age
+// out of the window and pressure falls back to unknown instead of freezing.
+// The last good host sample stays visible; its Time shows its age.
 func (d *Daemon) sampleFailed(err error) {
+	empty := domain.HostSample{
+		Time:    time.Now(),
+		Missing: []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap},
+	}
 	d.mu.Lock()
+	level, changed, reason := d.engine.Observe(empty)
+	from := d.status.Pressure
+	d.status.Pressure, d.status.Reason, d.status.Degraded = level, reason, err.Error()
 	first := !d.degraded
 	d.degraded = true
-	d.status.Degraded = err.Error()
 	d.mu.Unlock()
+
 	if first { // log transitions only, not every failed tick
 		d.emit(domain.EventDegraded, "host sampling failed: "+err.Error(), nil)
+	}
+	if changed {
+		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
+			map[string]string{"from": from.String(), "to": level.String(), "reason": reason})
 	}
 }
 

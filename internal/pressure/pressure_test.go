@@ -200,6 +200,19 @@ func TestTransitions(t *testing.T) {
 			reason: "swap_growth>=8388608",
 		},
 		{
+			name:   "single swap jump is ignored",
+			window: 5 * time.Second,
+			script: func() []sig {
+				out := swapRamp(0, 13, 0)
+				for i := 1; i < len(out); i++ {
+					out[i].swapMiB += 50 // one +50 MiB step at t=1, flat afterwards
+				}
+				return out
+			}(),
+			want:  []domain.PressureLevel{N},
+			final: N,
+		},
+		{
 			name:   "swap shrinking is not growth",
 			window: 5 * time.Second,
 			script: swapRamp(0, 13, -5),
