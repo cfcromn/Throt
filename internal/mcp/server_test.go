@@ -86,6 +86,9 @@ func TestInitializeVersionNegotiation(t *testing.T) {
 		{"echo 2024-11-05", `{"protocolVersion":"2024-11-05"}`, "2024-11-05"},
 		{"echo latest", `{"protocolVersion":"2025-11-25"}`, "2025-11-25"},
 		{"unknown future", `{"protocolVersion":"2099-01-01"}`, latestLegacy},
+		// 2025-03-26 requires JSON-RPC batching, which is not supported,
+		// so it is not echoed.
+		{"batching revision", `{"protocolVersion":"2025-03-26"}`, latestLegacy},
 		{"handshake-free revision", `{"protocolVersion":"2026-07-28"}`, latestLegacy},
 		{"missing", `{}`, latestLegacy},
 		{"no params", ``, latestLegacy},
@@ -208,6 +211,13 @@ func TestProtocolErrors(t *testing.T) {
 		{"unknown method", `{"jsonrpc":"2.0","id":3,"method":"resources/list"}`, "3", codeMethodNotFound},
 		{"malformed JSON", `{"jsonrpc":"2.0","id":4,`, "null", codeParseError},
 		{"batch array", `[{"jsonrpc":"2.0","id":5,"method":"ping"}]`, "null", codeInvalidRequest},
+		// Batches are refused whole, even ones of notifications only, and
+		// so is any other JSON value that is not a request object.
+		{"notification batch", `[{"jsonrpc":"2.0","method":"notifications/initialized"}]`, "null", codeInvalidRequest},
+		{"empty batch", `[]`, "null", codeInvalidRequest},
+		{"null message", `null`, "null", codeInvalidRequest},
+		{"string message", `"ping"`, "null", codeInvalidRequest},
+		{"null id is answered", `{"jsonrpc":"2.0","id":null,"method":"nope"}`, "null", codeMethodNotFound},
 		{"wrong jsonrpc", `{"jsonrpc":"1.0","id":6,"method":"ping"}`, "6", codeInvalidRequest},
 		{"unknown tool", `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"throt_pause"}}`, "7", codeInvalidParams},
 		{"call params not object", `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":[1]}`, "8", codeInvalidParams},
