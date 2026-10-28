@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"syscall"
 
 	"github.com/cfcromn/Throt/internal/app"
@@ -29,7 +30,9 @@ A private repository needs a token: GH_TOKEN or GITHUB_TOKEN, else the
 output of 'gh auth token' when the GitHub CLI is installed.
 
 Exit status with --check: 0 when up to date, 10 when an update is
-available, 1 on error.
+available, 1 on error. A development build or one installed with go install
+is updated with go install instead; --check still reports the latest
+release for it (exit 0 for a development build, which it cannot compare).
 
 Flags:
 `
@@ -71,7 +74,7 @@ func cmdUpdate(ctx context.Context, e env, args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err = update.Run(ctx, o, update.Env{
+	err = runUpdate(ctx, o, update.Env{
 		HTTP:       update.NewHTTPClient(),
 		BaseURL:    update.DefaultBaseURL,
 		Repo:       update.DefaultRepo,
@@ -95,6 +98,58 @@ func cmdUpdate(ctx context.Context, e env, args []string) error {
 		},
 	})
 	return updateExit(err)
+}
+
+// runUpdate runs update.Run, except that --check on a development build or
+// a go install build, which update.Run refuses because it cannot replace
+// them in place, still reports the latest release: the check only reads.
+func runUpdate(ctx context.Context, o update.Options, e update.Env) error {
+	if !o.Check {
+		return update.Run(ctx, o, e)
+	}
+	var gi *update.GoInstallError
+	if _, err := update.Locate(e.Executable, e.Current, e.BuildInfo, e.GoBinDirs, o.Version); !errors.As(err, &gi) {
+		return update.Run(ctx, o, e)
+	}
+	token, _ := update.Token(ctx, e.Getenv, e.LookPath, e.Run)
+	c := &update.Client{HTTP: e.HTTP, BaseURL: e.BaseURL, Repo: e.Repo, Token: token}
+	var rs []update.Release
+	if o.Version != "" {
+		r, err := c.ReleaseByTag(ctx, "v"+strings.TrimPrefix(o.Version, "v"))
+		if err != nil {
+			return err
+		}
+		rs = []update.Release{r}
+	} else {
+		var err error
+		if rs, err = c.Releases(ctx); err != nil {
+			return err
+		}
+	}
+	// A development build is older than any release.
+	dev := strings.HasPrefix(e.Current, "dev")
+	current := e.Current
+	if dev {
+		current = "0.0.0"
+	}
+	choice, err := update.Select(rs, current, o.Version, o.Pre)
+	if err != nil {
+		return err
+	}
+	label := "latest"
+	if choice.Explicit {
+		label = "requested"
+	}
+	fmt.Fprintf(e.Stdout, "current   %s\n%-9s %s\n", strings.TrimPrefix(e.Current, "v"), label, strings.TrimPrefix(choice.Release.TagName, "v"))
+	if !dev && choice.UpToDate() {
+		fmt.Fprintln(e.Stdout, "throt is up to date")
+		return nil
+	}
+	fmt.Fprintf(e.Stdout, "%s; install the release with:\n%s\n%s\n", gi.Reason, gi.Command, update.PrivateRepoHint)
+	if dev {
+		return nil // a development build has no version to compare
+	}
+	return update.ErrUpdateAvailable
 }
 
 // updateExit maps update.Run's result to throt's exit status.

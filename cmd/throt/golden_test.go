@@ -1329,7 +1329,9 @@ A private repository needs a token: GH_TOKEN or GITHUB_TOKEN, else the
 output of 'gh auth token' when the GitHub CLI is installed.
 
 Exit status with --check: 0 when up to date, 10 when an update is
-available, 1 on error.
+available, 1 on error. A development build or one installed with go install
+is updated with go install instead; --check still reports the latest
+release for it (exit 0 for a development build, which it cannot compare).
 
 Flags:
   -check

@@ -35,8 +35,14 @@ type GoInstallError struct {
 }
 
 func (e *GoInstallError) Error() string {
-	return e.Reason + "; update it with:\n" + e.Command
+	return e.Reason + "; update it with:\n" + e.Command + "\n" + PrivateRepoHint
 }
+
+// PrivateRepoHint says what go install needs to fetch the module from the
+// private repository.
+const PrivateRepoHint = `The repository is private, so go install needs
+  GOPRIVATE='github.com/cfcromn/*' (exported, or before each command)
+and git credentials for github.com, e.g. from running 'gh auth setup-git' once.`
 
 // goInstallCommand is the go install line for both programs at ver.
 func goInstallCommand(ver string) string {

@@ -676,7 +676,8 @@ func TestLocate(t *testing.T) {
 	var gi *GoInstallError
 	_, err := Locate(inst.Throt, "dev-abc1234", nil, nil, "")
 	if !errors.As(err, &gi) || !strings.Contains(err.Error(), "go install github.com/cfcromn/Throt/cmd/throt@latest") ||
-		!strings.Contains(err.Error(), "go install github.com/cfcromn/Throt/cmd/throtd@latest") {
+		!strings.Contains(err.Error(), "go install github.com/cfcromn/Throt/cmd/throtd@latest") ||
+		!strings.Contains(err.Error(), "GOPRIVATE='github.com/cfcromn/*'") || !strings.Contains(err.Error(), "gh auth setup-git") {
 		t.Errorf("dev build: %v", err)
 	}
 	_, err = Locate(inst.Throt, "v0.8.0", module, []string{"/elsewhere", dir}, "0.9.0")
