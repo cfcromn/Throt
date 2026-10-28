@@ -40,22 +40,23 @@ func globalFlags() (fs *flag.FlagSet, cfgPath *string, limit *int) {
 }
 
 // parseFlags parses args with fs, whose Usage must write to fs.Output().
-// On -h or -help it prints the usage to stdout rather than fs's output and
-// returns flag.ErrHelp, which main treats as success. Any other error is
-// reported on fs's output, followed by the usage, as flag does.
+// On -h or -help it prints the usage to stdout and returns flag.ErrHelp,
+// which main treats as success. Any other error comes back as a one-line
+// usage error naming fs's -h, with nothing printed.
 func parseFlags(fs *flag.FlagSet, args []string, stdout io.Writer) error {
-	usage := fs.Usage
+	usage, out := fs.Usage, fs.Output()
 	fs.Usage = func() {}
+	fs.SetOutput(io.Discard)
 	err := fs.Parse(args)
 	fs.Usage = usage
+	fs.SetOutput(out)
 	switch {
 	case errors.Is(err, flag.ErrHelp):
-		out := fs.Output()
 		fs.SetOutput(stdout)
 		fs.Usage()
 		fs.SetOutput(out)
 	case err != nil:
-		fs.Usage()
+		return usageError(fs.Name(), err.Error())
 	}
 	return err
 }
@@ -72,10 +73,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if fs.NArg() > 0 {
 		name, rest = fs.Arg(0), fs.Args()[1:]
 	}
-	e := env{stdin: stdin, stdout: stdout, stderr: stderr, cfgPath: *cfgPath, limit: *limit, usage: fs.Usage}
+	e := env{stdin: stdin, stdout: stdout, stderr: stderr, cfgPath: *cfgPath, limit: *limit}
 	c, ok := lookup(name)
 	if !ok {
-		return unknownCommand(e, name, rest)
+		return usageError("throt", fmt.Sprintf("unknown command %q", name))
 	}
 	// -h right after the command never runs it.
 	if !c.flags && len(rest) > 0 && isHelp(rest[0]) {
@@ -83,17 +84,4 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return flag.ErrHelp
 	}
 	return c.run(ctx, e, rest)
-}
-
-// unknownCommand reports name as unknown, after the checks every command
-// without its own parser makes.
-func unknownCommand(e env, name string, args []string) error {
-	if err := e.atMostOneArg(args); err != nil {
-		return err
-	}
-	if _, err := e.loadConfig(); err != nil {
-		return err
-	}
-	e.usage()
-	return fmt.Errorf("unknown command %q", name)
 }

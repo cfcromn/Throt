@@ -28,7 +28,7 @@ func cmdConfig(_ context.Context, e env, args []string) error {
 // the file with config.Load, as throtd does.
 func runConfig(args []string, cfgPath string, w io.Writer) error {
 	if len(args) == 0 {
-		return errors.New(configUsage)
+		return usageLine(configUsage)
 	}
 	sub := args[0]
 	if sub == "-h" || sub == "-help" || sub == "--help" {
@@ -43,10 +43,13 @@ func runConfig(args []string, cfgPath string, w io.Writer) error {
 	if sub == "show" {
 		cfs.BoolVar(&asJSON, "json", false, "print the effective config as JSON")
 	}
-	if err := parseFlags(cfs, args[1:], w); errors.Is(err, flag.ErrHelp) {
+	if sub != "check" && sub != "show" {
+		return usageLine(configUsage)
+	}
+	if err := parseFlags(cfs, args[1:], w); err != nil {
 		return err
-	} else if err != nil || cfs.NArg() > 0 {
-		return errors.New(configUsage)
+	} else if cfs.NArg() > 0 {
+		return usageLine(configUsage)
 	}
 	switch sub {
 	case "check":
@@ -54,7 +57,7 @@ func runConfig(args []string, cfgPath string, w io.Writer) error {
 	case "show":
 		return configShow(w, cfgPath, asJSON)
 	}
-	return errors.New(configUsage)
+	return usageLine(configUsage)
 }
 
 // configCheck validates the file at path and prints "ok", what it changes

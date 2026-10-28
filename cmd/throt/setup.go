@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 )
@@ -62,7 +61,7 @@ func cmdSetup(_ context.Context, e env, args []string) error {
 
 func runSetup(args []string, w io.Writer) error {
 	if len(args) != 1 {
-		return errors.New(setupUsage)
+		return usageLine(setupUsage)
 	}
 	switch args[0] {
 	case "claude-code":
@@ -70,7 +69,7 @@ func runSetup(args []string, w io.Writer) error {
 	case "codex":
 		printCodexSetup(w)
 	default:
-		return errors.New(setupUsage)
+		return usageLine(setupUsage)
 	}
 	return nil
 }

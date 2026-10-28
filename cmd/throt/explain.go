@@ -23,16 +23,13 @@ const explainEvents = 10
 
 // cmdExplain is 'throt explain PID'.
 func cmdExplain(ctx context.Context, e env, args []string) error {
-	if err := e.atMostOneArg(args); err != nil {
+	pid, err := pidArg(args, "usage: throt explain PID")
+	if err != nil {
 		return err
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return err
-	}
-	pid, err := strconv.Atoi(arg(args, 0))
-	if err != nil {
-		return fmt.Errorf("usage: throt explain PID")
 	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()

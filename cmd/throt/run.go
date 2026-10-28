@@ -70,12 +70,11 @@ func parseRunArgs(args []string, stdout, errw io.Writer) (runOptions, error) {
 		return o, err
 	}
 	if o.timeout < 0 {
-		return o, errors.New("run: --timeout must not be negative")
+		return o, usageError("throt run", "--timeout must not be negative")
 	}
 	o.argv = flags.Args()
 	if len(o.argv) == 0 {
-		flags.Usage()
-		return o, errors.New("run: missing command")
+		return o, usageError("throt run", "missing command")
 	}
 	return o, nil
 }

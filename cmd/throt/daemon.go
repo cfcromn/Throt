@@ -57,7 +57,7 @@ func (c daemonClient) Resume(ctx context.Context, k domain.ProcessKey) error {
 
 // cmdPing is 'throt ping'.
 func cmdPing(ctx context.Context, e env, args []string) error {
-	if err := e.atMostOneArg(args); err != nil {
+	if err := noArgs("ping", args); err != nil {
 		return err
 	}
 	cfg, err := e.loadConfig()
@@ -76,7 +76,7 @@ func cmdPing(ctx context.Context, e env, args []string) error {
 
 // cmdReload is 'throt reload'.
 func cmdReload(ctx context.Context, e env, args []string) error {
-	if err := e.atMostOneArg(args); err != nil {
+	if err := noArgs("reload", args); err != nil {
 		return err
 	}
 	cfg, err := e.loadConfig()

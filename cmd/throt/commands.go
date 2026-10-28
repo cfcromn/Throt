@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -18,8 +17,6 @@ type env struct {
 	stdout, stderr io.Writer
 	cfgPath        string // -config
 	limit          int    // -n
-	// usage prints throt's usage to stderr.
-	usage func()
 }
 
 // command is one throt command. The usage text lists the commands in this
@@ -122,22 +119,27 @@ func usageText() string {
 	return b.String()
 }
 
-// atMostOneArg reports too many arguments the way throt always has: the
-// usage, then the error.
-func (e env) atMostOneArg(args []string) error {
-	if len(args) > 1 {
-		e.usage()
-		return errors.New("too many arguments")
-	}
-	return nil
+// exitUsage is the exit status of a usage error, as for most Unix tools.
+const exitUsage = 2
+
+// usageError is a one-line usage error: msg, then where to find the usage
+// of cmd (e.g. "throt events"). It exits with exitUsage.
+func usageError(cmd, msg string) error {
+	return exitError{code: exitUsage, msg: msg + "; see '" + cmd + " -h'"}
 }
 
-// arg returns args[i], or "" when there is none.
-func arg(args []string, i int) string {
-	if i < len(args) {
-		return args[i]
+// usageLine is a usage error that already is the usage, such as "usage:
+// throt pause PID". It exits with exitUsage.
+func usageLine(usage string) error {
+	return exitError{code: exitUsage, msg: usage}
+}
+
+// noArgs rejects arguments to a command that takes none.
+func noArgs(name string, args []string) error {
+	if len(args) > 0 {
+		return usageError("throt "+name, fmt.Sprintf("unexpected argument %q", args[0]))
 	}
-	return ""
+	return nil
 }
 
 // loadConfig loads the config file named by -config.

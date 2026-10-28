@@ -15,7 +15,7 @@ import (
 
 // cmdStatus is 'throt status'.
 func cmdStatus(ctx context.Context, e env, args []string) error {
-	if err := e.atMostOneArg(args); err != nil {
+	if err := noArgs("status", args); err != nil {
 		return err
 	}
 	cfg, err := e.loadConfig()

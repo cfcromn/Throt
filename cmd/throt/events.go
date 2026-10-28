@@ -56,7 +56,7 @@ func parseEventsArgs(args []string, limit *int, stdout, stderr io.Writer) (follo
 		return false, err
 	}
 	if efs.NArg() > 0 {
-		return false, fmt.Errorf("usage: throt events [-f] [-n N]")
+		return false, usageLine("usage: throt events [-f] [-n N]")
 	}
 	return follow, nil
 }

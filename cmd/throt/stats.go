@@ -50,7 +50,7 @@ func parseStatsArgs(args []string, stdout, stderr io.Writer) (asJSON bool, err e
 		return false, err
 	}
 	if sfs.NArg() > 0 {
-		return false, fmt.Errorf("usage: throt stats [--json]")
+		return false, usageLine("usage: throt stats [--json]")
 	}
 	return asJSON, nil
 }

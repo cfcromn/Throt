@@ -509,10 +509,9 @@ Flags:
 
 func goldenWant() map[string]golden {
 	return map[string]golden{
-		"bad global flag": {code: 1, stdout: "", stderr: `flag provided but not defined: -bogus
-` + goldenUsage + `throt: flag provided but not defined: -bogus
+		"bad global flag": {code: 2, stdout: "", stderr: `throt: flag provided but not defined: -bogus; see 'throt -h'
 `},
-		"completion": {code: 1, stdout: "", stderr: `throt: usage: throt completion bash|zsh|fish
+		"completion": {code: 2, stdout: "", stderr: `throt: usage: throt completion bash|zsh|fish
 `},
 		"completion -h": {code: 0, stdout: `usage: throt completion bash|zsh|fish
 
@@ -575,7 +574,7 @@ _throt() {
 
 complete -o default -F _throt throt
 `, stderr: ""},
-		"completion extra": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
+		"completion extra": {code: 2, stdout: "", stderr: `throt: usage: throt completion bash|zsh|fish
 `},
 		"completion fish": {code: 0, stdout: `# fish completion for throt. Load with: throt completion fish | source
 function __throt_pids
@@ -620,7 +619,7 @@ complete -c throt -n '__fish_seen_subcommand_from run' -l timeout -x -d 'run any
 complete -c throt -n '__fish_seen_subcommand_from run' -l no-wait -d 'check once and run regardless'
 complete -c throt -n '__fish_seen_subcommand_from run' -a '(__fish_complete_command)'
 `, stderr: ""},
-		"completion tcsh": {code: 1, stdout: "", stderr: `throt: usage: throt completion bash|zsh|fish
+		"completion tcsh": {code: 2, stdout: "", stderr: `throt: usage: throt completion bash|zsh|fish
 `},
 		"completion zsh": {code: 0, stdout: `#compdef throt
 # zsh completion for throt. Load with: source <(throt completion zsh)
@@ -683,24 +682,24 @@ else
     compdef _throt throt
 fi
 `, stderr: ""},
-		"config": {code: 1, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
+		"config": {code: 2, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
 `},
 		"config -h": {code: 0, stdout: `usage: throt config check|show [--config PATH] [--json]
 `, stderr: ""},
-		"config bogus": {code: 1, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
+		"config bogus": {code: 2, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
 `},
 		"config check": {code: 0, stdout: `ok: $DIR/plain.json
   socket_path $DIR/run/throt/throtd.sock -> /nonexistent/throtd.sock (file)
   event_history 1000 -> 500 (file)
   scheduler.mode off -> observe (file)
 `, stderr: ""},
-		"config check --json": {code: 1, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
+		"config check --json": {code: 2, stdout: "", stderr: `throt: flag provided but not defined: -json; see 'throt config check -h'
 `},
 		"config check -h": {code: 0, stdout: `usage: throt config check|show [--config PATH] [--json]
   -config string
     	path to config file (default "$DIR/xdg/throt/config.json")
 `, stderr: ""},
-		"config check extra": {code: 1, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
+		"config check extra": {code: 2, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
 `},
 		"config check global": {code: 0, stdout: `ok: $DIR/plain.json
   socket_path $DIR/run/throt/throtd.sock -> /nonexistent/throtd.sock (file)
@@ -822,17 +821,12 @@ agents                       []                        default
 
 print a sanitized diagnostic report (safe to share)
 `, stderr: ""},
-		"doctor too many": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
+		"doctor too many": {code: 2, stdout: "", stderr: `throt: unexpected argument "a"; see 'throt doctor -h'
 `},
 		"events": {code: 0, stdout: `{"seq":1,"time":"2026-10-28T14:00:01Z","kind":"process_discovered","attrs":{"name":"make","pid":"4312"}}
 {"seq":2,"time":"2026-10-28T14:00:02Z","kind":"scheduler_decision","attrs":{"decision":"admit","limit":"2","observed":"true","pid":"4312","pressure":"elevated","reason":"heavy_slots_exhausted","running":"1"}}
 `, stderr: ""},
-		"events -bogus": {code: 1, stdout: "", stderr: `flag provided but not defined: -bogus
-usage: throt events [-f] [-n N]
-  -f	keep printing new events until interrupted
-  -n int
-    	number of recent events to print first (default 50)
-throt: flag provided but not defined: -bogus
+		"events -bogus": {code: 2, stdout: "", stderr: `throt: flag provided but not defined: -bogus; see 'throt events -h'
 `},
 		"events -h": {code: 0, stdout: `usage: throt events [-f] [-n N]
   -f	keep printing new events until interrupted
@@ -843,7 +837,7 @@ throt: flag provided but not defined: -bogus
 `, stderr: ""},
 		"events down": {code: 1, stdout: "", stderr: `throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
 `},
-		"events extra": {code: 1, stdout: "", stderr: `throt: usage: throt events [-f] [-n N]
+		"events extra": {code: 2, stdout: "", stderr: `throt: usage: throt events [-f] [-n N]
 `},
 		"explain": {code: 0, stdout: `make (pid 4312, build)
 state      running
@@ -862,13 +856,13 @@ Running; at 14:00:02 the scheduler would have admit it (heavy slots exhausted), 
 
 explain why a heavy workload is running, paused, or queued
 `, stderr: ""},
-		"explain missing": {code: 1, stdout: "", stderr: `throt: usage: throt explain PID
+		"explain missing": {code: 2, stdout: "", stderr: `throt: usage: throt explain PID
 `},
-		"explain not a pid": {code: 1, stdout: "", stderr: `throt: usage: throt explain PID
+		"explain not a pid": {code: 2, stdout: "", stderr: `throt: usage: throt explain PID
 `},
 		"explain not heavy": {code: 1, stdout: "", stderr: `throt: pid 99 is not a heavy workload in the latest sample; heavy workloads: 4312 (make), 4400 (gradle)
 `},
-		"explain too many": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
+		"explain too many": {code: 2, stdout: "", stderr: `throt: usage: throt explain PID
 `},
 		"global -n events": {code: 0, stdout: `{"seq":2,"time":"2026-10-28T14:00:02Z","kind":"scheduler_decision","attrs":{"decision":"admit","limit":"2","observed":"true","pid":"4312","pressure":"elevated","reason":"heavy_slots_exhausted","running":"1"}}
 `, stderr: ""},
@@ -877,7 +871,7 @@ explain why a heavy workload is running, paused, or queued
 `, stderr: ""},
 		"help":      {code: 0, stdout: goldenUsage, stderr: ""},
 		"help long": {code: 0, stdout: goldenUsage, stderr: ""},
-		"hook": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
+		"hook": {code: 2, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
 `},
 		"hook -h": {code: 0, stdout: `usage: throt hook claude-code [--max-wait D]
 
@@ -898,20 +892,7 @@ Flags:
   -max-wait duration
     	wait at most this long for capacity (keep it below the hook timeout) (default 50s)
 `, stderr: ""},
-		"hook claude-code bad flag": {code: 0, stdout: "", stderr: `invalid value "x" for flag -max-wait: parse error
-Usage: throt hook claude-code [--max-wait D]
-
-Claude Code PreToolUse hook for the Bash tool. When the command is a heavy
-tool (alone, or after "cd DIR &&", variable assignments, or "time"), wait up
-to D for throtd to report capacity for a heavy job, then let it run
-unchanged. Advisory: no slot is reserved. It never blocks, denies, or
-changes a tool call, and returns at once on any error or when throtd is
-unreachable. Keep D below the hook's "timeout" in settings.json.
-
-Flags:
-  -max-wait duration
-    	wait at most this long for capacity (keep it below the hook timeout) (default 50s)
-throt hook: bad arguments; not waiting
+		"hook claude-code bad flag": {code: 0, stdout: "", stderr: `throt hook: bad arguments; not waiting
 `},
 		"hook claude-code empty": {code: 0, stdout: "", stderr: ""},
 		"hook claude-code extra": {code: 0, stdout: "", stderr: `throt hook: bad arguments; not waiting
@@ -919,7 +900,7 @@ throt hook: bad arguments; not waiting
 		"hook claude-code heavy": {code: 0, stdout: `{"systemMessage":"throt: no heavy-job slot after 1s (all heavy slots are in use (2 running, limit 2)); running anyway"}
 `, stderr: ""},
 		"hook claude-code light": {code: 0, stdout: "", stderr: ""},
-		"hook codex": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
+		"hook codex": {code: 2, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
 `},
 		"invalid config": {code: 1, stdout: "", stderr: `throt: config $DIR/bad.json: scheduler.mode must be off, observe, or enforce, not "sometimes"
 `},
@@ -934,17 +915,17 @@ run a read-only MCP server on stdio for coding agents
 `, stderr: ""},
 		"mcp initialize": {code: 0, stdout: `{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}},"instructions":"Throt reports local machine pressure and heavy-workload capacity. Call throt_capacity before starting a heavy build, test suite, or container build; if ok_to_start is false, call throt_wait_for_capacity to wait for a slot, or run a lighter task. Call throt_explain with a PID from throt_status to learn why a heavy job is paused or queued. All tools are read-only and advisory.","protocolVersion":"2025-06-18","serverInfo":{"name":"throt","version":"dev"}}}
 `, stderr: ""},
-		"mcp too many": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
+		"mcp too many": {code: 2, stdout: "", stderr: `throt: unexpected argument "a"; see 'throt mcp -h'
 `},
 		"pause": {code: 0, stdout: `paused pid 4312
 `, stderr: ""},
-		"pause --force": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
+		"pause --force": {code: 2, stdout: "", stderr: `throt: usage: throt pause PID
 `},
 		"pause -h": {code: 0, stdout: `usage: throt pause PID
 
 pause a heavy workload (SIGSTOP) shown in 'status'
 `, stderr: ""},
-		"pause missing": {code: 1, stdout: "", stderr: `throt: usage: throt pause PID
+		"pause missing": {code: 2, stdout: "", stderr: `throt: usage: throt pause PID
 `},
 		"pause refused": {code: 1, stdout: "", stderr: `throt: pid 13 is not a heavy workload
 `},
@@ -956,8 +937,8 @@ check that throtd is reachable
 `, stderr: ""},
 		"ping down": {code: 1, stdout: "", stderr: `throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
 `},
-		"ping extra": {code: 0, stdout: `throtd v9.9.9 (protocol v1, pid 77, up 1h2m3s)
-`, stderr: ""},
+		"ping extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt ping -h'
+`},
 		"reload": {code: 0, stdout: `applied: scheduler.mode off -> observe
 requires restart: socket_path
 `, stderr: ""},
@@ -984,36 +965,18 @@ earlier throtd left paused) when it is a heavy workload of an
 agent; --force resumes any other such process of yours too,
 such as a shell job suspended with Ctrl-Z (prefer fg there)
 `, stderr: ""},
-		"resume missing": {code: 1, stdout: "", stderr: `throt: usage: throt resume [--force] PID
+		"resume missing": {code: 2, stdout: "", stderr: `throt: usage: throt resume [--force] PID
 `},
-		"resume not a pid": {code: 1, stdout: "", stderr: `throt: usage: throt resume PID
+		"resume not a pid": {code: 2, stdout: "", stderr: `throt: usage: throt resume [--force] PID
 `},
-		"resume two pids": {code: 1, stdout: "", stderr: `throt: usage: throt resume [--force] PID
+		"resume two pids": {code: 2, stdout: "", stderr: `throt: usage: throt resume [--force] PID
 `},
 		"run": {code: 3, stdout: `out
 `, stderr: `err
 `},
 		"run --no-wait": {code: 0, stdout: "", stderr: `throt: ok to start a heavy job: yes (granted); running now (--no-wait)
 `},
-		"run -bogus": {code: 1, stdout: "", stderr: `flag provided but not defined: -bogus
-Usage: throt run [--timeout D] [--no-wait] [--] CMD [ARGS...]
-
-Wait until throtd grants a heavy slot, then exec CMD in place of throt
-(same PID, signals, and exit status). The slot is reserved for CMD until it
-shows up as a heavy workload, exits, or 60s pass, so two commands asking at
-the same moment cannot both take the last slot. It never pauses anything. If
-throtd is unreachable, CMD runs immediately; an older throtd without slot
-reservation is only asked for advice. By default it waits at most 5m
-(the scheduler's default max_queue_wait) and then runs anyway, so a stuck
-queue never hangs a build; --timeout 0 waits forever. Unlike a shell, CMD
-found only through "." in PATH is refused (exit 126).
-
-Flags:
-  -no-wait
-    	check capacity once, print the verdict, and run regardless
-  -timeout duration
-    	stop waiting after this long and run anyway (0 waits forever) (default 5m0s)
-throt: flag provided but not defined: -bogus
+		"run -bogus": {code: 2, stdout: "", stderr: `throt: flag provided but not defined: -bogus; see 'throt run -h'
 `},
 		"run -h": {code: 0, stdout: `Usage: throt run [--timeout D] [--no-wait] [--] CMD [ARGS...]
 
@@ -1038,37 +1001,20 @@ Flags:
 `},
 		"run invalid config": {code: 0, stdout: "", stderr: `throt: throtd is not reachable (config $DIR/bad.json: scheduler.mode must be off, observe, or enforce, not "sometimes"); running without waiting
 `},
-		"run missing": {code: 1, stdout: "", stderr: `Usage: throt run [--timeout D] [--no-wait] [--] CMD [ARGS...]
-
-Wait until throtd grants a heavy slot, then exec CMD in place of throt
-(same PID, signals, and exit status). The slot is reserved for CMD until it
-shows up as a heavy workload, exits, or 60s pass, so two commands asking at
-the same moment cannot both take the last slot. It never pauses anything. If
-throtd is unreachable, CMD runs immediately; an older throtd without slot
-reservation is only asked for advice. By default it waits at most 5m
-(the scheduler's default max_queue_wait) and then runs anyway, so a stuck
-queue never hangs a build; --timeout 0 waits forever. Unlike a shell, CMD
-found only through "." in PATH is refused (exit 126).
-
-Flags:
-  -no-wait
-    	check capacity once, print the verdict, and run regardless
-  -timeout duration
-    	stop waiting after this long and run anyway (0 waits forever) (default 5m0s)
-throt: run: missing command
+		"run missing": {code: 2, stdout: "", stderr: `throt: missing command; see 'throt run -h'
 `},
-		"run negative timeout": {code: 1, stdout: "", stderr: `throt: run: --timeout must not be negative
+		"run negative timeout": {code: 2, stdout: "", stderr: `throt: --timeout must not be negative; see 'throt run -h'
 `},
 		"run no dashes": {code: 4, stdout: "", stderr: ""},
 		"run not found": {code: 127, stdout: "", stderr: `throt: run: throt-no-such-command: command not found
 `},
-		"setup": {code: 1, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
+		"setup": {code: 2, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
 `},
 		"setup -h": {code: 0, stdout: `usage: throt setup claude-code|codex
 
 print the configuration to paste into a coding agent
 `, stderr: ""},
-		"setup bogus": {code: 1, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
+		"setup bogus": {code: 2, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
 `},
 		"setup claude-code": {code: 0, stdout: `Claude Code setup (nothing is written; paste these yourself).
 
@@ -1126,7 +1072,7 @@ print the configuration to paste into a coding agent
 Both need throt on PATH, and the MCP tools need throtd running.
 `, stderr: ""},
 		"setup codex": {code: 0, stdout: "Codex setup (nothing is written; paste these yourself).\n\n1. MCP server (pressure and capacity tools): add this to ~/.codex/config.toml:\n\n[mcp_servers.throt]\ncommand = \"throt\"\nargs = [\"mcp\"]\n\n2. Add this paragraph to your AGENTS.md:\n\nPrefix heavy commands (builds, full test suites, container builds) with `throt run --`, e.g. `throt run -- npm run build` or `cd web && throt run -- make`. It waits for a free heavy-job slot and then runs the command unchanged; if throtd is down it runs at once.\n\nBoth need throt on PATH, and the MCP tools need throtd running.\n", stderr: ""},
-		"setup extra": {code: 1, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
+		"setup extra": {code: 2, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
 `},
 		"stats": {code: 0, stdout: `SINCE 2026-10-28 14:00:00 (AGE ago, in memory; resets when throtd restarts)
 
@@ -1179,11 +1125,7 @@ unattributed  -     4s        0 MiB     0           0s           0s
   }
 }
 `, stderr: ""},
-		"stats -bogus": {code: 1, stdout: "", stderr: `flag provided but not defined: -bogus
-usage: throt stats [--json]
-  -json
-    	print the stats as JSON
-throt: flag provided but not defined: -bogus
+		"stats -bogus": {code: 2, stdout: "", stderr: `throt: flag provided but not defined: -bogus; see 'throt stats -h'
 `},
 		"stats -h": {code: 0, stdout: `usage: throt stats [--json]
   -json
@@ -1233,7 +1175,7 @@ throt: flag provided but not defined: -bogus
   }
 }
 `, stderr: ""},
-		"stats extra": {code: 1, stdout: "", stderr: `throt: usage: throt stats [--json]
+		"stats extra": {code: 2, stdout: "", stderr: `throt: usage: throt stats [--json]
 `},
 		"status": {code: 0, stdout: `PRESSURE  ELEVATED (load 1.20 per CPU)
 CPU       42%
@@ -1252,23 +1194,8 @@ OWNER     PID   PROCESS  CLASS  CPU   MEM      STATE
 claude-1  4312  make     build  150%  2.0 GiB  running
 -         4400  gradle   build  25%   700 MiB  running
 `, stderr: ""},
-		"status --json": {code: 0, stdout: `PRESSURE  ELEVATED (load 1.20 per CPU)
-CPU       42%
-LOAD      1.20 per CPU
-MEM       10.0 GiB used of 16.0 GiB
-LATENCY   3ms
-SWAP      512 MiB used of 2.0 GiB
-
-AGENTS
-SCHEDULER observe (heavy limit 2, 0 queued, 0 reserved)
-AGENT     PID   CPU  MEM      CHILDREN
-claude-1  1000  5%   300 MiB  2
-
-HEAVY WORKLOADS
-OWNER     PID   PROCESS  CLASS  CPU   MEM      STATE
-claude-1  4312  make     build  150%  2.0 GiB  running
--         4400  gradle   build  25%   700 MiB  running
-`, stderr: ""},
+		"status --json": {code: 2, stdout: "", stderr: `throt: unexpected argument "--json"; see 'throt status -h'
+`},
 		"status -h": {code: 0, stdout: `usage: throt status
 
 show host resources and pressure
@@ -1277,41 +1204,19 @@ show host resources and pressure
 `},
 		"status down invalid config": {code: 1, stdout: "", stderr: `throt: config $DIR/bad.json: scheduler.mode must be off, observe, or enforce, not "sometimes"
 `},
-		"too many arguments": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
+		"too many arguments": {code: 2, stdout: "", stderr: `throt: unexpected argument "a"; see 'throt ping -h'
 `},
 		"top -h": {code: 0, stdout: `usage: throt top
 
 open the terminal UI (the default with no command)
 `, stderr: ""},
-		"top too many": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
+		"top too many": {code: 2, stdout: "", stderr: `throt: unexpected argument "a"; see 'throt top -h'
 `},
-		"unknown command": {code: 1, stdout: "", stderr: goldenUsage + `throt: unknown command "frob"
+		"unknown command": {code: 2, stdout: "", stderr: `throt: unknown command "frob"; see 'throt -h'
 `},
-		"unknown command with args": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
+		"unknown command with args": {code: 2, stdout: "", stderr: `throt: unknown command "frob"; see 'throt -h'
 `},
-		"update -bogus": {code: 1, stdout: "", stderr: `flag provided but not defined: -bogus
-Usage: throt update [--check] [--version vX.Y.Z] [--pre] [--yes]
-
-Download the newest Throt release from GitHub, verify its SHA-256 against
-the release's checksums.txt, and replace throt and the throtd next to it
-in place. This is the only command that uses the network.
-
-A private repository needs a token: GH_TOKEN or GITHUB_TOKEN, else the
-output of 'gh auth token' when the GitHub CLI is installed.
-
-Exit status with --check: 0 when up to date, 10 when an update is
-available, 1 on error.
-
-Flags:
-  -check
-    	only report the current and latest versions (exit 10 when an update is available)
-  -pre
-    	include prereleases (the default when the running version is one)
-  -version string
-    	install this release, newer or older (a rollback)
-  -yes
-    	do not ask for confirmation
-throt: flag provided but not defined: -bogus
+		"update -bogus": {code: 2, stdout: "", stderr: `throt: flag provided but not defined: -bogus; see 'throt update -h'
 `},
 		"update -h": {code: 0, stdout: `Usage: throt update [--check] [--version vX.Y.Z] [--pre] [--yes]
 
@@ -1335,52 +1240,9 @@ Flags:
   -yes
     	do not ask for confirmation
 `, stderr: ""},
-		"update -version missing": {code: 1, stdout: "", stderr: `flag needs an argument: -version
-Usage: throt update [--check] [--version vX.Y.Z] [--pre] [--yes]
-
-Download the newest Throt release from GitHub, verify its SHA-256 against
-the release's checksums.txt, and replace throt and the throtd next to it
-in place. This is the only command that uses the network.
-
-A private repository needs a token: GH_TOKEN or GITHUB_TOKEN, else the
-output of 'gh auth token' when the GitHub CLI is installed.
-
-Exit status with --check: 0 when up to date, 10 when an update is
-available, 1 on error.
-
-Flags:
-  -check
-    	only report the current and latest versions (exit 10 when an update is available)
-  -pre
-    	include prereleases (the default when the running version is one)
-  -version string
-    	install this release, newer or older (a rollback)
-  -yes
-    	do not ask for confirmation
-throt: flag needs an argument: -version
+		"update -version missing": {code: 2, stdout: "", stderr: `throt: flag needs an argument: -version; see 'throt update -h'
 `},
-		"update extra": {code: 1, stdout: "", stderr: `Usage: throt update [--check] [--version vX.Y.Z] [--pre] [--yes]
-
-Download the newest Throt release from GitHub, verify its SHA-256 against
-the release's checksums.txt, and replace throt and the throtd next to it
-in place. This is the only command that uses the network.
-
-A private repository needs a token: GH_TOKEN or GITHUB_TOKEN, else the
-output of 'gh auth token' when the GitHub CLI is installed.
-
-Exit status with --check: 0 when up to date, 10 when an update is
-available, 1 on error.
-
-Flags:
-  -check
-    	only report the current and latest versions (exit 10 when an update is available)
-  -pre
-    	include prereleases (the default when the running version is one)
-  -version string
-    	install this release, newer or older (a rollback)
-  -yes
-    	do not ask for confirmation
-throt: update: unexpected arguments
+		"update extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt update -h'
 `},
 		"version": {code: 0, stdout: `dev
 `, stderr: ""},
@@ -1409,7 +1271,7 @@ versions, and throtd's version when it is reachable
   "daemon_error": "connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory"
 }
 `, stderr: ""},
-		"version extra": {code: 1, stdout: "", stderr: `throt: usage: throt version [--json]
+		"version extra": {code: 2, stdout: "", stderr: `throt: usage: throt version [--json]
 `},
 		"version invalid config": {code: 0, stdout: `dev
 `, stderr: ""},

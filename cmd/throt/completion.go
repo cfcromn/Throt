@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 )
 
@@ -177,12 +176,14 @@ complete -c throt -n '__fish_seen_subcommand_from run' -l no-wait -d 'check once
 complete -c throt -n '__fish_seen_subcommand_from run' -a '(__fish_complete_command)'
 `
 
+const completionUsage = "usage: throt completion bash|zsh|fish"
+
 // cmdCompletion is 'throt completion SHELL'.
 func cmdCompletion(_ context.Context, e env, args []string) error {
-	if err := e.atMostOneArg(args); err != nil {
-		return err
+	if len(args) != 1 {
+		return usageLine(completionUsage)
 	}
-	return printCompletion(e.stdout, arg(args, 0))
+	return printCompletion(e.stdout, args[0])
 }
 
 // printCompletion writes the completion script for shell.
@@ -196,7 +197,7 @@ func printCompletion(w io.Writer, shell string) error {
 	case "fish":
 		script = fishCompletion
 	default:
-		return fmt.Errorf("usage: throt completion bash|zsh|fish")
+		return usageLine(completionUsage)
 	}
 	_, err := io.WriteString(w, script)
 	return err

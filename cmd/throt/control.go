@@ -12,30 +12,46 @@ import (
 
 // cmdPause is 'throt pause PID'.
 func cmdPause(ctx context.Context, e env, args []string) error {
-	if err := e.atMostOneArg(args); err != nil {
+	pid, err := pidArg(args, "usage: throt pause PID")
+	if err != nil {
 		return err
 	}
-	return sendControl(ctx, e, "pause", arg(args, 0), false)
+	return sendControl(ctx, e, "pause", pid, false)
 }
 
 // cmdResume is 'throt resume [--force] PID'.
 func cmdResume(ctx context.Context, e env, args []string) error {
-	pid, force, err := parseResumeArgs(args)
+	pidStr, force, err := parseResumeArgs(args)
+	if err != nil {
+		return err
+	}
+	pid, err := pidArg([]string{pidStr}, resumeUsage)
 	if err != nil {
 		return err
 	}
 	return sendControl(ctx, e, "resume", pid, force)
 }
 
-// sendControl sends the pause or resume method for pidArg.
-func sendControl(ctx context.Context, e env, method, pidArg string, force bool) error {
+// resumeUsage is the usage of 'throt resume'.
+const resumeUsage = "usage: throt resume [--force] PID"
+
+// pidArg returns the single PID in args, or usage as a usage error.
+func pidArg(args []string, usage string) (int, error) {
+	if len(args) != 1 {
+		return 0, usageLine(usage)
+	}
+	pid, err := strconv.Atoi(args[0])
+	if err != nil {
+		return 0, usageLine(usage)
+	}
+	return pid, nil
+}
+
+// sendControl sends the pause or resume method for pid.
+func sendControl(ctx context.Context, e env, method string, pid int, force bool) error {
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return err
-	}
-	pid, err := strconv.Atoi(pidArg)
-	if err != nil {
-		return fmt.Errorf("usage: throt %s PID", method)
 	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
@@ -55,11 +71,11 @@ func parseResumeArgs(args []string) (pid string, force bool, err error) {
 		case pid == "" && !strings.HasPrefix(a, "-"):
 			pid = a
 		default:
-			return "", false, fmt.Errorf("usage: throt resume [--force] PID")
+			return "", false, usageLine(resumeUsage)
 		}
 	}
 	if pid == "" {
-		return "", false, fmt.Errorf("usage: throt resume [--force] PID")
+		return "", false, usageLine(resumeUsage)
 	}
 	return pid, force, nil
 }

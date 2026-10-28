@@ -16,7 +16,7 @@ import (
 // cmdDoctor is 'throt doctor'. It reports even when the config is invalid
 // or the daemon is down.
 func cmdDoctor(ctx context.Context, e env, args []string) error {
-	if err := e.atMostOneArg(args); err != nil {
+	if err := noArgs("doctor", args); err != nil {
 		return err
 	}
 	cfg, cfgErr := e.loadConfig()

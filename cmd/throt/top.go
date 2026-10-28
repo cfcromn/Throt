@@ -14,7 +14,7 @@ import (
 // cmdTop is 'throt top', the terminal UI. Quitting it only ends this
 // client; throtd keeps running.
 func cmdTop(ctx context.Context, e env, args []string) error {
-	if err := e.atMostOneArg(args); err != nil {
+	if err := noArgs("top", args); err != nil {
 		return err
 	}
 	cfg, err := e.loadConfig()
@@ -28,7 +28,7 @@ func cmdTop(ctx context.Context, e env, args []string) error {
 // cmdMCP is 'throt mcp', a read-only MCP server on stdio. stdout carries
 // MCP messages only; logs go to stderr.
 func cmdMCP(ctx context.Context, e env, args []string) error {
-	if err := e.atMostOneArg(args); err != nil {
+	if err := noArgs("mcp", args); err != nil {
 		return err
 	}
 	cfg, err := e.loadConfig()

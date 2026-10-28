@@ -48,8 +48,7 @@ func parseUpdateArgs(args []string, stdout, errw io.Writer) (update.Options, err
 		return o, err
 	}
 	if ufs.NArg() > 0 {
-		ufs.Usage()
-		return o, errors.New("update: unexpected arguments")
+		return o, usageError("throt update", fmt.Sprintf("unexpected argument %q", ufs.Arg(0)))
 	}
 	return o, nil
 }

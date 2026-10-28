@@ -71,7 +71,7 @@ func cmdHook(_ context.Context, e env, args []string) error {
 // bad flags (reported on stderr, which Claude never sees on exit 0).
 func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) error {
 	if len(args) == 0 || args[0] != "claude-code" {
-		return fmt.Errorf("usage: throt hook claude-code [--max-wait D]")
+		return usageLine("usage: throt hook claude-code [--max-wait D]")
 	}
 	flags := flag.NewFlagSet("throt hook", flag.ContinueOnError)
 	flags.SetOutput(errw)
