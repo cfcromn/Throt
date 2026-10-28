@@ -33,6 +33,10 @@ func (s *linuxSampler) SampleHost(ctx context.Context) (domain.HostSample, error
 	out := domain.HostSample{Time: time.Now()}
 	var fails sampleErrors
 
+	// Linux has no kernel memory-pressure verdict wired up yet (PSI would
+	// be the candidate), so the signal is always missing.
+	fails.fail(domain.MetricMemoryPressure, nil)
+
 	ncpu := 0
 	var cur cpuTimes
 	err := withFile("/proc/stat", func(r io.Reader) (err error) {
