@@ -136,18 +136,22 @@ A scheduler can make graphs calmer while making real work slower, so changes to 
 
 `make bench` runs `internal/bench` in a `golang` Alpine container matching `go.mod` (the results below were measured with Go 1.26.4), limited with `--cpus=2`, where the PID namespace keeps the enforce-mode daemon away from the host's agents. It builds three helpers: an agent stub named `claude`, a job named `make` that burns one core for about 5 s of calibrated CPU work, and a probe that sleeps 10 ms in a loop and records how late it wakes. The in-process daemon uses the real Linux samplers and controller with a 500 ms sample interval. Baseline is `scheduler.mode` off; Throt is enforce with `heavy_limit` 2 and `resume_cooldown` 1s, other settings default. Makespan runs from the first job start to the last exit; peak running is sampled every 100 ms from `/proc`; interventions are scheduler decisions (queue and resume) in the event log.
 
-Medians of three runs on an Apple M5 Pro (macOS 26.5.1), Docker Desktop 29.5.3, linuxkit 6.12.76 arm64 VM with 10 CPUs and 7.75 GiB:
+Medians of three runs on an Apple M5 Pro (macOS 26.5.1), Docker Desktop 29.5.3, linuxkit 6.12.76 arm64 VM with 10 CPUs and 7.75 GiB, with cgroup-aware sampling and CPU/load capped at elevated:
 
-| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Peak running | Interventions |
-|---|---|---|---|---|---|---|---|
-| 8 jobs at once | baseline | 1.5ms | 70.5ms | 79.8ms | 17.1s | 8 | 0 |
-| 8 jobs at once | Throt | 1.8ms | 2.3ms | 2.6ms | 22.4s | 8 | 12 |
-| 10 jobs, one per 1s | baseline | 1.6ms | 66.9ms | 79.8ms | 23.7s | 10 | 0 |
-| 10 jobs, one per 1s | Throt | 1.8ms | 2.3ms | 2.6ms | 27.7s | 3 | 16 |
+| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Peak running | Interventions | Max pressure |
+|---|---|---|---|---|---|---|---|---|
+| 8 jobs at once | baseline | 1.7ms | 72.0ms | 80.4ms | 19.0s | 8 | 0 | elevated |
+| 8 jobs at once | Throt | 1.8ms | 4.5ms | 5.7ms | 22.2s | 8 | 12 | elevated |
+| 10 jobs, one per 1s | baseline | 1.6ms | 73.1ms | 83.4ms | 27.7s | 10 | 0 | elevated |
+| 10 jobs, one per 1s | Throt | 1.7ms | 4.2ms | 5.1ms | 27.2s | 3 | 16 | elevated |
 
-Run to run, p95 and makespan varied by about 10% at most. Pressure stayed normal throughout: `/proc/stat` and the load average describe the whole 10-CPU VM, not the 2-CPU quota, and the daemon's median latency stayed low. Peak running is 8 for the burst because Throt can only queue work that already exists, so all 8 jobs run for up to one sample interval before 6 are paused. The probe also measures cgroup throttling (see Scheduler): with 8 runnable jobs the container spends its 200 ms of quota early in each 100 ms period and then everything, the probe included, waits for the next one. Most of the baseline tail is that throttling, so a plain 2-core host would likely show a smaller gap. Baseline finishes 40 s of nominal CPU work in 17.1 s, under the 20 s the quota implies, so the quota and the calibration are approximate: compare modes, not absolute times.
+Makespan varied by up to about 30% between runs (single runs ranged 17.8–19.7 s and 18.4–25.1 s for the burst, 25.9–34.1 s and 23.2–34.5 s staggered), so only the medians are meaningful. Probe percentiles were stable within about 1 ms. Peak running is 8 for the burst because Throt can only queue work that already exists, so all 8 jobs run for up to one sample interval before 6 are paused. Most of the baseline tail is cgroup throttling: with 8 runnable jobs the container spends its 200 ms of quota early in each 100 ms period and then everything, the probe included, waits. A plain 2-core host would likely show a smaller gap. Compare modes, not absolute times; the quota and the job calibration are approximate.
 
-Under this setup Throt cuts probe p95 and p99 from about 70–80 ms to under 3 ms, costs about 0.3 ms at p50, and makes the batch 17–31% slower, because two jobs alone leave no slack and each slot handoff waits up to one sample interval plus the cooldown.
+Under this setup Throt cuts probe p95 and p99 about 15×, from 70–85 ms to 4–6 ms, with no measurable change at p50. Staggered arrivals (closer to agents starting builds over time) finish in about the same time. A burst of simultaneous jobs takes about 17% longer, because each slot handoff waits up to one sample interval plus the cooldown.
+
+An earlier policy let saturated CPU alone raise pressure to high. Under a real quota, two jobs on two CPUs then read as high, the adaptive limit halved to 1, and queued work waited minutes (burst 2m26s, staggered 11m7s in one run). CPU and load now cap at elevated, and the latency probe carries responsiveness.
+
+**Default decision:** the scheduler stays `off` by default. It trades some burst throughput for much better tail responsiveness, and whether that trade is right depends on the workload, so turning it on is an explicit choice (`scheduler.mode`, optionally with a `profile`).
 
 ## Local protocol
 
