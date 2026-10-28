@@ -160,6 +160,7 @@ func printStatus(w io.Writer, st app.StatusResult) {
 	fmt.Fprintf(w, "CPU       %s\n", na(domain.MetricCPU, fmt.Sprintf("%.0f%%", h.CPUUsage*100)))
 	fmt.Fprintf(w, "LOAD      %s\n", na(domain.MetricLoad, fmt.Sprintf("%.2f per CPU", h.Load1)))
 	fmt.Fprintf(w, "MEM       %s\n", na(domain.MetricMemory, fmt.Sprintf("%s used of %s", gib(h.MemTotal-min(h.MemAvailable, h.MemTotal)), gib(h.MemTotal))))
+	fmt.Fprintf(w, "LATENCY   %s\n", na(domain.MetricLatency, h.Latency.Round(time.Millisecond).String()))
 	fmt.Fprintf(w, "SWAP      %s\n", na(domain.MetricSwap, fmt.Sprintf("%s used of %s", gib(h.SwapUsed), gib(h.SwapTotal))))
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)

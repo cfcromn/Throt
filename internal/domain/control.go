@@ -14,4 +14,6 @@ const (
 	// EventSchedulerDecision records every scheduler decision, including
 	// observe-only ones, with its reason code.
 	EventSchedulerDecision EventKind = "scheduler_decision"
+	// EventSchedulerLimit records adaptive changes to the heavy limit.
+	EventSchedulerLimit EventKind = "scheduler_limit"
 )

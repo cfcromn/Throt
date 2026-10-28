@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -146,6 +147,12 @@ func (m Model) topLines() []string {
 		pressure = name
 		if m.status.Reason != "" {
 			pressure += "  " + m.status.Reason
+		}
+		if h := m.status.Host; h != nil && h.Has(domain.MetricLatency) {
+			pressure += "  latency " + h.Latency.Round(time.Millisecond).String()
+		}
+		if sc := m.status.Scheduler; sc.Mode != "" && sc.Mode != "off" {
+			pressure += fmt.Sprintf("  scheduler %s %d", sc.Mode, sc.HeavyLimit)
 		}
 	}
 	lines = append(lines, truncate(titleStyle.Render("SYSTEM")+"  pressure "+pressure, w))

@@ -163,7 +163,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 // allMissing marks every host metric unavailable. A failed host sample still
 // reaches the pressure engine this way, so stale readings age out of the
 // window and pressure falls back to unknown instead of freezing.
-var allMissing = []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap}
+var allMissing = []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap, domain.MetricLatency}
+
+// latencyProbe is the timer the responsiveness probe waits on each tick.
+const latencyProbe = 10 * time.Millisecond
 
 // sampleTimeout bounds one sampling round.
 const sampleTimeout = 5 * time.Second
@@ -173,7 +176,12 @@ func (d *Daemon) tick(parent context.Context) {
 	// Bound each round so a hung sampler (e.g. ps) cannot stall updates.
 	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
 	defer cancel()
+	latency, latencyOK := monitor.ProbeLatency(ctx, latencyProbe)
 	host, herr := d.host.SampleHost(ctx)
+	host.Latency = latency
+	if !latencyOK {
+		host.Missing = append(slices.Clone(host.Missing), domain.MetricLatency)
+	}
 	procs, perr := d.procs.SampleProcesses(ctx)
 	if parent.Err() != nil {
 		return // shutting down; partial samples are meaningless

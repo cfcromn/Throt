@@ -19,6 +19,7 @@ type sig struct {
 	cpu     float64
 	load    float64
 	swapMiB float64 // absolute swap used
+	lat     time.Duration
 	missing []domain.Metric
 }
 
@@ -32,6 +33,7 @@ func (g sig) sample() domain.HostSample {
 		MemAvailable: uint64((1 - g.mem) * total),
 		SwapTotal:    4096 * mib,
 		SwapUsed:     uint64(g.swapMiB * mib),
+		Latency:      g.lat,
 		Missing:      g.missing,
 	}
 }
@@ -252,9 +254,9 @@ func TestTransitions(t *testing.T) {
 			name:   "all metrics missing from the start stays unknown",
 			window: 2 * time.Second,
 			script: []sig{
-				{sec: 0, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap}},
-				{sec: 1, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap}},
-				{sec: 2, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap}},
+				{sec: 0, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap, domain.MetricLatency}},
+				{sec: 1, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap, domain.MetricLatency}},
+				{sec: 2, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap, domain.MetricLatency}},
 			},
 			want:  []domain.PressureLevel{},
 			final: U,
@@ -263,9 +265,9 @@ func TestTransitions(t *testing.T) {
 			name:   "all metrics missing for whole window yields unknown",
 			window: 2 * time.Second,
 			script: concat(memSeries(0, 4, 0.3), []sig{
-				{sec: 4, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap}},
-				{sec: 5, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap}},
-				{sec: 6, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap}},
+				{sec: 4, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap, domain.MetricLatency}},
+				{sec: 5, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap, domain.MetricLatency}},
+				{sec: 6, missing: []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap, domain.MetricLatency}},
 			}),
 			want:   []domain.PressureLevel{N, U},
 			final:  U,
@@ -394,7 +396,7 @@ func TestObserveEdgeCases(t *testing.T) {
 	})
 	t.Run("zero memory total counts as missing memory", func(t *testing.T) {
 		e := New(time.Second, DefaultThresholds())
-		s := domain.HostSample{Time: epoch, Missing: []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricSwap}}
+		s := domain.HostSample{Time: epoch, Missing: []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricSwap, domain.MetricLatency}}
 		if l, changed, reason := e.Observe(s); l != domain.PressureUnknown || changed || reason != "no_signals" {
 			t.Fatalf("level=%v changed=%v reason=%q", l, changed, reason)
 		}
@@ -414,22 +416,23 @@ func TestExitThreshold(t *testing.T) {
 		name          string
 		margin, ratio float64
 		enter         float64
-		rate          bool
+		kind          sigKind
 		want          float64
 	}{
-		{"absolute margin", 0.05, 0.5, 0.9, false, 0.85},
-		{"rate ratio", 0.05, 0.5, 8, true, 4},
-		{"margin larger than threshold falls back", 0.5, 0.5, 0.3, false, 0.3},
-		{"zero ratio falls back", 0.05, 0, 8, true, 8},
-		{"ratio above one falls back", 0.05, 2, 8, true, 8},
-		{"negative margin falls back", -0.1, 0.5, 0.9, false, 0.9},
+		{"absolute margin", 0.05, 0.5, 0.9, kindFraction, 0.85},
+		{"rate ratio", 0.05, 0.5, 8, kindRate, 4},
+		{"latency ratio", 0.05, 0.5, 100, kindDuration, 75},
+		{"margin larger than threshold falls back", 0.5, 0.5, 0.3, kindFraction, 0.3},
+		{"zero ratio falls back", 0.05, 0, 8, kindRate, 8},
+		{"ratio above one falls back", 0.05, 2, 8, kindRate, 8},
+		{"negative margin falls back", -0.1, 0.5, 0.9, kindFraction, 0.9},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			th := DefaultThresholds()
 			th.ExitMargin, th.SwapExitRatio = tc.margin, tc.ratio
 			e := New(time.Second, th)
-			if got := e.exitThreshold(tc.enter, tc.rate); got < tc.want-1e-9 || got > tc.want+1e-9 {
+			if got := e.exitThreshold(tc.enter, tc.kind); got < tc.want-1e-9 || got > tc.want+1e-9 {
 				t.Fatalf("exitThreshold = %v, want %v", got, tc.want)
 			}
 		})
@@ -438,8 +441,114 @@ func TestExitThreshold(t *testing.T) {
 
 func TestFormatThreshold(t *testing.T) {
 	for in, want := range map[float64]string{0.9 - 0.05: "0.85", 8 * mib: "8388608", 1.5: "1.5"} {
-		if got := formatThreshold(in); got != want {
+		if got := formatThreshold(in, kindFraction); got != want {
 			t.Errorf("formatThreshold(%v) = %q, want %q", in, got, want)
 		}
 	}
+	for in, want := range map[time.Duration]string{100 * time.Millisecond: "100ms", 18750 * time.Microsecond: "18.75ms"} {
+		if got := formatThreshold(float64(in), kindDuration); got != want {
+			t.Errorf("formatThreshold(%v) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestLatency(t *testing.T) {
+	N, E, H := domain.PressureNormal, domain.PressureElevated, domain.PressureHigh
+	ms := time.Millisecond
+	onlyLatency := []domain.Metric{domain.MetricMemory, domain.MetricCPU, domain.MetricLoad, domain.MetricSwap}
+
+	// latSeries returns one calm-memory sample per second with latency lat.
+	latSeries := func(start, n int, lat time.Duration, missing ...domain.Metric) []sig {
+		out := make([]sig, n)
+		for i := range out {
+			out[i] = sig{sec: float64(start + i), mem: 0.3, lat: lat, missing: missing}
+		}
+		return out
+	}
+
+	tests := []struct {
+		name   string
+		script []sig
+		want   []domain.PressureLevel
+		reason string // exact reason of the last transition
+	}{
+		{
+			name:   "single spike is ignored",
+			script: concat(latSeries(0, 10, 2*ms), latSeries(10, 1, 2*time.Second), latSeries(11, 30, 2*ms)),
+			want:   []domain.PressureLevel{N},
+			reason: "below_thresholds",
+		},
+		{
+			// The median passes through elevated while late samples take over
+			// the window.
+			name:   "sustained lateness escalates to high",
+			script: concat(latSeries(0, 3, 2*ms), latSeries(3, 15, 150*ms)),
+			want:   []domain.PressureLevel{N, E, H},
+			reason: "latency>=100ms",
+		},
+		{
+			name:   "moderate lateness reaches elevated",
+			script: concat(latSeries(0, 3, 2*ms), latSeries(3, 15, 40*ms)),
+			want:   []domain.PressureLevel{N, E},
+			reason: "latency>=25ms",
+		},
+		{
+			name:   "latency alone never reaches critical",
+			script: concat(latSeries(0, 3, 2*ms), latSeries(3, 60, 10*time.Second)),
+			want:   []domain.PressureLevel{N, H},
+			reason: "latency>=100ms",
+		},
+		{
+			name:   "above the exit threshold holds high",
+			script: concat(latSeries(0, 3, 2*ms), latSeries(3, 15, 150*ms), latSeries(18, 60, 80*ms)),
+			want:   []domain.PressureLevel{N, E, H},
+			reason: "latency>=100ms",
+		},
+		{
+			name:   "partial recovery steps down to elevated",
+			script: concat(latSeries(0, 3, 2*ms), latSeries(3, 15, 150*ms), latSeries(18, 60, 50*ms)),
+			want:   []domain.PressureLevel{N, E, H, E},
+			reason: "latency>=18.75ms",
+		},
+		{
+			name:   "recovery returns to normal",
+			script: concat(latSeries(0, 3, 2*ms), latSeries(3, 15, 150*ms), latSeries(18, 60, 2*ms)),
+			want:   []domain.PressureLevel{N, E, H, N},
+			reason: "recovered",
+		},
+		{
+			name:   "missing metric is ignored",
+			script: concat(latSeries(0, 3, 2*ms), latSeries(3, 30, 500*ms, domain.MetricLatency)),
+			want:   []domain.PressureLevel{N},
+			reason: "below_thresholds",
+		},
+		{
+			name:   "latency as the only signal is known",
+			script: latSeries(0, 15, 150*ms, onlyLatency...),
+			want:   []domain.PressureLevel{H},
+			reason: "latency>=100ms",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := New(10*time.Second, DefaultThresholds())
+			got := run(t, e, tc.script)
+			if gl := levels(got); !equalLevels(gl, tc.want) {
+				t.Fatalf("transitions = %v, want %v (%+v)", gl, tc.want, got)
+			}
+			if r := got[len(got)-1].reason; r != tc.reason {
+				t.Fatalf("last reason = %q, want %q", r, tc.reason)
+			}
+		})
+	}
+
+	t.Run("zero threshold disables the signal", func(t *testing.T) {
+		th := DefaultThresholds()
+		th.Elevated.Latency, th.High.Latency = 0, 0
+		e := New(10*time.Second, th)
+		run(t, e, latSeries(0, 30, time.Second))
+		if e.Level() != N {
+			t.Fatalf("level = %v, want normal", e.Level())
+		}
+	})
 }
