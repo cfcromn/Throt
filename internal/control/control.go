@@ -128,7 +128,7 @@ type Controller struct {
 	sig      Signaler
 	uid      uint32
 	now      func() time.Time
-	onChange func(state []byte)
+	onChange func(state []byte) error
 	timeout  time.Duration
 
 	mu     sync.Mutex // serializes signaling and guards paused
@@ -142,7 +142,7 @@ type Controller struct {
 // onChange, if non-nil, is called synchronously with the encoded state (see
 // MarshalState) every time the records change, before any signal that
 // depends on the change is sent. state is nil when no records remain.
-func New(sig Signaler, uid uint32, now func() time.Time, onChange func(state []byte), opts ...Option) *Controller {
+func New(sig Signaler, uid uint32, now func() time.Time, onChange func(state []byte) error, opts ...Option) *Controller {
 	c := &Controller{
 		sig: sig, uid: uid, now: now, onChange: onChange, timeout: CallTimeout,
 		paused: map[domain.ProcessKey]PausedWorkload{},
@@ -154,21 +154,22 @@ func New(sig Signaler, uid uint32, now func() time.Time, onChange func(state []b
 }
 
 // changed publishes the records to Paused and onChange. The caller holds mu.
-func (c *Controller) changed() {
+func (c *Controller) changed() error {
 	view := c.sorted()
 	c.viewMu.Lock()
 	c.view = view
 	c.viewMu.Unlock()
 	if c.onChange == nil {
-		return
+		return nil
 	}
 	if len(view) == 0 {
-		c.onChange(nil)
-		return
+		return c.onChange(nil)
 	}
-	if b, err := encodeState(view); err == nil {
-		c.onChange(b)
+	b, err := encodeState(view)
+	if err != nil {
+		return err
 	}
+	return c.onChange(b)
 }
 
 // call runs one per-process OS call with its own deadline. It ignores
@@ -218,7 +219,12 @@ func (c *Controller) Pause(ctx context.Context, t process.WorkloadTarget) error 
 		rec.Members = append(rec.Members, m.Key)
 	}
 	c.paused[t.Key] = rec
-	c.changed()
+	if err := c.changed(); err != nil {
+		// Without a durable record, a crash could leave work stopped forever.
+		delete(c.paused, t.Key)
+		c.changed()
+		return fmt.Errorf("control: cannot persist pause state, refusing to pause %s: %w", keyString(t.Key), err)
+	}
 
 	var stopped []domain.ProcessKey
 	fail := func(cause error) error {
@@ -310,13 +316,26 @@ func validPID(pid int) bool { return pid > 1 }
 // confirmed gone, with one error each. Each call has its own deadline and
 // ignores cancellation: resuming is the fail-open direction.
 func (c *Controller) continueAll(ctx context.Context, keys []domain.ProcessKey) (left []domain.ProcessKey, errs []error) {
-	for _, k := range slices.Backward(keys) {
+	return c.continueKeys(ctx, keys, false)
+}
+
+// continueKeys resumes keys child-first. With stopOnErr, the first hard
+// error ends the round and every key not yet tried stays left, which bounds
+// how long a retry holds the lock when the OS is failing.
+func (c *Controller) continueKeys(ctx context.Context, keys []domain.ProcessKey, stopOnErr bool) (left []domain.ProcessKey, errs []error) {
+	for i, k := range slices.Backward(keys) {
 		err := c.cont(ctx, k)
 		if err == nil || errors.Is(err, domain.ErrProcessGone) {
 			continue
 		}
 		left = append(left, k)
 		errs = append(errs, fmt.Errorf("continue %s: %w", keyString(k), err))
+		if stopOnErr {
+			for j := i - 1; j >= 0; j-- {
+				left = append(left, keys[j])
+			}
+			break
+		}
 	}
 	slices.Reverse(left)
 	return left, errs
@@ -341,8 +360,12 @@ func (c *Controller) Resume(ctx context.Context, key domain.ProcessKey) error {
 // resume continues one record's members. The caller holds mu and calls
 // changed afterwards.
 func (c *Controller) resume(ctx context.Context, key domain.ProcessKey) error {
+	return c.resumeKey(ctx, key, false)
+}
+
+func (c *Controller) resumeKey(ctx context.Context, key domain.ProcessKey, stopOnErr bool) error {
 	p := c.paused[key]
-	left, errs := c.continueAll(ctx, p.Members)
+	left, errs := c.continueKeys(ctx, p.Members, stopOnErr)
 	if len(left) == 0 {
 		delete(c.paused, key)
 		return nil
@@ -370,7 +393,24 @@ func (c *Controller) RetryResumes(ctx context.Context) []error {
 		return nil
 	}
 	defer c.mu.Unlock()
-	return c.resumeWhere(ctx, func(p PausedWorkload) bool { return p.State == StateResuming })
+	// Unlike shutdown, a retry ends at the first hard error: the OS is
+	// likely still failing, and the next tick tries again.
+	var errs []error
+	n := 0
+	for _, p := range c.sorted() {
+		if p.State != StateResuming {
+			continue
+		}
+		n++
+		if err := c.resumeKey(ctx, p.Key, true); err != nil {
+			errs = append(errs, err)
+			break
+		}
+	}
+	if n > 0 {
+		c.changed()
+	}
+	return errs
 }
 
 func (c *Controller) resumeWhere(ctx context.Context, match func(PausedWorkload) bool) []error {

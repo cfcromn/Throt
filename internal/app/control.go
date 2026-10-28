@@ -148,17 +148,20 @@ func (d *Daemon) statePath() string {
 // before the controller signals anything that depends on them, or removes
 // the file when state is nil (no records). It runs under the controller's
 // lock and must not call back into the controller.
-func (d *Daemon) saveState(state []byte) {
+func (d *Daemon) saveState(state []byte) error {
 	path := d.statePath()
 	if state == nil {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			d.log.Warn("remove paused state", "err", err)
+			return err
 		}
-		return
+		return nil
 	}
 	if err := writeFileAtomic(path, state); err != nil {
 		d.log.Warn("save paused state", "err", err)
+		return err
 	}
+	return nil
 }
 
 // writeFileAtomic replaces path with data so readers see either the old or

@@ -377,15 +377,19 @@ func TestPauseRaces(t *testing.T) {
 type recorder struct {
 	sig    *fakeSig // if set, each change is also noted in its call log
 	states [][]PausedWorkload
+	fail   error // if set, every save fails with it
 }
 
-func (r *recorder) onChange(b []byte) {
+func (r *recorder) onChange(b []byte) error {
+	if r.fail != nil {
+		return r.fail
+	}
 	if b == nil {
 		r.states = append(r.states, nil)
 		if r.sig != nil {
 			r.sig.note("state empty")
 		}
-		return
+		return nil
 	}
 	s, err := parseState(b)
 	if err != nil {
@@ -399,6 +403,7 @@ func (r *recorder) onChange(b []byte) {
 		}
 		r.sig.note("state " + strings.Join(parts, ","))
 	}
+	return nil
 }
 
 func (r *recorder) last() []PausedWorkload { return r.states[len(r.states)-1] }
@@ -998,5 +1003,50 @@ func TestRestoreMalformed(t *testing.T) {
 func TestRefusedErrorMessage(t *testing.T) {
 	if got := (&RefusedError{Reason: ReasonNotHeavy}).Error(); got != "control: refused: not_heavy" {
 		t.Errorf("Error() = %q", got)
+	}
+}
+
+func TestPauseRefusedWhenStateCannotBeSaved(t *testing.T) {
+	sig := newSig(10, 11)
+	rec := &recorder{fail: errors.New("disk full")}
+	c := New(sig, me, clock, rec.onChange)
+	if err := c.Pause(context.Background(), target(10, 11)); err == nil || !strings.Contains(err.Error(), "cannot persist") {
+		t.Fatalf("err = %v", err)
+	}
+	if calls := sig.log(); len(calls) != 0 {
+		t.Errorf("signals sent without a durable record: %v", calls)
+	}
+	if len(c.Paused()) != 0 {
+		t.Errorf("paused = %+v", c.Paused())
+	}
+}
+
+func TestRetryStopsAtFirstHardError(t *testing.T) {
+	sig := newSig(10, 11, 12)
+	c := New(sig, me, clock, nil)
+	if err := c.Pause(context.Background(), target(10, 11, 12)); err != nil {
+		t.Fatal(err)
+	}
+	sig.mu.Lock()
+	sig.contErr[11] = errors.New("ps: fork failed")
+	sig.contErr[12] = errors.New("ps: fork failed")
+	sig.calls = nil
+	sig.mu.Unlock()
+	if err := c.Resume(context.Background(), key(10)); err == nil {
+		t.Fatal("resume with a failing member succeeded")
+	}
+	sig.mu.Lock()
+	sig.calls = nil
+	sig.mu.Unlock()
+	if errs := c.RetryResumes(context.Background()); len(errs) != 1 {
+		t.Fatalf("retry errs = %v", errs)
+	}
+	// 11 and 12 are left. Child-first, 12 is tried first and fails, so the
+	// round ends and 11 waits for the next tick.
+	if got := sig.log(); !reflect.DeepEqual(got, []string{"cont 12"}) {
+		t.Errorf("retry calls = %v, want only cont 12", got)
+	}
+	if p := c.Paused(); len(p) != 1 || !reflect.DeepEqual(p[0].Members, keys(11, 12)) {
+		t.Errorf("paused = %+v", p)
 	}
 }
