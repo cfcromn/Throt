@@ -9,6 +9,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 ### Added
 - Foreground latency probe (timer lateness) as a pressure signal; shown in `throt status` and the TUI.
 - Adaptive (AIMD) heavy limit, per-agent heavy budgets, and `performance` / `balanced` / `cool` profiles.
+- `throt mcp`: a read-only stdio MCP server (`throt_status`, `throt_capacity`, `throt_events`) so coding agents can check pressure and heavy-slot capacity before starting heavy work.
 
 ## [0.2.0-rc.1] - 2026-10-28
 
