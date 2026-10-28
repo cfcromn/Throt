@@ -559,3 +559,24 @@ func TestLatency(t *testing.T) {
 		}
 	})
 }
+
+// TestRecoveryAfterSamplingGap checks that a gap in sampling longer than
+// the window (a suspended laptop, a stalled daemon) restarts the recovery
+// dwell: the first sample after the gap is the whole window, and one
+// sample must not de-escalate.
+func TestRecoveryAfterSamplingGap(t *testing.T) {
+	const window = 5 * time.Second // dwell 10s
+	e := New(window, DefaultThresholds())
+	run(t, e, concat(memSeries(0, 3, 0.3), memSeries(3, 10, 0.93)))
+	if e.Level() != domain.PressureHigh {
+		t.Fatalf("setup: level = %v, want high", e.Level())
+	}
+	// Recovery starts at t=15, then sampling stops at t=17 until t=40.
+	if got := run(t, e, memSeries(13, 5, 0.3)); len(got) != 0 {
+		t.Fatalf("transitions before the gap = %+v", got)
+	}
+	got := run(t, e, memSeries(40, 20, 0.3))
+	if len(got) != 1 || got[0].level != domain.PressureNormal || got[0].sec != 50 {
+		t.Fatalf("transitions after the gap = %+v, want normal at t=50 (a full dwell after it)", got)
+	}
+}

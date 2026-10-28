@@ -237,6 +237,11 @@ func (e *Engine) ThroughputOnly() bool { return e.throughputOnly }
 func (e *Engine) Observe(s domain.HostSample) (level domain.PressureLevel, changed bool, reason string) {
 	if n := len(e.samples); n > 0 && s.Time.Before(e.samples[n-1].t) {
 		return e.level, false, e.reason
+	} else if n > 0 && s.Time.Sub(e.samples[n-1].t) > e.window {
+		// After a gap longer than the window, s alone is the window: a
+		// recovery that began before the gap starts its dwell again, so
+		// one sample cannot de-escalate.
+		e.resetDown()
 	}
 	e.add(s)
 	st := e.stats()
