@@ -1,0 +1,342 @@
+// Package pressure turns a stream of host samples into a stable pressure
+// level using a rolling window and hysteresis. It is deterministic: it makes
+// no OS calls, starts no goroutines, and takes time only from sample.Time.
+package pressure
+
+import (
+	"math"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/cfcromn/Throt/internal/domain"
+)
+
+// MaxSamples caps the rolling window so a misconfigured window cannot grow
+// memory without bound. The oldest samples are dropped first.
+const MaxSamples = 256
+
+// DefaultWindow is used when New is given a non-positive window.
+const DefaultWindow = 30 * time.Second
+
+// LevelThresholds are the enter thresholds for one pressure level. A signal
+// reaches the level when its window statistic is >= the threshold. A zero
+// threshold means the signal never triggers that level on its own.
+type LevelThresholds struct {
+	// MemoryUsed is the median of 1 - MemAvailable/MemTotal, 0..1.
+	MemoryUsed float64
+	// SwapGrowth is swap-used growth across the window in bytes per second.
+	SwapGrowth float64
+	// CPU is the median busy fraction of all CPUs, 0..1.
+	CPU float64
+	// Load is the median 1-minute load average per logical CPU.
+	Load float64
+}
+
+// Thresholds configures the engine. All fields are policy; none are derived.
+type Thresholds struct {
+	Elevated LevelThresholds
+	High     LevelThresholds
+	Critical LevelThresholds
+	// ExitMargin is subtracted from the MemoryUsed, CPU and Load enter
+	// thresholds to form exit thresholds, so a value hovering at a boundary
+	// cannot flap the level.
+	ExitMargin float64
+	// SwapExitRatio scales a SwapGrowth enter threshold to its exit
+	// threshold (a rate has no natural absolute margin).
+	SwapExitRatio float64
+	// EscalateSamples is how many consecutive samples the raw level must
+	// stay above the current level before escalating. Values < 1 mean 1.
+	EscalateSamples int
+	// RecoveryDwell is how long every signal must stay below the current
+	// level's exit thresholds before de-escalating. Zero means 2x window.
+	RecoveryDwell time.Duration
+}
+
+// DefaultThresholds returns defaults tuned for a developer laptop:
+//
+//   - memory used: elevated 0.80, high 0.90, critical 0.95. Memory is the
+//     signal that most directly predicts an unresponsive machine.
+//   - swap growth: elevated 1 MiB/s, high 8 MiB/s, critical 32 MiB/s.
+//     Sustained swapping is the clearest sign of real memory pressure.
+//   - CPU: elevated 0.85, high 0.95, never critical. Saturated CPU during a
+//     build is normal and slows work rather than freezing the machine.
+//   - load per CPU: elevated 1.0, high 1.5, critical 3.0. A deep run queue
+//     is what makes the foreground feel sluggish.
+//   - exit margin 0.05, swap exit ratio 0.5, escalate after 3 consecutive
+//     samples, recover after 2x the window.
+func DefaultThresholds() Thresholds {
+	const mib = 1 << 20
+	return Thresholds{
+		Elevated:        LevelThresholds{MemoryUsed: 0.80, SwapGrowth: 1 * mib, CPU: 0.85, Load: 1.0},
+		High:            LevelThresholds{MemoryUsed: 0.90, SwapGrowth: 8 * mib, CPU: 0.95, Load: 1.5},
+		Critical:        LevelThresholds{MemoryUsed: 0.95, SwapGrowth: 32 * mib, Load: 3.0},
+		ExitMargin:      0.05,
+		SwapExitRatio:   0.5,
+		EscalateSamples: 3,
+	}
+}
+
+// point is the part of a sample the engine retains. It copies values so the
+// engine never holds on to the caller's Missing slice.
+type point struct {
+	t                                time.Time
+	cpu, load, mem                   float64
+	swap                             uint64
+	hasCPU, hasLoad, hasMem, hasSwap bool
+}
+
+// stats are the window statistics evaluated against thresholds.
+type stats struct {
+	mem, swap, cpu, load             float64
+	hasMem, hasSwap, hasCPU, hasLoad bool
+	// has reports whether any signal is present in the window.
+	has bool
+}
+
+// Engine is a pressure state machine. It is not safe for concurrent use; the
+// owner serializes calls.
+type Engine struct {
+	window  time.Duration
+	dwell   time.Duration
+	th      Thresholds
+	samples []point
+	scratch []float64
+
+	level  domain.PressureLevel
+	reason string
+
+	// Escalation: consecutive samples whose raw level exceeds level, and the
+	// lowest such raw level (the level that was actually sustained).
+	upCount  int
+	upLevel  domain.PressureLevel
+	upReason string
+
+	// Recovery: when the hold level first fell below level, and the highest
+	// hold level seen since then.
+	downSince  time.Time
+	downLevel  domain.PressureLevel
+	downReason string
+}
+
+// New returns an engine starting at PressureUnknown. A non-positive window
+// means DefaultWindow.
+func New(window time.Duration, th Thresholds) *Engine {
+	if window <= 0 {
+		window = DefaultWindow
+	}
+	th.EscalateSamples = max(th.EscalateSamples, 1)
+	dwell := th.RecoveryDwell
+	if dwell <= 0 {
+		dwell = 2 * window
+	}
+	return &Engine{
+		window:  window,
+		dwell:   dwell,
+		th:      th,
+		samples: make([]point, 0, MaxSamples),
+		scratch: make([]float64, 0, MaxSamples),
+		level:   domain.PressureUnknown,
+		reason:  "no_samples",
+	}
+}
+
+// Level returns the current stable level.
+func (e *Engine) Level() domain.PressureLevel { return e.level }
+
+// Observe adds a sample and returns the current stable level, whether this
+// sample changed it, and a short machine-readable reason for the level
+// (e.g. "memory_used>=0.9"). Samples older than the newest one are ignored.
+func (e *Engine) Observe(s domain.HostSample) (level domain.PressureLevel, changed bool, reason string) {
+	if n := len(e.samples); n > 0 && s.Time.Before(e.samples[n-1].t) {
+		return e.level, false, e.reason
+	}
+	e.add(s)
+	st := e.stats()
+
+	if !st.has {
+		if e.level == domain.PressureUnknown {
+			e.reason = "no_signals"
+			return e.level, false, e.reason
+		}
+		return e.set(domain.PressureUnknown, "no_signals")
+	}
+
+	enter, enterReason := e.classify(st, false)
+	if enter > e.level {
+		e.resetDown()
+		if e.upCount == 0 || enter < e.upLevel {
+			e.upLevel, e.upReason = enter, enterReason
+		}
+		e.upCount++
+		if e.upCount >= e.th.EscalateSamples {
+			return e.set(e.upLevel, e.upReason)
+		}
+		return e.level, false, e.reason
+	}
+	e.upCount = 0
+
+	if e.level <= domain.PressureNormal {
+		return e.level, false, e.reason
+	}
+	hold, holdReason := e.classify(st, true)
+	if hold >= e.level {
+		e.resetDown()
+		return e.level, false, e.reason
+	}
+	if e.downSince.IsZero() {
+		e.downSince, e.downLevel, e.downReason = s.Time, hold, holdReason
+	} else if hold > e.downLevel {
+		e.downLevel, e.downReason = hold, holdReason
+	}
+	if s.Time.Sub(e.downSince) >= e.dwell {
+		return e.set(e.downLevel, e.downReason)
+	}
+	return e.level, false, e.reason
+}
+
+func (e *Engine) set(l domain.PressureLevel, reason string) (domain.PressureLevel, bool, string) {
+	changed := l != e.level
+	e.level, e.reason = l, reason
+	e.upCount = 0
+	e.resetDown()
+	return l, changed, reason
+}
+
+func (e *Engine) resetDown() { e.downSince = time.Time{} }
+
+// add appends s and prunes samples outside the window or over MaxSamples.
+func (e *Engine) add(s domain.HostSample) {
+	p := point{
+		t:       s.Time,
+		hasCPU:  s.Has(domain.MetricCPU),
+		hasLoad: s.Has(domain.MetricLoad),
+		hasMem:  s.Has(domain.MetricMemory) && s.MemTotal > 0,
+		hasSwap: s.Has(domain.MetricSwap),
+		cpu:     s.CPUUsage,
+		load:    s.Load1,
+		swap:    s.SwapUsed,
+	}
+	if p.hasMem {
+		avail := min(s.MemAvailable, s.MemTotal)
+		p.mem = 1 - float64(avail)/float64(s.MemTotal)
+	}
+	if len(e.samples) == MaxSamples {
+		e.samples = append(e.samples[:0], e.samples[1:]...)
+	}
+	e.samples = append(e.samples, p)
+
+	cut := 0
+	for cut < len(e.samples) && s.Time.Sub(e.samples[cut].t) > e.window {
+		cut++
+	}
+	if cut > 0 {
+		e.samples = append(e.samples[:0], e.samples[cut:]...)
+	}
+}
+
+// stats computes medians for level-like signals and the swap growth rate
+// between the first and last samples that report swap.
+func (e *Engine) stats() stats {
+	var st stats
+	st.mem, st.hasMem = e.median(func(p point) (float64, bool) { return p.mem, p.hasMem })
+	st.cpu, st.hasCPU = e.median(func(p point) (float64, bool) { return p.cpu, p.hasCPU })
+	st.load, st.hasLoad = e.median(func(p point) (float64, bool) { return p.load, p.hasLoad })
+
+	first, last := -1, -1
+	for i, p := range e.samples {
+		if p.hasSwap {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	if first >= 0 {
+		st.hasSwap = true
+		a, b := e.samples[first], e.samples[last]
+		if dt := b.t.Sub(a.t).Seconds(); dt > 0 && b.swap > a.swap {
+			st.swap = float64(b.swap-a.swap) / dt
+		}
+	}
+	st.has = st.hasMem || st.hasCPU || st.hasLoad || st.hasSwap
+	return st
+}
+
+func (e *Engine) median(get func(point) (float64, bool)) (float64, bool) {
+	e.scratch = e.scratch[:0]
+	for _, p := range e.samples {
+		if v, ok := get(p); ok {
+			e.scratch = append(e.scratch, v)
+		}
+	}
+	n := len(e.scratch)
+	if n == 0 {
+		return 0, false
+	}
+	slices.Sort(e.scratch)
+	if n%2 == 1 {
+		return e.scratch[n/2], true
+	}
+	return (e.scratch[n/2-1] + e.scratch[n/2]) / 2, true
+}
+
+// classify returns the highest level any present signal reaches, using enter
+// thresholds or, when exit is true, the lower exit thresholds.
+func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
+	levels := [...]struct {
+		l  domain.PressureLevel
+		th LevelThresholds
+	}{
+		{domain.PressureCritical, e.th.Critical},
+		{domain.PressureHigh, e.th.High},
+		{domain.PressureElevated, e.th.Elevated},
+	}
+	for _, lv := range levels {
+		sigs := [...]struct {
+			name    string
+			v, t    float64
+			present bool
+			rate    bool
+		}{
+			{"memory_used", st.mem, lv.th.MemoryUsed, st.hasMem, false},
+			{"swap_growth", st.swap, lv.th.SwapGrowth, st.hasSwap, true},
+			{"load", st.load, lv.th.Load, st.hasLoad, false},
+			{"cpu", st.cpu, lv.th.CPU, st.hasCPU, false},
+		}
+		for _, sg := range sigs {
+			if !sg.present || sg.t <= 0 {
+				continue
+			}
+			t := sg.t
+			if exit {
+				t = e.exitThreshold(t, sg.rate)
+			}
+			if sg.v >= t {
+				return lv.l, sg.name + ">=" + formatThreshold(t)
+			}
+		}
+	}
+	if exit {
+		return domain.PressureNormal, "recovered"
+	}
+	return domain.PressureNormal, "below_thresholds"
+}
+
+// exitThreshold lowers an enter threshold by the configured hysteresis. A
+// degenerate configuration that would make the exit threshold non-positive
+// (and so impossible to clear) falls back to the enter threshold.
+func (e *Engine) exitThreshold(enter float64, rate bool) float64 {
+	t := enter - e.th.ExitMargin
+	if rate {
+		t = enter * e.th.SwapExitRatio
+	}
+	if t <= 0 || t > enter {
+		return enter
+	}
+	return t
+}
+
+func formatThreshold(t float64) string {
+	return strconv.FormatFloat(math.Round(t*1000)/1000, 'f', -1, 64)
+}
