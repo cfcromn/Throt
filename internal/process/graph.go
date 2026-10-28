@@ -220,6 +220,11 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 		if _, dup := byPID[s.PID]; dup {
 			continue
 		}
+		if s.State == domain.StateZombie {
+			// It has exited and only waits for its parent to reap it, so it
+			// holds no slot and owns nothing: treat it as gone.
+			continue
+		}
 		p := &slab[len(order)]
 		p.s = s
 		old, ok := g.procs[s.Key()]

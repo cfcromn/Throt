@@ -515,3 +515,26 @@ func TestLauncherHeavyOnlyWhileActive(t *testing.T) {
 		t.Fatalf("heavy by memory = %v, want [30]", got)
 	}
 }
+
+// TestZombieIsGone checks that a heavy process that exited but is not
+// reaped yet (a zombie) is reported lost and holds no heavy slot.
+func TestZombieIsGone(t *testing.T) {
+	g := newGraph()
+	agentP := ps{pid: 10, ppid: 1, name: "claude"}
+	build := ps{pid: 11, ppid: 10, name: "go"}
+	g.Update(epoch, samples([]ps{agentP, build}))
+	if n := len(g.Snapshot().Heavy); n != 1 {
+		t.Fatalf("%d heavy, want 1", n)
+	}
+	build.state = domain.StateZombie
+	changes := g.Update(epoch.Add(2*time.Second), samples([]ps{agentP, build}))
+	if n := len(g.Snapshot().Heavy); n != 0 {
+		t.Fatalf("%d heavy with a zombie build, want 0", n)
+	}
+	if want := []Change{ch(procLost, 11, 0, "go", "")}; !reflect.DeepEqual(changes, want) {
+		t.Fatalf("changes = %v, want %v", changes, want)
+	}
+	if g.Live(key(11, 0)) {
+		t.Error("zombie reported live")
+	}
+}
