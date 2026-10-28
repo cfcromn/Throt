@@ -12,6 +12,7 @@ import (
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/config"
+	"github.com/cfcromn/Throt/internal/platform"
 )
 
 func main() {
@@ -38,5 +39,5 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	return app.NewDaemon(cfg, log).Run(ctx)
+	return app.NewDaemon(cfg, platform.NewHostSampler(), log).Run(ctx)
 }
