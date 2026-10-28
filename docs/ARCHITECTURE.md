@@ -70,7 +70,7 @@ State is reconstructable. Only configuration, bounded history, and diagnostics d
 Besides `paused.json`, the daemon keeps per-agent resource accounting (`internal/stats`, shown by `throt stats`). It is updated on the sampling goroutine from every successful process snapshot:
 - CPU seconds: each agent's CPU rate (itself plus owned descendants) × the time since the previous snapshot, the same interval the rate was measured over;
 - peak memory: the largest RSS of the agent and its owned descendants in one sample;
-- heavy jobs: distinct heavy workloads (PID + start time) first seen with that owner, including ones already running when the daemon started;
+- heavy jobs: distinct heavy workloads (PID + start time) seen with that owner, including ones already running when the daemon started; one first seen unattributed (its agent missing from a sample) moves from the unattributed bucket to its agent once attribution appears, and counts once;
 - time queued: a workload the scheduler holds paused after a round (queued or preempted, never manual pauses) is charged the interval until the next snapshot;
 - first and last seen.
 
