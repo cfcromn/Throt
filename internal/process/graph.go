@@ -419,6 +419,7 @@ func (g *Graph) build(order []*proc, busy, dt float64, rates bool) Snapshot {
 		if q := p.parent; q != nil {
 			v.Parent = q.s.Name
 			v.ParentOwned = q.owner != nil
+			v.ParentKey = q.s.Key()
 		}
 		snap.Stopped = append(snap.Stopped, v)
 	}

@@ -64,9 +64,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 func main() {
+	// As a job of an interactive shell: its own process group, which
+	// Ctrl-Z (SIGTSTP to the group) stops as a whole.
+	if os.Getenv("THROT_E2E_SETPGID") == "1" {
+		syscall.Setpgid(0, 0)
+	}
 	self, _ := os.Executable()
 	job := filepath.Join(filepath.Dir(self), "make")
 	in := bufio.NewScanner(os.Stdin)
@@ -491,7 +497,21 @@ type agent struct {
 
 func (e *env) startAgent() *agent {
 	e.t.Helper()
-	cmd := exec.Command(filepath.Join(binDir, agentExe))
+	return e.startAgentCmd(exec.Command(filepath.Join(binDir, agentExe)))
+}
+
+// startShellAgent runs the stub agent as a job of sh, in its own process
+// group as an interactive shell would put it. The returned agent's pid is
+// the shell's; the agent's own PID is its process group.
+func (e *env) startShellAgent() *agent {
+	e.t.Helper()
+	cmd := exec.Command("/bin/sh", "-c", `"$0"; :`, filepath.Join(binDir, agentExe))
+	cmd.Env = append(os.Environ(), "THROT_E2E_SETPGID=1")
+	return e.startAgentCmd(cmd)
+}
+
+func (e *env) startAgentCmd(cmd *exec.Cmd) *agent {
+	e.t.Helper()
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -718,6 +738,69 @@ func TestOrphanStopped(t *testing.T) {
 		out, err := e.throt("status")
 		return err == nil && !strings.Contains(out, "STOPPED ")
 	})
+}
+
+// TestCtrlZJob suspends an agent run from a shell the way Ctrl-Z does:
+// SIGTSTP to its process group, which stops the agent and its job. Every
+// member is job control, so doctor says so, no orphan_stopped event is
+// logged, and resume without --force is refused.
+func TestCtrlZJob(t *testing.T) {
+	e := newEnv(t, `{`+baseConfig+`}`)
+	a := e.startShellAgent()
+	job := a.job("sleep")
+	e.waitOwned(job, agentLabel)
+	st, _ := e.status()
+	agentPID := st.agents[agentLabel]
+	if agentPID == 0 || agentPID == a.pid {
+		t.Fatalf("agent pid %d (shell %d), want the stub under the shell", agentPID, a.pid)
+	}
+	t.Cleanup(func() {
+		syscall.Kill(-agentPID, syscall.SIGCONT)
+		syscall.Kill(-agentPID, syscall.SIGKILL)
+	})
+	if err := syscall.Kill(-agentPID, syscall.SIGTSTP); err != nil {
+		t.Fatal(err)
+	}
+	e.waitStopped(agentPID)
+	e.waitStopped(job)
+
+	e.waitFor("throt doctor to list the agent and its job as job control", func() bool {
+		out, err := e.throt("doctor")
+		if err != nil {
+			return false
+		}
+		var r struct {
+			Orphans struct {
+				Entries []struct {
+					PID  int    `json:"pid"`
+					Hint string `json:"hint"`
+				} `json:"entries"`
+			} `json:"orphans"`
+		}
+		if err := json.Unmarshal([]byte(out), &r); err != nil {
+			t.Fatalf("doctor is not JSON: %v\n%s", err, out)
+		}
+		seen := 0
+		for _, en := range r.Orphans.Entries {
+			if en.PID != agentPID && en.PID != job {
+				continue
+			}
+			if !strings.Contains(en.Hint, "job control (Ctrl-Z)") {
+				t.Fatalf("pid %d hint %q, want job control", en.PID, en.Hint)
+			}
+			seen++
+		}
+		return seen == 2
+	})
+	if _, err := e.throt("resume", strconv.Itoa(job)); err == nil || !strings.Contains(err.Error(), "Ctrl-Z") {
+		t.Errorf("resume of a Ctrl-Z'd job: err = %v, want a Ctrl-Z refusal", err)
+	}
+	if s := procState(job); s != 'T' {
+		t.Errorf("job state %c after the refused resume, want T", s)
+	}
+	if out := e.mustThrot("events", "-n", "1000"); strings.Contains(out, `"orphan_stopped"`) {
+		t.Errorf("orphan_stopped event for a shell job:\n%s", out)
+	}
 }
 
 func TestGracefulShutdownResumes(t *testing.T) {

@@ -106,8 +106,11 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 	case recorded[v.Key]:
 		return d.refused("resume", pid, "paused by throtd as part of another workload; resume that workload")
 	}
-	o := process.ClassifyOrphan(v)
-	if !o.AttributedHeavy() && !params.Force {
+	o := process.ClassifyOrphan(v, stopped)
+	// A shell job is never resumed without --force, even when it is an
+	// agent's heavy workload: its job stays stopped in the shell.
+	leftPaused := o.AttributedHeavy() && o.Kind == process.OrphanLeftPaused
+	if !leftPaused && !params.Force {
 		reason := "not an attributed heavy workload, so throtd did not pause it; use kill -CONT, or throt resume --force"
 		if o.Kind == process.OrphanJobControl {
 			reason = "likely a shell job stopped with Ctrl-Z; use fg in its shell, or throt resume --force"
@@ -116,7 +119,7 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 	}
 
 	targets := []domain.ProcessKey{v.Key}
-	if o.AttributedHeavy() {
+	if leftPaused {
 		d.graphMu.Lock()
 		w, ok := d.graph.Workload(v.Key)
 		d.graphMu.Unlock()

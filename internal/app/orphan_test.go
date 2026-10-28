@@ -157,3 +157,60 @@ func TestDaemonPausedIsNotOrphan(t *testing.T) {
 		t.Fatalf("orphans = %+v, paused = %+v; want none and one", st.Orphans, st.Paused)
 	}
 }
+
+// TestDaemonCtrlZJob checks a Ctrl-Z'd agent: every stopped member of the
+// job is job control, so there is no orphan_stopped event, and resuming
+// its heavy child is refused without --force.
+func TestDaemonCtrlZJob(t *testing.T) {
+	stopped := domain.StateStopped
+	w := newWorld(
+		domain.ProcessSample{PID: 10, PPID: 1, Name: "zsh"},
+		domain.ProcessSample{PID: 11, PPID: 10, Name: "claude", State: stopped},
+		domain.ProcessSample{PID: 12, PPID: 11, Name: "bash", State: stopped},
+		domain.ProcessSample{PID: 13, PPID: 12, Name: "make", State: stopped},
+		domain.ProcessSample{PID: 14, PPID: 13, Name: "cc1", State: stopped},
+	)
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(shortTempDir(t), "throtd.sock")
+	cfg.SampleInterval = config.Duration(20 * time.Millisecond)
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewDaemon(cfg, w, w, w, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(ctx)
+	}()
+	defer func() { stop(); <-done }()
+	call := func(method string, params, result any) error {
+		return transport.Call(context.Background(), cfg.SocketPath, method, params, result)
+	}
+	var st StatusResult
+	waitFor(t, "four orphans", func() bool {
+		st = StatusResult{}
+		call("status", nil, &st)
+		return st.OrphanCount == 4
+	})
+	for _, o := range st.Orphans {
+		if o.Kind != process.OrphanJobControl {
+			t.Errorf("pid %d (%s): kind %s, want job_control", o.Key.PID, o.Name, o.Kind)
+		}
+	}
+	time.Sleep(100 * time.Millisecond) // several ticks
+	var events []domain.Event
+	call("events", nil, &events)
+	for _, e := range events {
+		if e.Kind == domain.EventOrphanStopped {
+			t.Errorf("orphan_stopped event for a shell job: %+v", e)
+		}
+	}
+	if err := call("resume", ControlParams{PID: 13}, nil); err == nil || !strings.Contains(err.Error(), "Ctrl-Z") {
+		t.Fatalf("resume a Ctrl-Z'd job's make: err = %v, want a Ctrl-Z refusal", err)
+	}
+	if got := w.signals(); got != "" {
+		t.Fatalf("signals = %q, want none", got)
+	}
+	if err := call("resume", ControlParams{PID: 13, Force: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.signals(); got != "cont:13" {
+		t.Fatalf("signals = %q, want cont:13 (forced: that process only)", got)
+	}
+}

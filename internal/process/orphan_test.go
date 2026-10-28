@@ -135,3 +135,106 @@ func TestGraphStopped(t *testing.T) {
 		t.Errorf("after resume and stop = %+v, want make since %v", s, at(7))
 	}
 }
+
+// TestOrphanJobSubtrees runs process tables through the graph: Ctrl-Z
+// stops a job's whole process group, so every stopped process reached from
+// the job's leader is job control, while a stopped child of a running
+// agent is still left paused.
+func TestOrphanJobSubtrees(t *testing.T) {
+	T := domain.StateStopped
+	type proc struct {
+		pid, ppid int
+		name      string
+		state     domain.ProcessState
+	}
+	tests := []struct {
+		name  string
+		procs []proc
+		want  map[int]OrphanKind // every stopped process
+	}{
+		{
+			name: "Ctrl-Z'd agent with stopped children",
+			procs: []proc{
+				{10, 1, "zsh", ""}, {11, 10, "claude", T}, {12, 11, "bash", T}, {13, 12, "make", T}, {14, 13, "cc1", T}, {15, 11, "node", T},
+			},
+			want: map[int]OrphanKind{11: OrphanJobControl, 12: OrphanJobControl, 13: OrphanJobControl, 14: OrphanJobControl, 15: OrphanJobControl},
+		},
+		{
+			name: "Ctrl-Z'd terminal make -j with cc children",
+			procs: []proc{
+				{10, 1, "-zsh", ""}, {20, 10, "make", T}, {21, 20, "sh", T}, {22, 21, "cc", T}, {23, 20, "cc", T},
+			},
+			want: map[int]OrphanKind{20: OrphanJobControl, 21: OrphanJobControl, 22: OrphanJobControl, 23: OrphanJobControl},
+		},
+		{
+			name: "agent's own stopped child under a running agent",
+			procs: []proc{
+				{10, 1, "zsh", ""}, {11, 10, "claude", ""}, {12, 11, "bash", ""}, {13, 12, "make", T}, {14, 13, "cc1", T},
+			},
+			want: map[int]OrphanKind{13: OrphanLeftPaused, 14: OrphanLeftPaused},
+		},
+		{
+			name: "running link breaks the job: stopped grandchild of a running make",
+			procs: []proc{
+				{10, 1, "zsh", ""}, {20, 10, "make", ""}, {21, 20, "cc1", T},
+			},
+			want: map[int]OrphanKind{21: OrphanLeftPaused},
+		},
+		{
+			name: "mixed: a suspended terminal job beside an agent's paused build",
+			procs: []proc{
+				{10, 1, "zsh", ""}, {20, 10, "make", T}, {21, 20, "cc", T},
+				{30, 1, "fish", ""}, {31, 30, "claude", ""}, {32, 31, "bash", ""}, {33, 32, "go", T}, {34, 33, "compile", T},
+				{40, 1, "launchd-helper", ""}, {41, 40, "less", T},
+			},
+			want: map[int]OrphanKind{20: OrphanJobControl, 21: OrphanJobControl, 33: OrphanLeftPaused, 34: OrphanLeftPaused, 41: OrphanUnknown},
+		},
+		{
+			name: "reparented orphan build, no shell above",
+			procs: []proc{
+				{20, 1, "make", T}, {21, 20, "cc1", T},
+			},
+			want: map[int]OrphanKind{20: OrphanLeftPaused, 21: OrphanLeftPaused},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var in []domain.ProcessSample
+			for _, p := range tt.procs {
+				in = append(in, domain.ProcessSample{PID: p.pid, PPID: p.ppid, Name: p.name, State: p.state, Start: epoch})
+			}
+			g := newGraph()
+			g.Update(epoch, in)
+			stopped := g.Snapshot().Stopped
+			orphans, total := FindOrphans(stopped, 0, func(domain.ProcessKey) bool { return false })
+			if total != len(tt.want) {
+				t.Fatalf("got %d orphans %+v, want %d", total, orphans, len(tt.want))
+			}
+			for _, o := range orphans {
+				if o.Kind != tt.want[o.Key.PID] {
+					t.Errorf("pid %d (%s): kind %s, want %s", o.Key.PID, o.Name, o.Kind, tt.want[o.Key.PID])
+				}
+				if o.Kind == OrphanJobControl && !strings.Contains(o.Hint, "job control (Ctrl-Z)") {
+					t.Errorf("pid %d: hint %q", o.Key.PID, o.Hint)
+				}
+				// ClassifyOrphan, used by resume, agrees with FindOrphans.
+				for _, v := range stopped {
+					if v.Key == o.Key {
+						if c := ClassifyOrphan(v, stopped); c.Kind != o.Kind {
+							t.Errorf("pid %d: ClassifyOrphan %s, FindOrphans %s", o.Key.PID, c.Kind, o.Kind)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestInShellJobCycle checks that a malformed parent cycle terminates.
+func TestInShellJobCycle(t *testing.T) {
+	a := StoppedView{Key: key(1, 0), Parent: "b", ParentKey: key(2, 0)}
+	b := StoppedView{Key: key(2, 0), Parent: "a", ParentKey: key(1, 0)}
+	if got := ClassifyOrphan(a, []StoppedView{a, b}); got.Kind == OrphanJobControl {
+		t.Errorf("cycle classified as job control")
+	}
+}

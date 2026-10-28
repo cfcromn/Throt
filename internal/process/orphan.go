@@ -21,6 +21,9 @@ type StoppedView struct {
 	// ParentOwned reports whether the parent belongs to an agent, so a shell
 	// parent is an agent's command shell rather than the user's terminal.
 	ParentOwned bool `json:"parent_owned,omitempty"`
+	// ParentKey identifies the parent; zero when the parent is unknown.
+	// ClassifyOrphan follows it through stopped ancestors.
+	ParentKey domain.ProcessKey `json:"parent_process,omitzero"`
 	// Since is the first Update that saw the process stopped. When the
 	// process was already stopped at the graph's first Update, it is only a
 	// lower bound.
@@ -72,16 +75,50 @@ func isShell(name string) bool {
 	return false
 }
 
-// ClassifyOrphan explains one stopped process. A shell parent outside any
-// agent wins over attribution: an agent the user suspended in a terminal
-// is a job, not a throtd pause. An agent's own command shell (bash -c
-// make) is not job control.
-func ClassifyOrphan(v StoppedView) Orphan {
+// ClassifyOrphan explains one stopped process; stopped is every stopped
+// process of the same snapshot. Ctrl-Z stops a shell job's whole process
+// group, so a process is job control when it, or any ancestor reached
+// through stopped processes only, has a shell parent outside every agent:
+// the children of a suspended agent or terminal make are part of the job,
+// not throtd pauses, even though their own parent is the agent or make. A
+// shell job wins over attribution. An agent's own command shell (bash -c
+// make) is not job control, and a stopped child of a running agent is not
+// part of a job.
+func ClassifyOrphan(v StoppedView, stopped []StoppedView) Orphan {
+	return classify(v, stoppedByKey(stopped))
+}
+
+func stoppedByKey(stopped []StoppedView) map[domain.ProcessKey]StoppedView {
+	m := make(map[domain.ProcessKey]StoppedView, len(stopped))
+	for _, s := range stopped {
+		m[s.Key] = s
+	}
+	return m
+}
+
+// inShellJob walks from v up through stopped ancestors and reports whether
+// one of them has a shell parent outside every agent. The walk is bounded
+// by the number of stopped processes, so a malformed cycle terminates.
+func inShellJob(v StoppedView, stopped map[domain.ProcessKey]StoppedView) bool {
+	for range len(stopped) + 1 {
+		if isShell(v.Parent) && !v.ParentOwned {
+			return true
+		}
+		p, ok := stopped[v.ParentKey]
+		if v.ParentKey == (domain.ProcessKey{}) || !ok {
+			return false
+		}
+		v = p
+	}
+	return false
+}
+
+func classify(v StoppedView, stopped map[domain.ProcessKey]StoppedView) Orphan {
 	o := Orphan{Key: v.Key, Name: v.Name, Class: v.Class, Owner: v.Owner, Since: v.Since}
 	pid := strconv.Itoa(v.Key.PID)
 	switch {
-	case isShell(v.Parent) && !v.ParentOwned:
-		o.Kind, o.Hint = OrphanJobControl, "likely job control (Ctrl-Z); resume it with fg in its shell"
+	case inShellJob(v, stopped):
+		o.Kind, o.Hint = OrphanJobControl, "likely job control (Ctrl-Z); resume the job with fg in its shell"
 	case o.AttributedHeavy():
 		o.Kind, o.Hint = OrphanLeftPaused, "likely left paused by an earlier throtd (kill -CONT "+pid+" or throt resume "+pid+")"
 	case v.Owner != "" || v.Class.Heavy():
@@ -97,13 +134,14 @@ func ClassifyOrphan(v StoppedView) Orphan {
 // in stopped's order, at most MaxOrphans of them, and how many there are in
 // total. It is pure: it reads only its arguments.
 func FindOrphans(stopped []StoppedView, uid uint32, recorded func(domain.ProcessKey) bool) (orphans []Orphan, total int) {
+	byKey := stoppedByKey(stopped)
 	for _, v := range stopped {
 		if v.UID != uid || recorded(v.Key) {
 			continue
 		}
 		total++
 		if len(orphans) < MaxOrphans {
-			orphans = append(orphans, ClassifyOrphan(v))
+			orphans = append(orphans, classify(v, byKey))
 		}
 	}
 	return orphans, total
