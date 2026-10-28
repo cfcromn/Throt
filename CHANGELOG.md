@@ -6,6 +6,18 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+## [0.6.0-rc.1] - 2026-10-28
+
+Cooperative admission, per-agent accounting, Linux PSI, a richer TUI, and real-binary end-to-end tests.
+
+### Added
+- `internal/e2e`: end-to-end tests of the built `throtd` and `throt` binaries against real processes (observe, manual pause/resume, crash recovery, graceful shutdown, enforce scheduler and reload, `throt mcp`). They run on Linux CI with `THROT_E2E=1`, skip outside CI or a container, and use a uniquely named stub agent through a custom adapter.
+- Linux PSI (`/proc/pressure`, or the limiting cgroup's `memory.pressure`/`cpu.pressure`) as pressure signals: memory some ≥ 10% → elevated, full ≥ 5% → high, full ≥ 20% → critical; I/O full ≥ 20% → elevated, ≥ 50% → high; CPU some ≥ 50% → elevated. Memory PSI takes precedence over memory used, like the macOS verdict. Shown in `throt status` and the TUI system line when available.
+- `throt stats` (and `--json`), the `stats` protocol method, and the `throt_stats` MCP tool: per-agent CPU time, peak memory, heavy jobs started, and time queued by the scheduler since throtd started, with all-agent and unattributed totals. Kept in memory for at most 256 agent instances.
+- `throt run [--timeout D] [--no-wait] -- CMD`: cooperative admission control. Waits until throtd reports capacity for a heavy job (the `throt_capacity` verdict, for the nearest agent ancestor), then execs the command in place. Advisory and fail-open: it never pauses anything, runs immediately when throtd is unreachable, and reserves nothing, so two runs checking at once can both start.
+- `throt completion bash|zsh|fish` prints a shell completion script; PIDs complete after `pause`, `resume`, and `explain`.
+- TUI: sparklines of the last 60 polls for CPU, memory, swap growth and latency; a plain-words line naming the signal behind the pressure level; an agent drilldown (`enter` on an agent) listing its heavy workloads with their state, where `p`/`r` work too; `s` sorts each table by CPU, memory or name.
+
 ### Changed
 - Memory used still raises pressure to critical (≥ 95%) while a kernel memory signal (macOS verdict or Linux PSI) is present, so memory exhaustion without swap is never hidden.
 - `throt run` waits at most 5m by default (`--timeout 0` waits forever).
@@ -17,20 +29,14 @@ Accurate pressure everywhere: cgroup-aware Linux, the macOS kernel verdict, and 
 
 ### Added
 - Run-at-login (launchd, systemd) and upgrade/rollback instructions.
-- `internal/e2e`: end-to-end tests of the built `throtd` and `throt` binaries against real processes (observe, manual pause/resume, crash recovery, graceful shutdown, enforce scheduler and reload, `throt mcp`). They run on Linux CI with `THROT_E2E=1`, skip outside CI or a container, and use a uniquely named stub agent through a custom adapter.
 - `make bench`: containerized real-kernel benchmark (baseline vs enforce), with results in `docs/ARCHITECTURE.md`.
 - macOS kernel memory-pressure verdict (`kern.memorystatus_vm_pressure_level`) as a pressure signal (warning → elevated, critical → high), shown in `throt status` and the TUI.
-- Linux PSI (`/proc/pressure`, or the limiting cgroup's `memory.pressure`/`cpu.pressure`) as pressure signals: memory some ≥ 10% → elevated, full ≥ 5% → high, full ≥ 20% → critical; I/O full ≥ 20% → elevated, ≥ 50% → high; CPU some ≥ 50% → elevated. Memory PSI takes precedence over memory used, like the macOS verdict. Shown in `throt status` and the TUI system line when available.
 - More heavy tools classified: ninja, cmake, swiftc, kotlinc, dotnet, msbuild, zig, ghc, scalac, sbt, bazelisk, buck2, turbo, nx, rollup, webpack-cli, next, nuxt, rspack (build); rspec, mocha, playwright, cypress, phpunit, ctest (test); buildctl, buildah, kaniko (container build).
 - Hot config reload via `SIGHUP` or `throt reload` (privileged `reload` method): applies `scheduler.*`, `profile` and `agents` live, reports restart-only keys, and changes nothing on an invalid file.
 - Events carry a `seq`, and the `events` method takes an optional `since` for incremental polling (protocol stays v1).
 - `throt events -f` follows new events, and notices when throtd restarts.
 - `throt explain PID`: why a heavy workload is running, paused, or queued, with its recent events.
-- `throt stats` (and `--json`), the `stats` protocol method, and the `throt_stats` MCP tool: per-agent CPU time, peak memory, heavy jobs started, and time queued by the scheduler since throtd started, with all-agent and unattributed totals. Kept in memory for at most 256 agent instances.
 - TUI: `p`/`r` pause or resume the selected heavy workload after a `y/n` confirmation. The timeline now fetches only new events.
-- `throt run [--timeout D] [--no-wait] -- CMD`: cooperative admission control. Waits until throtd reports capacity for a heavy job (the `throt_capacity` verdict, for the nearest agent ancestor), then execs the command in place. Advisory and fail-open: it never pauses anything, runs immediately when throtd is unreachable, and reserves nothing, so two runs checking at once can both start.
-- `throt completion bash|zsh|fish` prints a shell completion script; PIDs complete after `pause`, `resume`, and `explain`.
-- TUI: sparklines of the last 60 polls for CPU, memory, swap growth and latency; a plain-words line naming the signal behind the pressure level; an agent drilldown (`enter` on an agent) listing its heavy workloads with their state, where `p`/`r` work too; `s` sorts each table by CPU, memory or name.
 
 ### Changed
 - LICENSE copyright holder romanized.
