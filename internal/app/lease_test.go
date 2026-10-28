@@ -20,13 +20,40 @@ import (
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
+// fakeIdent answers Identify from a table. A PID it does not list is a
+// live process of this user, started at time.Unix(pid, 0), whose parent is
+// init.
+type fakeIdent struct {
+	mu    sync.Mutex
+	procs map[int]domain.ProcessSample
+	calls int
+}
+
+func (f *fakeIdent) Identify(_ context.Context, pid int) (domain.ProcessSample, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if p, ok := f.procs[pid]; ok {
+		p.PID = pid
+		return p, nil
+	}
+	return domain.ProcessSample{PID: pid, PPID: 1, UID: uint32(os.Getuid()), Start: time.Unix(int64(pid), 0)}, nil
+}
+
+// child is a live process of this user under ppid.
+func child(ppid int) domain.ProcessSample {
+	return domain.ProcessSample{PPID: ppid, UID: uint32(os.Getuid()), Start: time.Unix(1, 0)}
+}
+
 // leaseDaemon is a daemon that is never run: tests set its status and call
-// handlers directly.
-func leaseDaemon(t *testing.T, st StatusResult) *Daemon {
+// handlers directly. Its callers are identified through ident.
+func leaseDaemon(t *testing.T, st StatusResult) (*Daemon, *fakeIdent) {
 	t.Helper()
 	d := NewDaemon(config.Default(), fakeSampler{}, fakeSampler{}, &fakeSignaler{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	d.status = st
-	return d
+	ident := &fakeIdent{procs: map[int]domain.ProcessSample{}}
+	d.ident = ident
+	return d, ident
 }
 
 func oneSlot(limit int, heavy ...process.WorkloadView) StatusResult {
@@ -58,13 +85,13 @@ func eventsOf(d *Daemon, kind domain.EventKind) []domain.Event {
 func TestAcquireConcurrentOneSlot(t *testing.T) {
 	// One slot of two is taken; eight callers race for the other.
 	running := process.WorkloadView{Key: domain.ProcessKey{PID: 11}, Name: "go", Owner: "claude-1"}
-	d := leaseDaemon(t, oneSlot(2, running))
+	d, _ := leaseDaemon(t, oneSlot(2, running))
 	const callers = 8
 	results := make([]AcquireResult, callers)
 	var wg sync.WaitGroup
 	for i := range callers {
 		wg.Go(func() {
-			r, err := acquireAs(t, d, context.Background(), AcquireParams{PID: 100 + i, Start: time.Unix(1, 0)})
+			r, err := acquireAs(t, d, context.Background(), AcquireParams{PID: 100 + i})
 			if err != nil {
 				t.Error(err)
 			}
@@ -97,7 +124,7 @@ func TestAcquireConcurrentOneSlot(t *testing.T) {
 	var holder AcquireResult
 	for i, r := range results {
 		if r.Granted {
-			if holder, _ = acquireAs(t, d, context.Background(), AcquireParams{PID: 100 + i, Start: time.Unix(1, 0)}); !holder.Granted || holder.LeaseID != r.LeaseID {
+			if holder, _ = acquireAs(t, d, context.Background(), AcquireParams{PID: 100 + i}); !holder.Granted || holder.LeaseID != r.LeaseID {
 				t.Errorf("holder re-acquire = %+v, want lease %s", holder, r.LeaseID)
 			}
 		}
@@ -107,9 +134,10 @@ func TestAcquireConcurrentOneSlot(t *testing.T) {
 func TestAcquireCountsLeasesPerAgent(t *testing.T) {
 	st := oneSlot(4)
 	st.Scheduler.PerAgentLimit = 1
-	d := leaseDaemon(t, st)
-	// Both callers' parent is the agent (pid 10); the agent's budget is one.
-	d.leases.parents = map[int]int{100: 10, 101: 10, 102: 1}
+	d, ident := leaseDaemon(t, st)
+	// The OS says both callers' parent is the agent (pid 10); its budget is
+	// one. 104 runs under a shell (500) that the latest sample predates.
+	ident.procs[100], ident.procs[101], ident.procs[104], ident.procs[500] = child(10), child(10), child(500), child(10)
 	if r, _ := acquireAs(t, d, context.Background(), AcquireParams{PID: 100}); !r.Granted {
 		t.Fatalf("first acquire refused: %s", r.Reason)
 	}
@@ -117,13 +145,13 @@ func TestAcquireCountsLeasesPerAgent(t *testing.T) {
 	if r.Granted || !strings.Contains(r.Reason, "claude-1 already runs 1 heavy jobs, 1 of them reserved") {
 		t.Fatalf("second acquire for the same agent = %+v", r)
 	}
-	// An unattributed caller is not held to the agent's budget; one not in
-	// the sample yet is attributed through its ppid.
+	// An unattributed caller is not held to the agent's budget; one whose
+	// shell is not sampled yet is attributed through the OS.
 	if r, _ := acquireAs(t, d, context.Background(), AcquireParams{PID: 102}); !r.Granted {
 		t.Fatalf("unattributed acquire refused: %s", r.Reason)
 	}
-	if r, _ := acquireAs(t, d, context.Background(), AcquireParams{PID: 103, PPID: 10}); r.Granted {
-		t.Fatalf("acquire attributed by ppid granted: %+v", r)
+	if r, _ := acquireAs(t, d, context.Background(), AcquireParams{PID: 104}); r.Granted {
+		t.Fatalf("acquire below an unsampled shell granted: %+v", r)
 	}
 	if got := d.leases.owners(); !slices.Equal(got, []string{"claude-1", ""}) {
 		t.Fatalf("lease owners = %q", got)
@@ -133,7 +161,7 @@ func TestAcquireCountsLeasesPerAgent(t *testing.T) {
 func TestAcquireBounded(t *testing.T) {
 	st := oneSlot(1)
 	st.Scheduler.Mode = scheduler.ModeOff // no slot limit, so only the bound refuses
-	d := leaseDaemon(t, st)
+	d, _ := leaseDaemon(t, st)
 	for i := range maxLeases {
 		if r, _ := acquireAs(t, d, context.Background(), AcquireParams{PID: 1000 + i}); !r.Granted {
 			t.Fatalf("acquire %d refused: %s", i, r.Reason)
@@ -148,8 +176,37 @@ func TestAcquireBounded(t *testing.T) {
 	}
 }
 
+func TestAcquireNested(t *testing.T) {
+	// The only slot is taken by make (pid 50), whose recipe shell (51, not
+	// sampled yet) runs throt run (52). Another lease holder (60) runs a
+	// script whose throt run is 61.
+	makeJob := process.WorkloadView{Key: domain.ProcessKey{PID: 50}, Name: "make", Owner: "claude-1"}
+	d, ident := leaseDaemon(t, oneSlot(2, makeJob))
+	d.leases.parents = map[int]int{50: 10, 10: 1, 60: 10}
+	ident.procs[52], ident.procs[51], ident.procs[61], ident.procs[60] = child(51), child(50), child(60), child(10)
+	if r, _ := acquireAs(t, d, context.Background(), AcquireParams{PID: 60}); !r.Granted || r.LeaseID == "" {
+		t.Fatalf("lease for 60 = %+v", r)
+	}
+	// Every slot is now running or reserved; nested callers still start,
+	// and reserve nothing.
+	for _, pid := range []int{52, 61} {
+		r, err := acquireAs(t, d, context.Background(), AcquireParams{PID: pid})
+		if err != nil || !r.Granted || r.Reason != ReasonNested || r.LeaseID != "" {
+			t.Fatalf("acquire %d = %+v, %v; want granted %s without a lease", pid, r, err, ReasonNested)
+		}
+	}
+	if n := len(d.leases.leases); n != 1 {
+		t.Fatalf("%d leases, want 1", n)
+	}
+	// A sibling of make is not nested and has to wait.
+	ident.procs[70] = child(10)
+	if r, _ := acquireAs(t, d, context.Background(), AcquireParams{PID: 70}); r.Granted {
+		t.Fatalf("sibling acquire = %+v, want refused", r)
+	}
+}
+
 func TestAcquireChecksCaller(t *testing.T) {
-	d := leaseDaemon(t, oneSlot(2))
+	d, ident := leaseDaemon(t, oneSlot(2))
 	if _, err := acquireAs(t, d, context.Background(), AcquireParams{PID: 1}); err == nil || !strings.Contains(err.Error(), "pid must be > 1") {
 		t.Fatalf("pid 1: err = %v", err)
 	}
@@ -160,6 +217,21 @@ func TestAcquireChecksCaller(t *testing.T) {
 	}
 	if r, err := acquireAs(t, d, ctx, AcquireParams{PID: 300}); err != nil || !r.Granted {
 		t.Fatalf("own pid: %+v, %v", r, err)
+	}
+	// The key comes from the OS, never from the client.
+	if l := d.leases.leases[0]; l.Process != (domain.ProcessKey{PID: 300, Start: time.Unix(300, 0)}) {
+		t.Fatalf("lease key = %+v", l.Process)
+	}
+	ident.procs[400] = domain.ProcessSample{PPID: 1, UID: uint32(os.Getuid())} // no start time
+	ident.procs[401] = domain.ProcessSample{PPID: 1, UID: uint32(os.Getuid()) + 1, Start: time.Unix(1, 0)}
+	for pid, want := range map[int]string{400: "no start time", 401: "another user"} {
+		if _, err := acquireAs(t, d, context.Background(), AcquireParams{PID: pid}); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("acquire %d: err = %v, want %q", pid, err, want)
+		}
+	}
+	d.ident = nil
+	if _, err := acquireAs(t, d, context.Background(), AcquireParams{PID: 300}); err == nil || !strings.Contains(err.Error(), "cannot identify") {
+		t.Errorf("without an identifier: err = %v", err)
 	}
 }
 
@@ -235,12 +307,14 @@ func TestLeaseRelease(t *testing.T) {
 		}
 	})
 
-	t.Run("zero start is fixed by the first later sample", func(t *testing.T) {
+	t.Run("a zero start is no wildcard", func(t *testing.T) {
 		var lt leaseTable
-		lt.grant(domain.ProcessKey{PID: 100}, "", t0)
-		lt.observe(t0.Add(time.Second), t0.Add(time.Second), []domain.ProcessSample{caller}, nil)
-		if len(lt.leases) != 1 || !lt.leases[0].Process.Start.Equal(start) {
-			t.Fatalf("leases = %+v, want start pinned to %v", lt.leases, start)
+		lt.grant(key, "", t0)
+		if _, ok := lt.find(domain.ProcessKey{PID: 100}); ok {
+			t.Fatal("find matched a zero start")
+		}
+		if _, ok := lt.find(key); !ok {
+			t.Fatal("find missed the exact key")
 		}
 	})
 }
@@ -277,7 +351,7 @@ func TestDaemonLeaseHoldsSlot(t *testing.T) {
 	waitFor(t, "normal pressure", func() bool { return status().Pressure == domain.PressureNormal })
 
 	var r AcquireResult
-	if err := call("acquire", AcquireParams{PID: self, Start: time.Unix(int64(self), 0)}, &r); err != nil || !r.Granted {
+	if err := call("acquire", AcquireParams{PID: self}, &r); err != nil || !r.Granted {
 		t.Fatalf("acquire = %+v, %v", r, err)
 	}
 	if l := status().Scheduler.Leases; len(l) != 1 || l[0].Agent != "claude-1" || l[0].Process.PID != self {

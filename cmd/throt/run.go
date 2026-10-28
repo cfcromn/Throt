@@ -335,30 +335,11 @@ func runCommand(args []string, cfgPath string) error {
 	} else {
 		c := daemonClient{socket: cfg.SocketPath}
 		r.status = c.Status
-		self := selfParams(context.Background())
+		// throtd resolves this process's identity and parent itself.
+		self := app.AcquireParams{PID: os.Getpid()}
 		r.acquire = func(ctx context.Context) (app.AcquireResult, error) { return c.Acquire(ctx, self) }
 	}
 	return r.run(context.Background(), o)
-}
-
-// selfParams identifies this process for an admission lease. throt run
-// execs in place, so the key stays valid for the command. The start time
-// comes from the same sampler throtd uses, so the two agree; if the table
-// cannot be read it is left zero and throtd fills it in.
-func selfParams(ctx context.Context) app.AcquireParams {
-	p := app.AcquireParams{PID: os.Getpid(), PPID: os.Getppid()}
-	ctx, cancel := context.WithTimeout(ctx, runCallTimeout)
-	defer cancel()
-	procs, err := platform.NewProcessSampler().SampleProcesses(ctx)
-	if err != nil {
-		return p
-	}
-	for _, s := range procs {
-		if s.PID == p.PID {
-			p.Start = s.Start
-		}
-	}
-	return p
 }
 
 // processAncestors reads the process table once to find this process's

@@ -168,27 +168,36 @@ func (c linuxProcessController) signal(ctx context.Context, key domain.ProcessKe
 // identity reads pid from /proc. Start and uid match what the sampler
 // reports.
 func (c linuxProcessController) identity(ctx context.Context, pid int) (time.Time, uint32, error) {
-	if err := checkIdentityPID(pid); err != nil {
+	p, err := c.Identify(ctx, pid)
+	if err != nil {
 		return time.Time{}, 0, err
 	}
+	return p.Start, p.UID, nil
+}
+
+// Identify reads pid from /proc/<pid>/stat and status with the sampler's
+// reader and boot time, so Start, UID and PPID match what it reports.
+func (c linuxProcessController) Identify(ctx context.Context, pid int) (domain.ProcessSample, error) {
+	if err := checkIdentityPID(pid); err != nil {
+		return domain.ProcessSample{}, err
+	}
 	if err := ctx.Err(); err != nil {
-		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, err)
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, err)
 	}
 	boot, err := c.boot.get()
 	if err != nil {
-		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, err)
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, err)
 	}
-	// The same reader as the sampler, so Start and UID match it exactly.
 	p, err := readLinuxProcess("/proc/"+strconv.Itoa(pid), boot, uint64(os.Getpagesize()))
 	switch {
 	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH):
-		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, domain.ErrProcessGone)
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, domain.ErrProcessGone)
 	case err != nil:
-		return time.Time{}, 0, fmt.Errorf("identity of pid %d: %w", pid, err)
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, err)
 	case p.PID != pid:
-		return time.Time{}, 0, fmt.Errorf("identity of pid %d: stat reports pid %d", pid, p.PID)
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: stat reports pid %d", pid, p.PID)
 	}
-	return p.Start, p.UID, nil
+	return p, nil
 }
 
 // readLinuxProcess reads one process directory such as /proc/123.

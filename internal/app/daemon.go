@@ -102,6 +102,9 @@ type Daemon struct {
 	ctl *control.Controller // safe for concurrent use
 	sig control.Signaler    // resumes orphans, which have no paused record
 	uid uint32              // the daemon's user; only its processes are controlled
+	// ident resolves acquire callers; nil when sig cannot identify
+	// processes, and then acquire is refused.
+	ident ProcessIdentifier
 
 	graphMu sync.Mutex // guards graph; held briefly, never while signaling
 	graph   *process.Graph
@@ -168,6 +171,7 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		policyCh: make(chan scheduler.Policy, 1),
 	}
 	d.ctl = control.New(sig, d.uid, time.Now, d.saveState)
+	d.ident, _ = sig.(ProcessIdentifier)
 	return d
 }
 

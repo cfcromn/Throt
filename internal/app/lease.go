@@ -39,18 +39,36 @@ const (
 // ReasonTooManyLeases is the acquire refusal when the lease table is full.
 const ReasonTooManyLeases = "too_many_leases"
 
-// AcquireParams identify the caller of the "acquire" method by its own
-// process key. throt run execs its command in place, so the key stays valid.
+// AcquireParams name the caller of the "acquire" method. throt run execs
+// its command in place, so the caller's process key stays valid for it.
+//
+// The daemon trusts nothing else the client says about itself: it resolves
+// the caller's start time and parent from the OS (ProcessIdentifier), so a
+// wall-clock step cannot make the client's start time disagree with the
+// daemon's samples, and a client cannot borrow another agent's budget.
+// Older clients also sent "start" and "ppid"; both are ignored.
 type AcquireParams struct {
+	// PID is the caller's own PID. Where the kernel reports the peer PID it
+	// must match; elsewhere (a peer in another PID namespace) it is the
+	// process whose identity the daemon resolves.
 	PID int `json:"pid"`
-	// Start is the caller's start time as the platform's process sampler
-	// reports it. When zero, the first process sample after the grant
-	// fixes it.
-	Start time.Time `json:"start,omitzero"`
-	// PPID, when set, attributes the lease to the caller's agent while the
-	// caller is too new to be in the daemon's process sample.
-	PPID int `json:"ppid,omitempty"`
 }
+
+// ProcessIdentifier looks up one live process with exactly the start time,
+// uid and parent the daemon's process sampler reports. The platform process
+// controllers implement it.
+type ProcessIdentifier interface {
+	Identify(ctx context.Context, pid int) (domain.ProcessSample, error)
+}
+
+// ReasonNested grants a caller below a running heavy workload or a lease
+// holder without reserving a slot: its work is part of one already counted.
+const ReasonNested = "nested"
+
+// maxIdentifyLookups bounds the OS lookups one acquire makes for ancestors
+// missing from the latest process sample (e.g. the shell a make recipe
+// just started).
+const maxIdentifyLookups = 8
 
 // AcquireResult is returned by the "acquire" method.
 type AcquireResult struct {
@@ -101,20 +119,19 @@ type leaseTable struct {
 	parents map[int]int
 }
 
-// sameProcess reports whether a lease key names process p. A zero start
-// matches any start.
-func sameProcess(k domain.ProcessKey, p domain.ProcessSample) bool {
-	return k.PID == p.PID && (k.Start.IsZero() || k.Start.Equal(p.Start))
-}
-
-// find returns the active lease for key, matching a zero start to any.
+// find returns the active lease for exactly key.
 func (t *leaseTable) find(key domain.ProcessKey) (Lease, bool) {
 	for _, l := range t.leases {
-		if l.Process.PID == key.PID && (l.Process.Start.IsZero() || key.Start.IsZero() || l.Process.Start.Equal(key.Start)) {
+		if l.Process.PID == key.PID && l.Process.Start.Equal(key.Start) {
 			return l, true
 		}
 	}
 	return Lease{}, false
+}
+
+// holds reports whether pid holds an active lease.
+func (t *leaseTable) holds(pid int) bool {
+	return slices.ContainsFunc(t.leases, func(l Lease) bool { return l.Process.PID == pid })
 }
 
 func (t *leaseTable) grant(key domain.ProcessKey, agent string, now time.Time) Lease {
@@ -172,7 +189,7 @@ func (t *leaseTable) observe(sampled, now time.Time, procs []domain.ProcessSampl
 	var ended []leaseEnd
 	t.leases = slices.DeleteFunc(t.leases, func(l Lease) bool {
 		p, seen := byPID[l.Process.PID]
-		alive := seen && sameProcess(l.Process, p)
+		alive := seen && p.Start.Equal(l.Process.Start)
 		workload, below := aboveHeavy[p.PID]
 		reason := ""
 		switch {
@@ -189,11 +206,6 @@ func (t *leaseTable) observe(sampled, now time.Time, procs []domain.ProcessSampl
 		}
 		return reason != ""
 	})
-	for i, l := range t.leases {
-		if p, ok := byPID[l.Process.PID]; ok && l.Process.Start.IsZero() && l.Granted.Before(sampled) {
-			t.leases[i].Process.Start = p.Start
-		}
-	}
 	return ended
 }
 
@@ -211,30 +223,64 @@ func (t *leaseTable) expire(now time.Time) []leaseEnd {
 	return ended
 }
 
-// agentFor returns the label of the nearest agent above pid, starting at
-// ppid when pid is not in the latest process sample yet.
-func (t *leaseTable) agentFor(pid, ppid int, agents []process.AgentView) string {
-	labels := make(map[int]string, len(agents))
-	for _, a := range agents {
-		labels[a.Key.PID] = a.Agent
-	}
-	next, ok := t.parents[pid]
-	if !ok {
-		next = ppid
-	}
-	for depth := 0; next > 1 && depth < maxLeaseDepth; depth++ {
-		if label, ok := labels[next]; ok {
-			return label
+// ancestry returns the caller's ancestors, nearest first, starting at its
+// real parent ppid as the OS reported it. Further parents come from the
+// latest process sample; ancestors it does not show yet (such as the shell
+// a make recipe just started) are asked of the OS, at most
+// maxIdentifyLookups times.
+func (d *Daemon) ancestry(ctx context.Context, ppid int) []int {
+	var chain []int
+	lookups := 0
+	for next := ppid; next > 1 && len(chain) < maxLeaseDepth && !slices.Contains(chain, next); {
+		chain = append(chain, next)
+		d.mu.Lock()
+		pp, ok := d.leases.parents[next]
+		d.mu.Unlock()
+		if !ok {
+			if lookups == maxIdentifyLookups {
+				break
+			}
+			lookups++
+			s, err := d.ident.Identify(ctx, next)
+			if err != nil {
+				break
+			}
+			pp = s.PPID
 		}
-		next = t.parents[next]
+		next = pp
+	}
+	return chain
+}
+
+// nearestAgent returns the label of the first agent in chain.
+func nearestAgent(chain []int, agents []process.AgentView) string {
+	for _, pid := range chain {
+		for _, a := range agents {
+			if a.Key.PID == pid {
+				return a.Agent
+			}
+		}
 	}
 	return ""
+}
+
+// nested reports whether an ancestor in chain is the top of a heavy
+// workload or holds a lease: the caller's work is then part of work that
+// already counts (a throt run line in a make recipe or npm script).
+func (t *leaseTable) nested(chain []int, heavy []process.WorkloadView) bool {
+	for _, pid := range chain {
+		if t.holds(pid) || slices.ContainsFunc(heavy, func(h process.WorkloadView) bool { return h.Key.PID == pid }) {
+			return true
+		}
+	}
+	return false
 }
 
 // acquire grants an admission lease to the calling process when Assess,
 // counting active leases as running heavy work, says a heavy job may start.
 // The check and the grant happen under one lock, so of two concurrent
-// callers competing for one slot exactly one is granted.
+// callers competing for one slot exactly one is granted. A caller nested
+// below a heavy workload or a lease holder is granted without a lease.
 func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p AcquireParams
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -248,7 +294,20 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 	if peer, ok := transport.PeerPIDFrom(ctx); ok && peer != p.PID {
 		return nil, d.refused("acquire", p.PID, fmt.Sprintf("caller pid %d is not pid %d", peer, p.PID))
 	}
-	key := domain.ProcessKey{PID: p.PID, Start: p.Start}
+	if d.ident == nil {
+		return nil, d.refused("acquire", p.PID, "cannot identify processes on this platform")
+	}
+	self, err := d.ident.Identify(ctx, p.PID)
+	switch {
+	case err != nil:
+		return nil, d.refused("acquire", p.PID, "cannot identify the caller: "+err.Error())
+	case self.Start.IsZero():
+		return nil, d.refused("acquire", p.PID, "the caller has no start time")
+	case self.UID != d.uid:
+		return nil, d.refused("acquire", p.PID, "the process belongs to another user")
+	}
+	key := self.Key()
+	chain := d.ancestry(ctx, self.PPID)
 	paused := d.ctl.Paused()
 	now := time.Now()
 
@@ -260,11 +319,13 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 	st := d.status
 	st.Paused = paused
 	st.Scheduler.Leases = d.leases.views()
-	agent := d.leases.agentFor(p.PID, p.PPID, st.Agents)
+	agent := nearestAgent(chain, st.Agents)
 	v := Assess(st, agent)
 	res := AcquireResult{Reason: v.Reason, Verdict: v}
 	var l Lease
 	switch {
+	case d.leases.nested(chain, st.Heavy):
+		res.Granted, res.Reason = true, ReasonNested
 	case len(d.leases.leases) >= maxLeases:
 		res.Reason = ReasonTooManyLeases
 	case v.OKToStart:
@@ -273,7 +334,7 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 	}
 	d.mu.Unlock()
 
-	if res.Granted {
+	if res.LeaseID != "" {
 		d.emit(domain.EventLeaseGranted, fmt.Sprintf("lease %s granted to pid %d (%s): %s", l.ID, p.PID, ownerLabel(agent), v.Reason),
 			map[string]string{"lease_id": l.ID, "pid": strconv.Itoa(p.PID), "agent": agent})
 	}

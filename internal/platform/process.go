@@ -36,6 +36,16 @@ type ProcessController interface {
 	Gone(ctx context.Context, key domain.ProcessKey) (bool, error)
 }
 
+// ProcessIdentifier looks up one live process. Every ProcessController of
+// this package implements it.
+type ProcessIdentifier interface {
+	// Identify returns pid's parent, uid and start time, with exactly the
+	// values the platform's ProcessSampler reports (from NewProcessTools on
+	// Linux, which shares the boot time). It fails with domain.ErrProcessGone
+	// when pid names no process. Name may be empty.
+	Identify(ctx context.Context, pid int) (domain.ProcessSample, error)
+}
+
 // checkSignalTarget refuses PIDs that must never be signalled: 0 and
 // negative values address process groups, 1 is init/launchd, and stopping
 // the current process would freeze the daemon.

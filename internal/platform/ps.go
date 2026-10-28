@@ -178,6 +178,36 @@ func parsePSIdentity(out []byte, loc *time.Location) (time.Time, uint32, error) 
 	return start, uint32(uid), nil
 }
 
+// psIdentifyColumns adds the parent PID to psIdentityColumns.
+const psIdentifyColumns = "uid=,ppid=,lstart="
+
+// parsePSIdentify parses the output of ps -o psIdentifyColumns -p <pid>: one
+// line of uid, ppid and lstart (7 fields). Anything else is an error. The
+// result's PID and Name are unset.
+func parsePSIdentify(out []byte, loc *time.Location) (domain.ProcessSample, error) {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 1 {
+		return domain.ProcessSample{}, fmt.Errorf("ps identity: %d lines, want 1", len(lines))
+	}
+	fields := strings.Fields(lines[0])
+	if len(fields) != 7 {
+		return domain.ProcessSample{}, fmt.Errorf("ps identity: %d fields, want 7", len(fields))
+	}
+	uid, err := strconv.ParseUint(fields[0], 10, 32)
+	if err != nil {
+		return domain.ProcessSample{}, fmt.Errorf("ps identity uid: %w", err)
+	}
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil || ppid < 0 {
+		return domain.ProcessSample{}, fmt.Errorf("ps identity ppid %q: invalid", fields[1])
+	}
+	start, err := time.ParseInLocation(psLstartLayout, strings.Join(fields[2:7], " "), loc)
+	if err != nil {
+		return domain.ProcessSample{}, fmt.Errorf("ps identity lstart: %w", err)
+	}
+	return domain.ProcessSample{PPID: ppid, UID: uint32(uid), Start: start}, nil
+}
+
 // parsePSTime parses ps cumulative CPU time: [D-][[H:]M:]S[.ff]. macOS prints
 // M:SS.ss with unbounded minutes (e.g. "2221:05.48"); other ps
 // implementations print H:MM:SS or D-HH:MM:SS for long-running processes.
