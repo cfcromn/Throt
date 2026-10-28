@@ -41,7 +41,10 @@ jobs:
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
-          version: "~> v2"
+          # An exact version, like the SHA-pinned actions: "~> v2" took
+          # whatever GoReleaser was newest on release day, so rebuilding a
+          # tag later could produce different archives.
+          version: v2.19.0
           args: release --clean --release-notes ${{ env.RELEASE_NOTES }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
