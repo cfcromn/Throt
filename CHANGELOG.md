@@ -13,6 +13,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 ### Changed
 - LICENSE copyright holder romanized.
 
+### Security
+- Built with Go 1.26.10, which fixes 20 standard-library vulnerabilities present in 1.26.4 (none reachable from Throt's code according to govulncheck).
+- GitHub Actions pinned to commit SHAs; `govulncheck` runs in CI.
+
 ## [0.4.0-rc.2] - 2026-10-28
 
 Adaptive scheduling and agent integration. The scheduler remains opt-in. (The `v0.4.0-rc.1` tag was never released: a flaky test failed the release build.)
