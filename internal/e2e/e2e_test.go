@@ -1,7 +1,9 @@
 // Package e2e runs the shipped throtd and throt binaries against real
-// processes. It only runs with THROT_E2E=1 on Linux: on a disposable CI VM,
-// or locally inside a container, because the daemon pauses builds of any
-// process named claude.
+// processes. It only runs with THROT_E2E=1 on Linux in a disposable
+// environment (CI, or a container), because an enforce-mode daemon pauses
+// the builds of every agent it recognizes, built-in ones such as claude
+// included. The test daemon's agent is a custom adapter for a stub with a
+// name no real agent has.
 package e2e
 
 import (
@@ -16,6 +18,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,8 +52,8 @@ func main() {
 }
 `
 
-// agentSource is the agent stub, named claude so Throt attributes its
-// children to it. Each stdin line is an argument for ./make; it starts the
+// agentSource is the agent stub, named agentExe so the test config's
+// custom adapter attributes its children to it. Each stdin line is an argument for ./make; it starts the
 // job, reports "start PID", and reaps it when it exits.
 const agentSource = `package main
 
@@ -85,14 +88,48 @@ const (
 	waitTimeout = 90 * time.Second
 	// cliTimeout bounds one throt invocation.
 	cliTimeout = 30 * time.Second
-	// sampleInterval keeps the tests quick while staying realistic.
-	sampleInterval = `"250ms"`
+	// agentExe is the stub agent's executable; it fits the 15-byte Linux
+	// comm. agentLabel is its first instance, from the "e2e" adapter.
+	agentExe   = "throt-e2e-agent"
+	agentLabel = "e2e-1"
+	// baseConfig is shared by every test daemon: a short sample interval
+	// keeps the tests quick, and the custom adapter recognizes the stub.
+	baseConfig = `"sample_interval":"250ms","agents":[{"name":"e2e","executables":["` + agentExe + `"]}]`
 )
 
 // binDir holds throt, throtd and the helpers, built once by TestMain.
 var binDir string
 
-func enabled() bool { return os.Getenv("THROT_E2E") == "1" && runtime.GOOS == "linux" }
+func enabled() bool { return skipReason() == "" }
+
+// skipReason says why the suite must not run here, or "" when it may. The
+// test daemons control real processes, so outside a disposable environment
+// they could stop the builds of the developer's own agents.
+func skipReason() string {
+	switch {
+	case os.Getenv("THROT_E2E") != "1":
+		return "set THROT_E2E=1 to run the end-to-end tests (CI or a container only)"
+	case runtime.GOOS != "linux":
+		return "the end-to-end tests only run on Linux"
+	case os.Getenv("CI") != "true" && !inContainer():
+		return "THROT_E2E is set, but this is neither CI (CI=true) nor a container. The test daemons " +
+			"pause real processes, so run the suite only in a disposable environment, e.g. " +
+			"docker run --rm -v \"$PWD\":/src -w /src golang:1.26.10-alpine sh -c 'THROT_E2E=1 go test ./internal/e2e'"
+	}
+	return ""
+}
+
+// inContainer reports a Docker or Podman marker file, or a cgroup v2 root
+// path, which a process sees in its own cgroup namespace.
+func inContainer() bool {
+	for _, f := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(f); err == nil {
+			return true
+		}
+	}
+	b, err := os.ReadFile("/proc/self/cgroup")
+	return err == nil && slices.Contains(strings.Split(strings.TrimSpace(string(b)), "\n"), "0::/")
+}
 
 func TestMain(m *testing.M) {
 	if !enabled() {
@@ -136,7 +173,7 @@ func build(dir string) error {
 			return err
 		}
 	}
-	for name, src := range map[string]string{"make": jobSource, "claude": agentSource} {
+	for name, src := range map[string]string{"make": jobSource, agentExe: agentSource} {
 		srcDir := filepath.Join(dir, "src", name)
 		if err := os.MkdirAll(srcDir, 0o755); err != nil {
 			return err
@@ -155,8 +192,8 @@ func build(dir string) error {
 
 func requireE2E(t *testing.T) {
 	t.Helper()
-	if !enabled() {
-		t.Skip("set THROT_E2E=1 on Linux (a CI VM, or locally inside a container only)")
+	if r := skipReason(); r != "" {
+		t.Skip(r)
 	}
 }
 
@@ -442,7 +479,7 @@ func startGroup(t *testing.T, cmd *exec.Cmd) {
 	})
 }
 
-// agent is a running claude stub.
+// agent is a running stub agent.
 type agent struct {
 	e      *env
 	pid    int
@@ -452,7 +489,7 @@ type agent struct {
 
 func (e *env) startAgent() *agent {
 	e.t.Helper()
-	cmd := exec.Command(filepath.Join(binDir, "claude"))
+	cmd := exec.Command(filepath.Join(binDir, agentExe))
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -492,8 +529,8 @@ func (a *agent) job(mode string) int {
 	}
 }
 
-// waitOwned waits until throt status lists pid as a heavy build owned by
-// the agent label, and returns its row.
+// waitOwned waits until throt status lists pid as a heavy workload owned by
+// the agent label ("-" for unattributed), and returns its row.
 func (e *env) waitOwned(pid int, label string) heavyRow {
 	e.t.Helper()
 	var row heavyRow
@@ -510,17 +547,17 @@ func (e *env) waitOwned(pid int, label string) heavyRow {
 }
 
 func TestObserve(t *testing.T) {
-	e := newEnv(t, `{"sample_interval":`+sampleInterval+`}`)
+	e := newEnv(t, `{`+baseConfig+`}`)
 	a := e.startAgent()
 	job := a.job("sleep")
 
-	row := e.waitOwned(job, "claude-1")
+	row := e.waitOwned(job, agentLabel)
 	if row.name != "make" || row.class != "build" || row.state != "running" {
 		t.Errorf("heavy row = %+v, want make, build, running", row)
 	}
 	st, _ := e.status()
-	if st.agents["claude-1"] != a.pid {
-		t.Errorf("agents = %v, want claude-1 at pid %d", st.agents, a.pid)
+	if st.agents[agentLabel] != a.pid {
+		t.Errorf("agents = %v, want %s at pid %d", st.agents, agentLabel, a.pid)
 	}
 
 	out := e.mustThrot("events", "-n", "1000")
@@ -534,7 +571,7 @@ func TestObserve(t *testing.T) {
 			t.Fatalf("events line %q: %v", line, err)
 		}
 		switch {
-		case ev.Kind == "agent_discovered" && ev.Attrs["agent"] == "claude-1" && ev.Attrs["pid"] == strconv.Itoa(a.pid):
+		case ev.Kind == "agent_discovered" && ev.Attrs["agent"] == agentLabel && ev.Attrs["pid"] == strconv.Itoa(a.pid):
 			agentSeen = true
 		case ev.Kind == "process_discovered" && ev.Attrs["name"] == "make" && ev.Attrs["pid"] == strconv.Itoa(job):
 			jobSeen = true
@@ -558,14 +595,16 @@ func TestObserve(t *testing.T) {
 }
 
 func TestManualControl(t *testing.T) {
-	e := newEnv(t, `{"sample_interval":`+sampleInterval+`}`)
-	// An unattributed build, started before the agent so the daemon has
-	// sampled it by the time the agent's job shows up.
+	e := newEnv(t, `{`+baseConfig+`}`)
+	// An unattributed build. Control outcomes are only asserted once a
+	// sample shows the target, or the refusal reason would be "not a heavy
+	// workload" instead of the one under test.
 	stray := exec.Command(filepath.Join(binDir, "make"), "sleep")
 	startGroup(t, stray)
+	e.waitOwned(stray.Process.Pid, "-")
 	a := e.startAgent()
 	job := a.job("sleep")
-	e.waitOwned(job, "claude-1")
+	e.waitOwned(job, agentLabel)
 	if !running(job) {
 		t.Fatalf("job state %c before pause, want S or R", procState(job))
 	}
@@ -593,10 +632,10 @@ func TestManualControl(t *testing.T) {
 }
 
 func TestCrashRecovery(t *testing.T) {
-	e := newEnv(t, `{"sample_interval":`+sampleInterval+`}`)
+	e := newEnv(t, `{`+baseConfig+`}`)
 	a := e.startAgent()
 	job := a.job("sleep")
-	e.waitOwned(job, "claude-1")
+	e.waitOwned(job, agentLabel)
 	e.mustThrot("pause", strconv.Itoa(job))
 	e.waitStopped(job)
 
@@ -614,10 +653,10 @@ func TestCrashRecovery(t *testing.T) {
 }
 
 func TestGracefulShutdownResumes(t *testing.T) {
-	e := newEnv(t, `{"sample_interval":`+sampleInterval+`}`)
+	e := newEnv(t, `{`+baseConfig+`}`)
 	a := e.startAgent()
 	job := a.job("sleep")
-	e.waitOwned(job, "claude-1")
+	e.waitOwned(job, agentLabel)
 	e.mustThrot("pause", strconv.Itoa(job))
 	e.waitStopped(job)
 
@@ -632,14 +671,14 @@ func TestGracefulShutdownResumes(t *testing.T) {
 func TestEnforceScheduler(t *testing.T) {
 	// Adaptive is off so the limit cannot grow during the test.
 	const policy = `"heavy_limit":%d,"resume_cooldown":"0s","adaptive":false`
-	e := newEnv(t, `{"sample_interval":`+sampleInterval+`,"scheduler":{"mode":"off",`+fmt.Sprintf(policy, 1)+`}}`)
+	e := newEnv(t, `{`+baseConfig+`,"scheduler":{"mode":"off",`+fmt.Sprintf(policy, 1)+`}}`)
 	e.waitStartable()
 	// Unattributed heavy workloads (e.g. the go command running this test)
 	// take slots too, so give the agent exactly one slot beyond them.
 	st, _ := e.status()
 	others := len(st.heavy)
 	enforce := func(mode string) string {
-		return `{"sample_interval":` + sampleInterval + `,"scheduler":{"mode":"` + mode + `",` + fmt.Sprintf(policy, 1+others) + `}}`
+		return `{` + baseConfig + `,"scheduler":{"mode":"` + mode + `",` + fmt.Sprintf(policy, 1+others) + `}}`
 	}
 	e.writeConfig(enforce("enforce"))
 	e.mustThrot("reload")
@@ -650,7 +689,7 @@ func TestEnforceScheduler(t *testing.T) {
 
 	a := e.startAgent()
 	first := a.job("sleep")
-	if row := e.waitOwned(first, "claude-1"); row.state != "running" {
+	if row := e.waitOwned(first, agentLabel); row.state != "running" {
 		t.Fatalf("first job state %s, want running", row.state)
 	}
 	e.waitStartable()
@@ -685,7 +724,7 @@ func TestEnforceScheduler(t *testing.T) {
 }
 
 func TestMCP(t *testing.T) {
-	e := newEnv(t, `{"sample_interval":`+sampleInterval+`}`)
+	e := newEnv(t, `{`+baseConfig+`}`)
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
