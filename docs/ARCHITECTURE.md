@@ -184,29 +184,27 @@ gh run watch    # then read the job summary, or download the bench-<os> artifact
 
 Outside a container the benchmark runs only with `CI=true`, and sizes the contention to the runner, since there is no CPU limit: the burst launches 4× `runtime.NumCPU()` jobs at once, and the staggered stream launches as many at intervals of 5 s / (2 × CPUs), so its arrival rate asks for about twice the machine. Throt runs the shipped defaults (the `balanced` profile: adaptive, start CPUs/4 but at least 2, ceiling the CPU count; 2 s sampling; 10 s cooldown). On macOS, peak running comes from `ps -o state=,comm=` instead of `/proc`. Each row is still the median of three runs, and the table header gives the OS, kernel, CPU count and limits. `THROT_BENCH_JOBS` and `THROT_BENCH_REPS` shrink a run for a quick check. `THROT_BENCH_DEFAULTS=1` sizes a container the same way, with the shipped defaults; give it a cpuset (`--cpuset-cpus`) so that `NumCPU`, and so the profile, matches its CPUs.
 
-CI results with the shipped defaults ([workflow run 40737311908](https://github.com/cfcromn/Throt/actions/runs/40737311908), GitHub-hosted runners, medians of 3 runs), before the at-once growth described under Scheduler:
+CI results with the shipped defaults ([workflow run 40753939145](https://github.com/cfcromn/Throt/actions/runs/40753939145), GitHub-hosted runners, medians of 3 runs; the earlier [run 40737311908](https://github.com/cfcromn/Throt/actions/runs/40737311908) is in parentheses, before the at-once growth and the early refill described under Scheduler):
 
 | Runner | Scenario | Baseline makespan | Throt makespan | Probe p95 baseline → Throt |
 |---|---|---|---|---|
-| ubuntu, 2 CPUs (start 2, ceiling 2) | 8 × 5 s at once | 20.6s | 24.7s | 2.9 → 1.1ms |
-| ubuntu | 8 staggered 1.25s | 21.3s | 24.3s | 2.2 → 0.6ms |
-| macOS, 5 CPUs (start 2, ceiling 5) | 20 × 5 s at once | 22.4s | 41s | 1.1 → 4.2ms |
-| macOS | 20 staggered 500ms | 24.8s | 41.3s | 2.1 → 2.3ms |
-| macOS memory | burst, 8 × 3 GiB | 3m2s, 8/8 capped, +4.2 GiB swap | 2m30s, 0 capped, no swap growth | — |
-| macOS memory | staggered | 3m7s, 8/8 capped | 39.8s, 0 capped | — |
+| ubuntu, 2 CPUs (start 2, ceiling 2) | 8 × 5 s at once | 20.7s | 21.6s (24.7s) | 3.0 → 1.1ms |
+| ubuntu | 8 staggered 1.25s | 21.4s | 22.2s (24.3s) | 2.3 → 0.8ms |
+| macOS, 5 CPUs (start 2, ceiling 5) | 20 × 5 s at once | 24.3s | 26.1s (41s) | 1.1 → 2.4ms |
+| macOS | 20 staggered 500ms | 25.2s | 27.2s (41.3s) | 2.0 → 2.8ms |
+| macOS memory | burst, 8 × 3 GiB | 3m1s, 8/8 capped, +5.5 GiB swap | 3m34s (range 1m34s–6m8s), 0 capped, +5.1 GiB swap | 3.2 → 3.5ms |
+| macOS memory | staggered | 3m9s, 8/8 capped, +13 GiB swap | 3m22s (range 1m46s–4m18s), 0 capped, +1.7 GiB swap | 3.4 → 4.8ms |
 
-Memory is where Throt pays off: on the macOS runner the baseline thrashed until every job hit its 3-minute cap, and Throt finished all of them without growing swap. CPU-only contention is the cost:
-- **Linux runner:** limit and ceiling are both 2, so Throt runs 2 jobs at a time and pays about 20% makespan for a lower probe tail. Most of that is the handoff: a queued job resumes only at the first sample after an exit, up to one 2 s interval later, at every handoff.
-- **macOS runner: Throt was 1.8× slower and its probe p95 was worse.** The limit started at 2, went to 3 in the first calm round, and the +1 per 30 s came too late for a 20-second burst, so 2 of 5 cores sat idle. The p95 rise is not the daemon's own CPU: a sample costs 3–4% of one core at 2 s (see Platforms), under 1% of 5 CPUs, and the macOS baseline kept p95 at 1.1 ms with 20 jobs on 5 cores. It is more likely the idle cores' wake-up latency, unconfirmed until the next CI run.
+Memory is where Throt pays off: on the macOS runner the baseline thrashed until every job hit its 3-minute cap, so its makespan is the cap, not completion; with Throt every job finished, though how long it took varied widely between runs (and in run 40737311908 the burst grew no swap at all). CPU-only contention is the cost, now small: Throt adds 4–8% makespan. On Linux it also cuts the probe tail; on macOS the p95 still rises by about 1 ms. That is not the daemon's own CPU (a sample costs 3–4% of one core at 2 s, see Platforms, under 1% of 5 CPUs); it is more likely the wake-up latency of SIGCONT and of cores left idle between handoffs.
 
-The at-once growth (Scheduler, Adaptive) targets the macOS case. The same benchmark in a container with `THROT_BENCH_DEFAULTS=1` (`docker run --init --cpus 4 --cpuset-cpus 0-3`, same Docker Desktop VM as above, start 2, ceiling 4, medians of 3 runs) shows the effect before and after it:
+The two changes behind the CPU numbers, measured in a container with `THROT_BENCH_DEFAULTS=1` (`docker run --init --cpus 4 --cpuset-cpus 0-3`, same Docker Desktop VM as above, start 2, ceiling 4):
 
-| Scenario | Baseline | Throt before | Throt after | Probe p95 baseline / before / after |
+| Scenario | Baseline | Before | At-once growth | Plus early refill |
 |---|---|---|---|---|
-| 16 × 5 s at once | 19.9–20.1s | 32.4s | 26.3s | 4.0–5.0 / 4.5 / 4.4ms |
-| 16 staggered 630ms | 21s | 30.6s | 24.5s | 4.0 / 4.5 / 4.2ms |
+| 16 × 5 s at once | 19.9–20.3s | 32.4s | 26.3s | 22.2s |
+| 16 staggered 630ms | 21–21.2s | 30.6s | 24.5s | 23.3s |
 
-Before, the limit went 2 → 3 in the first calm round and 3 → 4 at 28 s. After, it reaches the ceiling 4 s after the burst starts (the round after the queued jobs' RSS is seen to be stable). The rest of the gap, 17–31%, was the one-sample handoff delay at every exit. The early refill (Scheduler) polls the running workloads' liveness instead; in the same setup (medians of 2 runs) it took the burst from 26.7 s to 22.2 s (baseline 19.9–20.3 s) and the staggered stream from 24.7 s to 23.3 s (baseline 21.1–21.2 s), with no change in probe p95. The memory scenarios in a container (`--cpus 2 --memory 3g --memory-swap 4g`, 675 MiB jobs, ceiling 10 because `NumCPU` is the VM's) never took the at-once path: every limit change was the first calm round's +1 or the +1 at about 30 s, as before, because the queued jobs' working sets left less headroom than one job.
+Before, the limit went 2 → 3 in the first calm round and 3 → 4 at 28 s; with the at-once growth it reaches the ceiling 4 s after the burst starts. The rest of the gap was the one-sample handoff delay at every exit, which the early refill removes. Probe p95 did not change in either step. The memory scenarios in a container (`--cpus 2 --memory 3g --memory-swap 4g`) never took the at-once path, because the queued jobs' working sets left less headroom than one job.
 
 This keeps the default decision: the scheduler stays off. CPU-only contention on a bare-metal kernel is not a reason to enable it; memory contention is.
 
