@@ -154,10 +154,12 @@ func TestDaemonLifecycle(t *testing.T) {
 		t.Errorf("events = %+v", events)
 	}
 
+	// The daemon answers before its first sample lands; wait for it.
 	var st StatusResult
-	if err := transport.Call(context.Background(), sock, "status", nil, &st); err != nil {
-		t.Fatal(err)
-	}
+	waitFor(t, "first sample", func() bool {
+		st = StatusResult{}
+		return transport.Call(context.Background(), sock, "status", nil, &st) == nil && st.Host != nil && len(st.Agents) > 0
+	})
 	if st.Host == nil || st.Host.MemTotal != 100 {
 		t.Errorf("status = %+v", st)
 	}
