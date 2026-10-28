@@ -194,8 +194,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	err = srv.Serve(ctx, l)
 	cancel()
 	wg.Wait()
-	d.resumeAll() // fail open: never leave work paused behind us
-	d.emit(domain.EventDaemonStopped, "shutdown", nil)
+	msg, attrs := "shutdown", map[string]string(nil)
+	// Fail open: never leave work paused behind us.
+	if n := d.resumeAll(); n > 0 {
+		msg, attrs = "shutdown; resumed "+strconv.Itoa(n)+" paused/queued processes", map[string]string{"resumed": strconv.Itoa(n)}
+	}
+	d.emit(domain.EventDaemonStopped, msg, attrs)
 	return err
 }
 

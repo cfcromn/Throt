@@ -103,10 +103,22 @@ func (d *Daemon) recoverPaused(ctx context.Context) {
 	d.emit(domain.EventControlResumed, "resumed workloads left paused by a previous throtd", nil)
 }
 
-// resumeAll resumes everything on shutdown. Anything that cannot be resumed
-// stays in paused.json for the next daemon.
-func (d *Daemon) resumeAll() {
+// resumeAll resumes everything on shutdown and returns how many recorded
+// processes left the records (continued, or confirmed gone). Anything that
+// cannot be resumed stays in paused.json for the next daemon.
+func (d *Daemon) resumeAll() int {
+	before := recordedProcesses(d.ctl.Paused())
 	if errs := d.ctl.ResumeAll(context.Background()); len(errs) > 0 {
 		d.emit(domain.EventControlFailed, "resume on shutdown, left in paused state for the next throtd: "+errors.Join(errs...).Error(), nil)
 	}
+	return before - recordedProcesses(d.ctl.Paused())
+}
+
+// recordedProcesses counts the member processes of records.
+func recordedProcesses(records []control.PausedWorkload) int {
+	n := 0
+	for _, p := range records {
+		n += len(p.Members)
+	}
+	return n
 }

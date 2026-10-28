@@ -16,6 +16,7 @@ import (
 	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
+	"github.com/cfcromn/Throt/internal/transport"
 )
 
 var errFS = errors.New("injected filesystem failure")
@@ -463,5 +464,38 @@ func TestResumeOrphanTwice(t *testing.T) {
 	}
 	if got := w.signals(); got != "cont:30" {
 		t.Errorf("signals = %q, want one cont:30", got)
+	}
+}
+
+// TestShutdownReportsResumed checks that the shutdown event says how many
+// paused or queued processes it resumed.
+func TestShutdownReportsResumed(t *testing.T) {
+	w := newWorld(
+		domain.ProcessSample{PID: 10, PPID: 1, Name: "claude"},
+		domain.ProcessSample{PID: 11, PPID: 10, Name: "go"},
+		domain.ProcessSample{PID: 12, PPID: 11, Name: "compile"},
+	)
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(shortTempDir(t), "throtd.sock")
+	cfg.SampleInterval = config.Duration(20 * time.Millisecond)
+	d := NewDaemon(cfg, w, w, w, slog.New(slog.DiscardHandler))
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	waitFor(t, "heavy workload", func() bool {
+		var st StatusResult
+		transport.Call(context.Background(), cfg.SocketPath, "status", nil, &st)
+		return len(st.Heavy) == 1
+	})
+	if err := transport.Call(context.Background(), cfg.SocketPath, "pause", ControlParams{PID: 11}, nil); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	ev := eventsOf(d, domain.EventDaemonStopped)
+	if len(ev) != 1 || ev[0].Message != "shutdown; resumed 2 paused/queued processes" || ev[0].Attrs["resumed"] != "2" {
+		t.Fatalf("daemon_stopped = %+v", ev)
 	}
 }
