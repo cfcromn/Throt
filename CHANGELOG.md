@@ -9,6 +9,14 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 ### Added
 - `throt hook claude-code [--max-wait D]`: a Claude Code `PreToolUse` hook on `Bash`. When the command's command word is a heavy tool (alone, or after `cd DIR &&`, variable assignments, or `time`), it polls `throtd`'s capacity verdict for the calling agent and returns once a heavy job is OK to start or after `--max-wait` (default 50s). It never changes, approves, or denies the command, so your permission rules apply to it unchanged. Advisory: it takes no lease. It fails open: light or unparsable commands, malformed input, or an unreachable `throtd` return at once. Shell parsing lives in the new `internal/shellwords`.
 - `throt setup claude-code` and `throt setup codex` print the hook, MCP server, and `AGENTS.md` snippets to paste; they write no files.
+- `throt config check [--config PATH]` validates the config file with the same loader as throtd, prints `ok` and what it changes from the defaults (each marked `file` or `profile`), and exits 1 on an invalid or missing file. It warns, without failing, about `enforce` with `heavy_limit` at least the CPU count, `pause_on_critical` with mode `off`, and custom agent executables that shadow a built-in adapter.
+- `throt config show [--json]` prints the effective config (defaults, then profile, then file), the profile applied, and the source of each value (`default`, `profile`, or `file`).
+- `throt version --json` prints the client version, protocol version, Go version, and throtd's ping result when it is reachable (`daemon` is null with a `daemon_error` otherwise).
+- `throtd -log-format text|json` (default `text`) and `-log-level debug|info|warn|error` (default `info`), documented in `throtd -h`.
+
+### Changed
+- throtd logs each event at a level that fits it, with its attributes: heavy workloads starting and exiting and admission leases are now `debug` (they come and go with every build), failures, refusals and processes left stopped are `warn`, and the rest stays `info`. The event log is unchanged.
+- macOS: throtd caches process names by PID and start time and asks `ps` only about newly seen processes, with a full names pass every 15th sample, roughly halving the CPU cost of a process sample (about 85 ms to 45 ms with 1,150 processes). The process graph allocates its table once per update instead of once per process.
 
 ## [0.7.0-rc.1] - 2026-10-28
 
@@ -19,15 +27,10 @@ Admission leases make `throt run` race-free, and stopped processes Throt did not
 - `status` reports `scheduler.leases`; `throt status` shows `N reserved` and each reserved PID; the capacity verdict has `reserved`, which the `throt_capacity` text mentions.
 - Report stopped processes throtd did not pause (no paused record), such as work left stopped by a throtd killed before it wrote `paused.json`, or a Ctrl-Z shell job. They are reported, never resumed automatically: `throt status` prints a `STOPPED` line, `throt doctor` gains an `orphans` section (count, plus PID, base name, owner, time observed stopped and a hint for up to 50), and throtd logs one `orphan_stopped` event per newly found heavy workload of an agent (not for shell jobs). `throt resume PID` resumes such a workload after verifying identity; `throt resume --force PID` resumes any other stopped process of yours.
 - Process samples carry the process state (`ps state` on macOS, `/proc/<pid>/stat` on Linux).
-- `throt config check [--config PATH]` validates the config file with the same loader as throtd, prints `ok` and what it changes from the defaults (each marked `file` or `profile`), and exits 1 on an invalid or missing file. It warns, without failing, about `enforce` with `heavy_limit` at least the CPU count, `pause_on_critical` with mode `off`, and custom agent executables that shadow a built-in adapter.
-- `throt config show [--json]` prints the effective config (defaults, then profile, then file), the profile applied, and the source of each value (`default`, `profile`, or `file`).
-- `throt version --json` prints the client version, protocol version, Go version, and throtd's ping result when it is reachable (`daemon` is null with a `daemon_error` otherwise).
-- `throtd -log-format text|json` (default `text`) and `-log-level debug|info|warn|error` (default `info`), documented in `throtd -h`.
 
 ### Changed
 - `throt run` against a `throtd` without `acquire` falls back to the previous advisory check; the other fail-open rules (daemon down runs at once, 5m default timeout, `--no-wait`) are unchanged.
 - The scheduler holds stopped processes it did not pause, like manual pauses, so it never queues one and resumes it later.
-- throtd logs each event at a level that fits it, with its attributes: heavy workloads starting and exiting and admission leases are now `debug` (they come and go with every build), failures, refusals and processes left stopped are `warn`, and the rest stays `info`. The event log is unchanged.
 
 ## [0.6.0-rc.1] - 2026-10-28
 
