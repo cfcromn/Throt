@@ -23,6 +23,24 @@ Extra review is required for local IPC, process signaling/control, privilege bou
 
 ## Security review
 
+**1.0 review, 2026-10-29**, at `aeb6d26` (`feat/v1`), of the whole tree, with priority on what changed since v0.8.0-rc.1 in `internal` and `cmd`. Scope: process control (`internal/control`, `internal/app`: the live-uid check before a pause, orphan and child resume, the early-refill `Exited` poll, `RetryResumes` rotation, `paused.json` recovery), `internal/transport`, `throt update`, `throt mcp`, the Claude Code hook, and the platform parsers (`kern.procargs2`, `/proc`, cgroup files, `ps`) with privacy and `throt doctor` redaction. Threat model: as in the reviews below. Method: line-by-line reading; a check that every `kill(2)` and `pidfd_send_signal` is reached only through `verifyIdentity`; 20 s of fuzzing each of `FuzzRestoreAndResume`, `FuzzToolArguments`, `FuzzCgroupMountAndDirs` and `FuzzHookClaudeCode`, without a failure; and a macOS 26 check of how `ps` prints a control character in argv[0].
+
+| Area | Verdict |
+|---|---|
+| Signaling | Sound. Pause, rollback, resume, retry, restore and orphan resume all signal through `Stop`/`Continue`, which verify PID, start time and uid first (Linux pins with a pidfd). `liveOwners` reads every member's live uid before the first `SIGSTOP`, so a stale sampled uid refuses the pause rather than stopping part of it. `Exited` (`kill(pid, 0)`, or one `/proc` read) only makes the next sample come early and never signals. A forced orphan resume continues only stopped processes of the user that no record explains, children first, each verified. |
+| Recovery | Sound. `RetryResumes` starts after the record that failed last, so one failing record cannot starve the others. `paused.json` stays 0600 in the private directory and is validated before any signal; restore only continues. |
+| Transport | Sound, unchanged since the 1.0 review: 0600 socket under a 077 umask in a checked 0700 directory, peer uid on `pause`, `resume`, `reload` and `acquire`, 1 MiB messages, 5 s deadline, 16 slots. Only the user (and root) can connect, so another user cannot take a slot. |
+| `throt update` | Sound, unchanged since the v0.9 review. |
+| MCP and hook | Sound. `throt mcp` is read-only; lines are capped at 1 MiB, arguments decoded strictly, `max_wait_seconds` limited to 1–600 and at most 4 waits run at once. The hook exits 0 on every error, writes only a `systemMessage`, never changes the command, and reads stdin under its deadline (R1 below, fixed). |
+| Parsers and privacy | Sound. Linux `/proc` and cgroup parsing and macOS `kern.procargs2` parsing are bounds-checked and fuzzed. Nothing reads or stores arguments beyond argv[0], cut to a base name, or the environment; `throt doctor` names only the user's stopped processes and redacts home and user name. |
+
+No finding of medium severity or higher. Accepted (low):
+- **macOS names keep control characters.** Linux replaces them in `comm` with `?`; macOS names come from argv[0] (`kern.procargs2`, or `ps`, which prints them raw too), so a process of the user can put terminal escapes in its name, shown for stopped processes in `throt doctor` and in a `resume --force` event. Other users' processes are shown only when the name equals a built-in one. A same-user process can already write to the user's terminals.
+- **`throt hook --max-wait` has no upper bound.** Claude Code's hook timeout ends a long wait, and the call still runs.
+- **`throt update` runs `gh` and the new binaries without `WaitDelay`.** A child that inherits their stdout could hold the command past its timeout; both programs are trusted (the binaries only after their checksum matched).
+
+The reviews below name commits from before the history was rewritten; those SHAs are not on `main`.
+
 **1.0 review of IPC and process control, 2026-10-28**, at `5347e21` (`feat/v08`). Scope: `internal/transport`, `internal/app` (handlers, leases, reload, `paused.json`), `internal/control`, `internal/platform` (signaling, pidfd, `ps` identity, `Identify`), `cmd/throt` (`run`, `hook`), and the CI/release workflows. Threat model: another local user, a malicious same-user process, a crashed or killed daemon, PID reuse, races in the socket directory, malformed protocol input, a hostile `paused.json`. Method: line-by-line reading, targeted regression tests, and adversarial tests on Linux in `golang:1.26.10-alpine` (a real foreign uid against a real server through `SO_PEERCRED`: refused at `connect` by the 0600 socket, and refused at the uid check for `pause` when the socket was left open).
 
 | Boundary | Verdict |
@@ -33,7 +51,7 @@ Extra review is required for local IPC, process signaling/control, privilege bou
 | State files | Sound. `paused.json` is decoded strictly (unknown fields, trailing data, versions, states, PIDs, counts all checked) before any signal; malformed files are moved aside and nothing is signaled. Writes use `CreateTemp` (O_EXCL, 0600) and `rename` in the private directory, so planted symlinks are replaced, not followed. Restore only ever continues. Stats are memory-only. |
 | `throt run` | Sound. argv is exec'd directly, never through a shell; `exec.LookPath` refuses commands found through `.` in `PATH`; the environment passes through unchanged. A fake daemon needs the user's own private directory and can at most delay the command until `--timeout` or let it run. Every failure runs the command. |
 | DoS | Sound after fix 2. 16 concurrent connections, a 5 s I/O deadline, 1 MiB messages, and bounded events (ring), leases (256), paused records (64 × 4096), orphans (50), stats rows (256), `ps` output (32 MiB) and hook input (1 MiB). Only the user can connect, so log flooding needs a same-user process. |
-| Supply chain | Acceptable. Every action is pinned by commit SHA; workflows default to `contents: read`; the Go toolchain is pinned in `go.mod`; CI runs `govulncheck`, CodeQL and race tests; releases ship `checksums.txt` and SBOMs. |
+| Supply chain | Acceptable. Every action is pinned by commit SHA; workflows default to `contents: read`; the Go toolchain is pinned in `go.mod`; CI runs `govulncheck` and race tests, and CodeQL once the repository is public (it is skipped while it is private, where code scanning needs GitHub Advanced Security); releases ship `checksums.txt` and SBOMs. |
 
 Findings, all fixed with regression tests:
 1. *Socket briefly open to others (low).* The socket was created with the process umask and only then set to 0600, and the directory check allows group/other traversal, so under a umask such as 002 another user could connect in between and read `status`, `events` and `stats`. It is now created under a 077 umask.
@@ -43,7 +61,7 @@ Accepted residual risks:
 - **macOS and pidfd-less Linux verify, then `kill(2)`.** The window is one `ps` call (median 13 ms, p95 about 45 ms measured on macOS 26; at most the 2 s call deadline) or one `/proc` read. Hitting a wrong process needs the PID space (99,999 on macOS) to wrap within it and the new process to be the user's own with a start time in the same second. Documented under "Control" in `docs/ARCHITECTURE.md`.
 - **Same-user processes are trusted.** They can already signal the user's processes, so the daemon does not defend against them: they can call privileged methods, reserve leases, forge `paused.json` (making throtd continue up to 64 × 4096 of the user's own stopped processes, or stall startup with a FIFO or a huge file), or edit the config. Where the kernel reports no peer PID (another PID namespace), `acquire` trusts the client-sent PID of a process the user owns.
 - **Directory trust is by mode bits.** ACLs are not inspected, and a custom `socket_path` must not sit under a directory other users can write to (the default `$XDG_RUNTIME_DIR`, `/tmp` with its sticky bit, and the macOS per-user `$TMPDIR` are safe).
-- **Releases are unsigned** and carry no provenance attestation; verify `checksums.txt` over HTTPS from GitHub. The release job uses `goreleaser` `~> v2` (not an exact version) and the Go module cache.
+- **Releases are unsigned**, and build provenance is attested only once the repository is public; verify `checksums.txt` over HTTPS from GitHub. The release job pins GoReleaser to v2.19.0 but uses the Go module cache.
 
 **`throt update`, 2026-10-29** (`internal/update`, `cmd/throt/update.go`). Threat model: a network attacker, a tampered or truncated download, a hostile archive, an interrupted or partial install, an unwritable install directory, and leaking the GitHub token.
 
@@ -65,7 +83,7 @@ Accepted residual risk: `checksums.txt` and the archive come from the same relea
 | Area | Verdict |
 |---|---|
 | `throt update` | Sound after fixes 1–3. HTTPS only, redirects included; bodies are capped before they are read. The checksum is verified before the archive is opened, so no archive content runs before that check (the version check runs only verified binaries). The tar reader never writes to disk and refuses traversal, absolute names, links, devices, FIFOs, duplicates and oversized entries; PAX headers are capped by `archive/tar` and the whole stream by `maxUnpacked`. A `checksums.txt` entry must be exactly a 64-digit hex sum and the name, and conflicting entries are refused. Valid semver tags are ordered by the spec; nothing is downgraded unless `--version` asks. Staging is `O_EXCL` in the destination directory, then `rename`. |
-| Hook and `shellwords` | Sound; one finding reported (R1). The hook always exits 0, never denies or changes a call, and writes at most one JSON object (built with `encoding/json`) after it has finished waiting. `Split` is linear-time and refuses everything outside its subset; a misparse can only make the advisory wait happen or not. |
+| Hook and `shellwords` | Sound; one finding (R1), since fixed. The hook always exits 0, never denies or changes a call, and writes at most one JSON object (built with `encoding/json`) after it has finished waiting. `Split` is linear-time and refuses everything outside its subset; a misparse can only make the advisory wait happen or not. |
 | `kern.procargs2` | Sound after fix 4. Every index is bounds-checked and argc is only compared with 1. The sysctl fails for other users' processes, which go to `ps`. Spoofing argv[0] gains nothing a same-user process cannot already do. |
 | Lease waiters | Sound. Only an identified caller of the daemon's uid (peer PID enforced where the kernel reports it) enters the table, which holds 256 and drops a waiter after 2 s of silence or once its process is gone. |
 | `start_limit` | Sound. It is validated as 0 to `heavy_limit` after profile presets and explicit fields are merged, and a missing or 0 value is derived and capped at `heavy_limit`, on load and reload alike. |
@@ -76,8 +94,8 @@ Fixed, each with a regression test:
 3. *Install directory writable by everyone (low).* In a directory (or below one) that is other-writable without the sticky bit, another user could swap the verified temporary file between its version check and the rename, so `sudo throt update` installed theirs. Such a directory is now refused before anything is written.
 4. *Environment variable as a process name (low, privacy).* For a process exec'd with an empty argv[0], the parser skipped every NUL after the executable path and returned argv[1], or with argc 1 the first environment variable (`ps` prints the same). argv[0] is now read at its aligned offset, an empty one names the process by its executable path, and unexpected padding falls back to `ps`.
 
-Reported to the owners of code under refactoring, not fixed here:
-- R1 (`cmd/throt/hook.go:163`, low). `readBashCommand` reads stdin with no deadline, so a stdin that stays open keeps the hook running past `--max-wait` (measured: 6 s with `--max-wait 1s`) until Claude Code's hook timeout ends it. Claude Code closes stdin, so this needs a broken caller; the call still runs.
+Reported to the owners of code under refactoring, and fixed since in `cmd/throt/hook.go` (`readHookInput` reads stdin under the hook's deadline, with a regression test):
+- R1 (low). The hook read stdin with no deadline, so a stdin that stayed open kept the hook running past `--max-wait` (measured: 6 s with `--max-wait 1s`) until Claude Code's hook timeout ended it. Claude Code closes stdin, so this needed a broken caller; the call still ran.
 
 Accepted residual risks:
 - Integrity, not authenticity, of releases (above) is unchanged.
