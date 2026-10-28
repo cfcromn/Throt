@@ -12,6 +12,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ### Changed
 - LICENSE copyright holder romanized.
+- Linux host pressure is cgroup v2-aware: CPU (including throttling), memory and swap are measured against the tightest `cpu.max`, `memory.max` and `memory.swap.max` limits of the daemon's cgroup and its ancestors, falling back to host-wide figures per metric; the host-wide load average is reported missing under a CPU quota.
 
 ### Security
 - Built with Go 1.26.10, which fixes 20 standard-library vulnerabilities present in 1.26.4 (none reachable from Throt's code according to govulncheck).

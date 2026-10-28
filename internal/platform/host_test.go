@@ -76,10 +76,9 @@ func TestSampleHostLinux(t *testing.T) {
 	}
 	for _, s := range []domain.HostSample{first, second} {
 		checkRanges(t, s)
-		for _, m := range []domain.Metric{domain.MetricLoad, domain.MetricMemory} {
-			if !s.Has(m) {
-				t.Errorf("metric %s missing", m)
-			}
+		// Load is checked in host_linux_test.go: it is missing under a CPU quota.
+		if !s.Has(domain.MetricMemory) {
+			t.Errorf("metric %s missing", domain.MetricMemory)
 		}
 	}
 }
