@@ -146,17 +146,21 @@ func run(args []string) error {
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-hup:
-				d.Reload()
-			}
-		}
-	}()
+	go reloadOnHangup(ctx, hup, func() { d.Reload() })
 	return d.Run(ctx)
+}
+
+// reloadOnHangup calls reload for each signal on hup until ctx is
+// cancelled.
+func reloadOnHangup(ctx context.Context, hup <-chan os.Signal, reload func()) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-hup:
+			reload()
+		}
+	}
 }
 
 // goroutineLogInterval parses THROT_DEBUG_GOROUTINES, a hidden debugging
