@@ -570,6 +570,42 @@ func TestUnwritableDirectory(t *testing.T) {
 	assertVersion(t, inst, "0.8.0")
 }
 
+// A directory every user can write to without the sticky bit lets another
+// user swap a verified temporary file before the rename, so it is refused.
+func TestWorldWritableDirectory(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+		ok   bool
+	}{
+		{"world-writable", 0o777, false},
+		{"sticky", 0o777 | os.ModeSticky, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newFakeGitHub(t)
+			g.publish("v0.9.0", false, releaseArchive(t, "0.9.0"))
+			inst := install(t, "0.8.0")
+			dir := filepath.Dir(inst.Throt)
+			if err := os.Chmod(dir, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(dir, 0o755) })
+			err := Run(context.Background(), Options{Yes: true}, g.env(inst, "0.8.0", io.Discard))
+			if tc.ok {
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertVersion(t, inst, "0.9.0")
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "writable by every user") {
+				t.Fatalf("err = %v, want a refusal", err)
+			}
+			assertVersion(t, inst, "0.8.0")
+		})
+	}
+}
+
 func TestConfirmation(t *testing.T) {
 	g := newFakeGitHub(t)
 	g.publish("v0.9.0", false, releaseArchive(t, "0.9.0"))

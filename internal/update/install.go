@@ -140,7 +140,8 @@ type staged struct {
 // output must be want. Only when both are staged and verified are they
 // renamed over the old files, throtd first and throt last. Any failure
 // before the renames leaves the old binaries untouched and removes the
-// temporary files.
+// temporary files. A destination under a directory every user can write to
+// (without the sticky bit) is refused before anything is written.
 func Replace(ctx context.Context, inst Installed, bins map[string][]byte, want string, run Runner) (err error) {
 	plan := []struct {
 		name, dst string
@@ -157,6 +158,11 @@ func Replace(ctx context.Context, inst Installed, bins map[string][]byte, want s
 			}
 		}
 	}()
+	for _, p := range plan {
+		if err := checkDirChain(filepath.Dir(p.dst)); err != nil {
+			return err
+		}
+	}
 	for _, p := range plan {
 		data := bins[p.name]
 		if len(data) == 0 {
@@ -180,6 +186,25 @@ func Replace(ctx context.Context, inst Installed, bins map[string][]byte, want s
 		}
 	}
 	return nil
+}
+
+// checkDirChain refuses dir when it or a directory above it is writable by
+// every user without the sticky bit. Anyone could then swap the verified
+// temporary file for their own between its version check and the rename,
+// and a throt update run with sudo would install it.
+func checkDirChain(dir string) error {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		fi, err := os.Stat(d)
+		if err != nil {
+			return &NotWritableError{Dir: dir, Err: err}
+		}
+		if fi.Mode().Perm()&0o002 != 0 && fi.Mode()&fs.ModeSticky == 0 {
+			return fmt.Errorf("%s is writable by every user, so another user could replace the new binaries before they are installed; nothing was changed. Run chmod o-w %s, then re-run throt update", d, d)
+		}
+		if filepath.Dir(d) == d {
+			return nil
+		}
+	}
 }
 
 // writeTemp writes data to a new 0755 file in dir and syncs it.
