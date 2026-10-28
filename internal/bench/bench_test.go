@@ -400,9 +400,13 @@ type result struct {
 	swapKnown  bool
 	peakSwap   uint64
 	swapGrowth uint64
-	capped     int    // jobs that hit their hard cap (memory jobs only)
-	killed     int    // jobs killed by a signal, e.g. the OOM killer
-	jobs       []span // each job's launch and exit, in arrival order
+	// selfCPU is this test process's CPU time per second of the run: the
+	// in-process daemon plus the harness's own polling, an upper bound on
+	// throtd's cost. Jobs, the agent stub and the probe are other processes.
+	selfCPU float64
+	capped  int    // jobs that hit their hard cap (memory jobs only)
+	killed  int    // jobs killed by a signal, e.g. the OOM killer
+	jobs    []span // each job's launch and exit, in arrival order
 }
 
 type span struct{ start, exit time.Time }
@@ -440,10 +444,12 @@ func TestBench(t *testing.T) {
 	var table strings.Builder
 	fmt.Fprintf(&table, "\n%s/%s, %s, %d CPUs, %s, %s of CPU per job, medians of %d runs\n\n",
 		runtime.GOOS, runtime.GOARCH, kernel(), z.cpus, limitsFor(z), jobCPU, z.reps)
-	table.WriteString("| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Makespan range | Peak running | Interventions | Max pressure |\n")
-	table.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
+	table.WriteString("| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Makespan range | Peak running | Interventions | Max pressure | Daemon CPU |\n")
+	table.WriteString("|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, sc := range scenarios(z) {
-		for _, mode := range []string{"off", "enforce"} {
+		// observe runs the scheduler and acts on nothing: what watching
+		// costs, apart from what enforcing changes.
+		for _, mode := range []string{"off", "observe", "enforce"} {
 			t.Run(sc.name+"/"+mode, func(t *testing.T) {
 				var runs []result
 				for i := range z.reps {
@@ -462,15 +468,11 @@ func TestBench(t *testing.T) {
 					}
 				}
 				r := medianResult(runs)
-				label := "baseline"
-				if mode == "enforce" {
-					label = "Throt"
-				}
 				lo := slices.MinFunc(runs, byMakespan).makespan
 				hi := slices.MaxFunc(runs, byMakespan).makespan
-				fmt.Fprintf(&table, "| %s | %s | %s | %s | %s | %s | %s–%s | %d | %d | %s |\n",
-					sc.name, label, ms(r.p50), ms(r.p95), ms(r.p99), secs(r.makespan), secs(lo), secs(hi),
-					r.peak, r.interventions, r.maxPressure)
+				fmt.Fprintf(&table, "| %s | %s | %s | %s | %s | %s | %s–%s | %d | %d | %s | %.1f%% |\n",
+					sc.name, modeLabel(mode), ms(r.p50), ms(r.p95), ms(r.p99), secs(r.makespan), secs(lo), secs(hi),
+					r.peak, r.interventions, r.maxPressure, 100*r.selfCPU)
 			})
 		}
 	}
@@ -555,10 +557,7 @@ func TestBenchMixed(t *testing.T) {
 				t.Fatalf("%d of %d runs finished", len(runs), z.reps)
 			}
 			r := medianResult(runs)
-			label := "baseline"
-			if mode == "enforce" {
-				label = "Throt"
-			}
+			label := modeLabel(mode)
 			fmt.Fprintf(&table, "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %d | %d | %s |\n",
 				sc.name, label, ms(r.p95), ms(r.p99), secs(r.makespan), secs(median(longSpan)),
 				secs(median(p50)), secs(median(p95)), secs(median(worst)), r.peak, r.interventions, r.maxPressure)
@@ -648,10 +647,7 @@ func TestBenchMemory(t *testing.T) {
 					t.Fatalf("%d of %d runs finished", len(runs), reps)
 				}
 				r := medianResult(runs)
-				label := "baseline"
-				if mode == "enforce" {
-					label = "Throt"
-				}
+				label := modeLabel(mode)
 				lo := slices.MinFunc(runs, byMakespan).makespan
 				hi := slices.MaxFunc(runs, byMakespan).makespan
 				peakSwap, growth := "n/a", "n/a"
@@ -823,6 +819,7 @@ func medianResult(runs []result) result {
 		peakSwap:      uint64(med(func(r result) int64 { return int64(r.peakSwap) })),
 		swapGrowth:    uint64(med(func(r result) int64 { return int64(r.swapGrowth) })),
 		capped:        int(med(func(r result) int64 { return int64(r.capped) })),
+		selfCPU:       float64(med(func(r result) int64 { return int64(r.selfCPU * 1e6) })) / 1e6,
 		killed:        int(med(func(r result) int64 { return int64(r.killed) })),
 	}
 }
@@ -1158,6 +1155,7 @@ func runScenario(t *testing.T, bin string, sc scenario, mode, line string, tune 
 	}()
 
 	swap.mark()
+	cpuBefore := selfCPUTime(t)
 	begin := time.Now()
 	for i, at := range sc.arrivals {
 		time.Sleep(time.Until(begin.Add(at)))
@@ -1181,12 +1179,12 @@ func runScenario(t *testing.T, bin string, sc scenario, mode, line string, tune 
 		}
 		t.Fatalf("jobs did not finish within %s: %d started, %d exited", timeout, started, exited)
 	}
+	r := result{selfCPU: (selfCPUTime(t) - cpuBefore).Seconds() / time.Since(begin).Seconds()}
 	close(stopSampling)
 	probeIn.Close()
 	<-probeRead
 	agentIn.Close()
 
-	var r result
 	r.peak = <-peak
 	jobs.mu.Lock()
 	r.makespan = jobs.last.Sub(jobs.first)
@@ -1242,4 +1240,24 @@ func runScenario(t *testing.T, bin string, sc scenario, mode, line string, tune 
 	}
 	t.Logf("%d probe samples, %d jobs (%d capped, %d killed)", len(late), len(sc.arrivals), r.capped, r.killed)
 	return r
+}
+
+// modeLabel names a scheduler mode in the result tables.
+func modeLabel(mode string) string {
+	switch mode {
+	case "off":
+		return "baseline"
+	case "enforce":
+		return "Throt"
+	}
+	return mode
+}
+
+// selfCPUTime is this process's user and system CPU time so far.
+func selfCPUTime(t *testing.T) time.Duration {
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		t.Fatalf("getrusage: %v", err)
+	}
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }

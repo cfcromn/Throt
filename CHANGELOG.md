@@ -12,7 +12,7 @@ The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md
 
 ### Added
 - Every `throt mcp` tool declares an `outputSchema` (MCP `2025-06-18` and later) describing its `structuredContent`; earlier clients ignore it. Error results still carry no structured content.
-- Benchmarks: `1 job alone` checks that Throt does not intervene in a single build, and `TestBenchMixed` runs long jobs with a stream of short ones and reports the short jobs' wait and the long jobs' makespan. The `Bench` workflow now also runs the memory scenarios on Linux, in a container with a 3 GiB limit on the runner. CI builds and tests on Intel macOS and arm64 Linux, the two release platforms it did not run before.
+- Benchmarks: the CPU scenarios also run in `observe` mode and report the daemon's CPU; `1 job alone` checks that Throt does not intervene in a single build, and `TestBenchMixed` runs long jobs with a stream of short ones and reports the short jobs' wait and the long jobs' makespan. The `Bench` workflow now also runs the memory scenarios on Linux, in a container with a 3 GiB limit on the runner. CI builds and tests on Intel macOS and arm64 Linux, the two release platforms it did not run before.
 
 - `status` reports `unattributed_rss`, the resident memory of every process no agent owns, and `unattributed_memory`, the five process names with the most of it (`name`, `processes`, `rss`; names only, no arguments or paths).
 - TUI: an `OUTSIDE AGENTS` line with that memory and its largest names, so memory the agents do not explain is visible; an agents total (CPU and memory) in the `AGENTS` title; and a startup splash with the version and the daemon's state, dismissed by any key or once `throtd` has answered and 1.5 s have passed.
