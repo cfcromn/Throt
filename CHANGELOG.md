@@ -17,6 +17,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - TUI: a `SCHEDULER` line with the mode, the current heavy limit (for an adaptive scheduler with its start and ceiling), the per-agent cap, the queued workloads and the reserved `throt run` leases, and a `STOPPED` line counting stopped processes throtd did not pause, pointing to `throt doctor`.
 - TUI: `/` filters the timeline by event kind (case-insensitive substring, at most 32 characters), `esc` clears it. Control, scheduler and failure events are tagged `CTL`, `SCHED` and `FAIL` as well as colored.
 - TUI: `NO_COLOR` and `TERM=dumb` turn off all ANSI styling.
+- Observe mode shows what it would have queued: the `status` method's `scheduler` result adds `would_queue` (the workloads the latest observe round would have queued), and `throt status` shows them as `running (would queue)`.
 
 ### Changed
 - TUI: colors adapt to a light or dark terminal background, so warnings keep their contrast on light themes. The scheduler moved from the `SYSTEM` header to its own line.
@@ -31,6 +32,21 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - Docs: the README status and roadmap show v0.8.0-rc.1 shipped and v0.9 in progress; `go install` documents `GOPRIVATE='github.com/cfcromn/*'` and the Git credentials a private repository needs; `sample_interval` documents its 10s maximum; the launchd and systemd sections explain why they share the shell's socket path and point to `socket_path` when they don't; the architecture notes that the adaptive limit resets at unknown pressure only after pressure was known once, and lists `orphans` in `status` and the new MCP tools and exit code 10 in the compatibility surface.
 - Linux: a process sample reads `/proc/<pid>/status` only for processes new since the last sample (by PID and start time) and a rolling 1/15 of the rest, reads `stat` with three system calls into a reused buffer, and parses it without allocating. Results are unchanged, except that a process that changes its uid in place (`setuid`) shows the new one within 15 samples instead of the next; the controller still re-reads it before every signal. Measured in a container at a 2 s interval, a sample drops from about 32 to 11 ms of CPU with 1,000 processes and from 63 to 35 ms with 3,000 (3.1% to 1.7% of one core), and from 28 to 3 allocations per process. `THROT_OVERHEAD=60s go test ./internal/platform -run Overhead` measures it on Linux too.
 - CLI: an invalid config file no longer locks out client commands (`status`, `ping`, `pause`, `resume`, `events`, `explain`, `stats`, `run`, `hook`, `top`, `mcp`): they warn once and use the default socket, and `throt run` no longer blames an unreachable throtd; `config check`/`show` still fail. Usage errors print one line and exit 2, and commands that take no arguments reject them. `throt status --json` prints the status as JSON; `status` shows its `SCHEDULER` line before the tables, and `status`/`explain` show `limit N (adaptive, start S, max M)` or `limit N`, with no running/limit ratio while the scheduler is off. `config check` without a file exits 0 ("defaults apply"). `throt`/`top` without a terminal suggest `throt status`. The hook's stdin read is bounded by `--max-wait` (it fails open), and `THROT_HOOK_DEBUG=1` explains ignored events on stderr. `update --check` reports the latest release on development and `go install` builds, and the `go install` hint mentions `GOPRIVATE` and git credentials.
+- When throtd is down, clients say `throtd is not running (no socket at PATH); start it with \`throtd\`` (or `nothing listening on PATH` for a stale socket) instead of an `lstat` error.
+- Control refusals read as sentences (`pause refused: it is already paused, alone or as part of another workload`); the `control_refused` event's `reason` attr keeps the code (`already_paused`). `control_paused` and `control_resumed` events carry an `action` attr (`pause`, `resume`).
+- Process graph events read as sentences: `discovered heavy workload make (pid 123)`, `heavy workload make (pid 123) exited`, `agent claude-1 started (pid 10)`, `agent claude-1 exited (pid 10)`.
+- Config errors name the line and column of a JSON syntax or type error, and the section of an unknown key (`unknown key "heavy_limt" in scheduler; did you mean "heavy_limit"?`).
+- `scheduler.resume_cooldown` is capped at 10m, since a larger value froze the queue.
+- The pressure window is 30s or ten sample intervals, whichever is longer, instead of always 30s, so a long `sample_interval` still has several samples per window (up to 100s at the 10s maximum).
+- `throt doctor` lists host CPU under `host_metrics.derived` ("derived from process CPU by throtd") rather than as missing when throtd derives it from the process table, as on macOS.
+- The shutdown event says how many paused or queued processes it resumed.
+
+### Fixed
+- `throt resume PID` on an orphan, repeated before the next sample, reported a second resume from the stale snapshot. throtd now checks the process's live state and refuses one that is gone or not stopped.
+- Resume retries no longer stall behind one record whose resume keeps failing: each round starts after the record that failed last.
+- A daemon handler error with an empty message no longer reaches the client as success.
+- A heavy job first seen unattributed (its agent missing from one sample) is credited to its agent in `throt stats` once attribution appears, instead of staying unattributed.
+- After a sampling gap longer than the pressure window, recovery waits the full dwell again instead of de-escalating on the first sample.
 
 ## [0.8.0-rc.1] - 2026-10-28
 
