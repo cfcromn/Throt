@@ -17,6 +17,8 @@ import (
 type SchedulerStatus struct {
 	Mode       scheduler.Mode `json:"mode"`
 	HeavyLimit int            `json:"heavy_limit"`
+	// PerAgentLimit caps heavy workloads per agent; 0 means no cap.
+	PerAgentLimit int `json:"per_agent_limit"`
 	// Queued lists workloads the scheduler paused (queued or preempted).
 	Queued []domain.ProcessKey `json:"queued"`
 }
@@ -145,5 +147,5 @@ func (d *Daemon) schedulerStatus() SchedulerStatus {
 		}
 	}
 	p := d.sched.Policy()
-	return SchedulerStatus{Mode: p.Mode, HeavyLimit: d.sched.Limit(), Queued: queued}
+	return SchedulerStatus{Mode: p.Mode, HeavyLimit: d.sched.Limit(), PerAgentLimit: p.PerOwnerLimit, Queued: queued}
 }

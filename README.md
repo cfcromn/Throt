@@ -85,6 +85,27 @@ throt pause PID # pause a heavy workload owned by one of your agents
 throt resume PID
 ```
 
+## Use with coding agents (MCP)
+
+`throt mcp` runs a read-only [MCP](https://modelcontextprotocol.io) server on stdio. Agents can check pressure and heavy-slot capacity before starting a big build instead of competing with the scheduler. It offers three tools:
+- `throt_status`: pressure, resources, agents, and heavy workloads.
+- `throt_capacity`: an advisory `ok_to_start` with a reason and suggestion.
+- `throt_events`: recent daemon events.
+
+None of them pauses, resumes, or changes configuration; control stays with you through the CLI. `throtd` must be running. `throt_capacity` defaults to the agent that launched the server. Tool output, including process names and PIDs, goes into the agent's context, so it reaches your model provider.
+
+```bash
+claude mcp add throt -- throt mcp
+```
+
+For Codex, add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.throt]
+command = "throt"
+args = ["mcp"]
+```
+
 ## Configuration
 
 Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.json`). Unknown keys are errors.
@@ -104,6 +125,8 @@ Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.js
   }
 }
 ```
+
+Custom agents can be added with `"agents": [{"name": "myagent", "executables": ["my-agent"]}]`. Generic runtimes such as `node` and build tools such as `go` are refused, because they would match unrelated processes. On Linux, executable names are truncated to 15 characters.
 
 `profile` presets the scheduler; explicit keys override it.
 - `performance`: limit = CPUs/2 (at least 2), not adaptive.

@@ -109,7 +109,7 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		events: domain.NewEventLog(cfg.EventHistory),
 		host:   host,
 		procs:  procs,
-		graph: process.NewGraph(agent.DefaultAdapters(),
+		graph: process.NewGraph(adapters(cfg.Agents),
 			process.WithCPUCount(runtime.NumCPU()), process.WithAgentUID(uint32(os.Getuid()))),
 		engine:   pressure.New(pressure.DefaultWindow, pressure.DefaultThresholds()),
 		sched:    newScheduler(cfg.Scheduler),
@@ -358,4 +358,13 @@ func listen(path string) (net.Listener, error) {
 		return nil, fmt.Errorf("restrict socket permissions: %w", err)
 	}
 	return l, nil
+}
+
+// adapters puts custom agents first, so they win over built-in names.
+func adapters(custom []config.Agent) []agent.Adapter {
+	var out []agent.Adapter
+	for _, a := range custom {
+		out = append(out, agent.NewNameAdapter(a.Name, a.Executables...))
+	}
+	return append(out, agent.DefaultAdapters()...)
 }

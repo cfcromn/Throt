@@ -11,6 +11,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
+
+	"github.com/cfcromn/Throt/internal/agent"
+	"github.com/cfcromn/Throt/internal/domain"
 	"time"
 )
 
@@ -28,6 +32,24 @@ type Config struct {
 	Profile string `json:"profile"`
 	// Scheduler configures automatic heavy-workload scheduling.
 	Scheduler Scheduler `json:"scheduler"`
+	// Agents adds agent adapters beyond the built-in ones. They are matched
+	// first, so they can also override a built-in name.
+	Agents []Agent `json:"agents"`
+}
+
+// Agent recognizes a coding agent by its exact executable base names.
+type Agent struct {
+	// Name labels instances, e.g. "myagent" gives "myagent-1".
+	Name        string   `json:"name"`
+	Executables []string `json:"executables"`
+}
+
+// genericRuntimes may run anything, so matching them would attribute
+// unrelated processes to an agent.
+var genericRuntimes = map[string]bool{
+	"node": true, "python": true, "python3": true, "bun": true, "deno": true,
+	"ruby": true, "java": true, "sh": true, "bash": true, "zsh": true, "fish": true,
+	"perl": true, "php": true, "lua": true, "env": true, "npx": true, "uvx": true, "tsx": true,
 }
 
 // Scheduler is the automatic scheduling policy. It is off by default.
@@ -183,6 +205,29 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("scheduler.mode must be off, observe, or enforce, not %q", c.Scheduler.Mode)
 	}
+	if len(c.Agents) > 32 {
+		return errors.New("agents: at most 32 custom agents")
+	}
+	for _, a := range c.Agents {
+		if !validLabel(a.Name) {
+			return fmt.Errorf("agents: name %q must be 1-32 lowercase letters, digits, or dashes", a.Name)
+		}
+		if len(a.Executables) == 0 || len(a.Executables) > 16 {
+			return fmt.Errorf("agents.%s: list 1-16 executables", a.Name)
+		}
+		for _, e := range a.Executables {
+			switch {
+			case e == "" || strings.ContainsAny(e, "/ \t"):
+				return fmt.Errorf("agents.%s: executable %q must be a bare base name", a.Name, e)
+			case genericRuntimes[e]:
+				return fmt.Errorf("agents.%s: %q is a generic runtime and would match unrelated processes", a.Name, e)
+			case agent.Classify(domain.ProcessSample{Name: e}).Heavy():
+				// It would turn every such build into an "agent" and take
+				// real agents' builds away from them.
+				return fmt.Errorf("agents.%s: %q is a build tool, not an agent", a.Name, e)
+			}
+		}
+	}
 	if c.Scheduler.PerAgentLimit < 0 || c.Scheduler.PerAgentLimit > 64 {
 		return errors.New("scheduler.per_agent_limit must be between 0 and 64")
 	}
@@ -193,4 +238,16 @@ func (c Config) Validate() error {
 		return errors.New("scheduler.resume_cooldown must be >= 0 and scheduler.max_queue_wait >= 1s")
 	}
 	return nil
+}
+
+func validLabel(s string) bool {
+	if len(s) == 0 || len(s) > 32 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
