@@ -334,7 +334,17 @@ Custom `agents` match exact executable names among your own processes. Generic r
 - **Scheduling** (only with `scheduler.mode` set). Throt can only act on processes that exist, so a new heavy workload that appears while every slot is taken is paused within one sample interval and resumed when a slot opens. Work already running is never queued. High pressure blocks new starts; queued work and `throt run` callers share one first-come line. Every decision is an event with a reason code.
 - **Control.** Pause and resume act only on heavy workloads of your own agents, and each signal is sent only after the process's identity (PID, start time, uid) is verified. Paused processes are recorded in `paused.json` before they are stopped, so a restarted `throtd` resumes them.
 
-The scheduler stays off by default: in the benchmarks it trades some burst throughput for much better tail latency, which is a choice to make per workload. Details, benchmark results and the local protocol are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), see [Scheduler](docs/ARCHITECTURE.md#scheduler), [Control](docs/ARCHITECTURE.md#control) and [Results](docs/ARCHITECTURE.md#results).
+The scheduler stays off by default. In the benchmarks it pays off when builds together run out of memory, and costs a few percent of build time when only the CPUs are busy, so turning it on is a choice to make per machine (see [Profiles](#profiles)). Details, benchmark results and the local protocol are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), see [Scheduler](docs/ARCHITECTURE.md#scheduler), [Control](docs/ARCHITECTURE.md#control) and [Results](docs/ARCHITECTURE.md#results).
+
+## Known limitations
+
+- **Attribution is by executable name and ancestry.** An agent started as `node script.js` or `python3 -m …` is not recognized; give it a wrapper with its own name and a [custom rule](#an-agent-is-not-detected). Names are not authenticated: any program called `claude` counts as one.
+- **Heavy work is recognized by name too.** `npm`, `pnpm`, `yarn` and `bun` count only while busy, but long-lived processes with a build tool's name (a Gradle daemon, `next dev`, `vite`) hold a heavy slot for as long as they run.
+- **Throt acts on processes that already exist.** A burst of new builds runs for up to one sample interval (2 s by default) before the extra ones are paused, and a process shorter than one interval is never seen.
+- **Pausing does not free memory.** A paused build keeps what it allocated; the kernel can swap it out, but in a container with little or no swap a job paused right after it started can still be OOM-killed.
+- **Signals are verified, then sent.** On macOS and on Linux without pidfd, a PID could in theory be reused between the identity check and the signal; see [SECURITY.md](SECURITY.md).
+- **Leases and statistics live in memory.** A restarted `throtd` forgets `throt run` reservations and `throt stats` (paused work is recorded on disk and resumed).
+- **Platforms.** macOS and Linux only. On Linux, cgroup v1 and `cpuset` limits are not read, and there is no kernel memory verdict besides PSI.
 
 ## Troubleshooting
 
