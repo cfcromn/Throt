@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -30,6 +31,8 @@ Commands:
   status     show host resources and pressure
   ping       check that throtd is reachable
   events     print recent daemon events as JSON lines
+  pause PID  pause a heavy workload (SIGSTOP) shown in 'status'
+  resume PID resume a paused workload (SIGCONT)
   doctor     print a sanitized diagnostic report (safe to share)
   version    print the client version
 
@@ -52,12 +55,12 @@ func run(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() > 1 {
+	if fs.NArg() > 2 {
 		fs.Usage()
-		return fmt.Errorf("expected one command")
+		return fmt.Errorf("too many arguments")
 	}
 	cmd := "top"
-	if fs.NArg() == 1 {
+	if fs.NArg() >= 1 {
 		cmd = fs.Arg(0)
 	}
 	if cmd == "version" {
@@ -94,6 +97,15 @@ func run(args []string) error {
 			return err
 		}
 		printStatus(os.Stdout, st)
+	case "pause", "resume":
+		pid, err := strconv.Atoi(fs.Arg(1))
+		if err != nil {
+			return fmt.Errorf("usage: throt %s PID", cmd)
+		}
+		if err := transport.Call(ctx, cfg.SocketPath, cmd, app.ControlParams{PID: pid}, nil); err != nil {
+			return err
+		}
+		fmt.Printf("%sd pid %d\n", cmd, pid)
 	case "events":
 		var events []domain.Event
 		if err := transport.Call(ctx, cfg.SocketPath, "events", app.EventsParams{Limit: *limit}, &events); err != nil {
@@ -163,7 +175,11 @@ func printStatus(w io.Writer, st app.StatusResult) {
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%.0f%%\t%s\t%d\n", a.Agent, a.Key.PID, a.CPU*100, gib(a.RSS), a.Children)
 	}
-	fmt.Fprintln(tw, "\nHEAVY WORKLOADS\nOWNER\tPID\tPROCESS\tCLASS\tCPU\tMEM")
+	paused := make(map[int]bool, len(st.Paused))
+	for _, p := range st.Paused {
+		paused[p.Key.PID] = true
+	}
+	fmt.Fprintln(tw, "\nHEAVY WORKLOADS\nOWNER\tPID\tPROCESS\tCLASS\tCPU\tMEM\tSTATE")
 	if len(st.Heavy) == 0 {
 		fmt.Fprintln(tw, "(none)")
 	}
@@ -172,7 +188,11 @@ func printStatus(w io.Writer, st app.StatusResult) {
 		if owner == "" {
 			owner = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.0f%%\t%s\n", owner, h.Key.PID, h.Name, h.Class, h.CPU*100, gib(h.RSS))
+		state := "running"
+		if paused[h.Key.PID] {
+			state = "PAUSED"
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.0f%%\t%s\t%s\n", owner, h.Key.PID, h.Name, h.Class, h.CPU*100, gib(h.RSS), state)
 	}
 	tw.Flush()
 }

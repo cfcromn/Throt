@@ -126,6 +126,32 @@ func parsePSStatLine(line string, loc *time.Location) (domain.ProcessSample, boo
 	}, true
 }
 
+// psIdentityColumns reports one process's identity. Like psStatColumns it has
+// no free-text column, and lstart is parsed exactly as the sampler parses it.
+const psIdentityColumns = "uid=,lstart="
+
+// parsePSIdentity parses the output of ps -o psIdentityColumns -p <pid>: one
+// line of uid and lstart (6 fields). Anything else is an error.
+func parsePSIdentity(out []byte, loc *time.Location) (time.Time, uint32, error) {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 1 {
+		return time.Time{}, 0, fmt.Errorf("ps identity: %d lines, want 1", len(lines))
+	}
+	fields := strings.Fields(lines[0])
+	if len(fields) != 6 {
+		return time.Time{}, 0, fmt.Errorf("ps identity: %d fields, want 6", len(fields))
+	}
+	uid, err := strconv.ParseUint(fields[0], 10, 32)
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("ps identity uid: %w", err)
+	}
+	start, err := time.ParseInLocation(psLstartLayout, strings.Join(fields[1:6], " "), loc)
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("ps identity lstart: %w", err)
+	}
+	return start, uint32(uid), nil
+}
+
 // parsePSTime parses ps cumulative CPU time: [D-][[H:]M:]S[.ff]. macOS prints
 // M:SS.ss with unbounded minutes (e.g. "2221:05.48"); other ps
 // implementations print H:MM:SS or D-HH:MM:SS for long-running processes.

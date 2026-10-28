@@ -130,3 +130,30 @@ func TestParsePSReadError(t *testing.T) {
 		t.Fatalf("names err = %v, want boom", err)
 	}
 }
+
+func TestParsePSIdentity(t *testing.T) {
+	loc := time.FixedZone("test", 9*3600)
+	start, uid, err := parsePSIdentity([]byte("  501 Sun Oct  4 11:06:02 2026    \n"), loc)
+	want := time.Date(2026, 10, 4, 11, 6, 2, 0, loc)
+	if err != nil || uid != 501 || !start.Equal(want) {
+		t.Fatalf("got %v uid %d err %v, want %v uid 501", start, uid, err, want)
+	}
+	// Identity must match what the sampler parses for the same lstart.
+	p, ok := parsePSStatLine("7 1 501 10 0:00.01 Sun Oct  4 11:06:02 2026", loc)
+	if !ok || !p.Start.Equal(start) {
+		t.Fatalf("sampler start %v, identity start %v", p.Start, start)
+	}
+	for _, bad := range []string{
+		"",
+		"501",
+		"501 Sun Oct 4 11:06:02",
+		"x Sun Oct 4 11:06:02 2026",
+		"501 Sun Oct 4 11:06:02 2026 extra",
+		"501 Sun Oct 4 11:06:02 2026\n501 Sun Oct 4 11:06:02 2026",
+		"501 Xyz Oct 4 11:06:02 2026",
+	} {
+		if _, _, err := parsePSIdentity([]byte(bad), loc); err == nil {
+			t.Errorf("parsePSIdentity(%q) succeeded", bad)
+		}
+	}
+}
