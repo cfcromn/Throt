@@ -4,13 +4,11 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/config"
@@ -97,7 +95,7 @@ func listen(ctx context.Context, path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create socket dir: %w", err)
 	}
-	if err := checkPrivateDir(filepath.Dir(path)); err != nil {
+	if err := transport.CheckPrivateDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 	if _, err := os.Lstat(path); err == nil {
@@ -121,23 +119,4 @@ func listen(ctx context.Context, path string) (net.Listener, error) {
 		return nil, fmt.Errorf("restrict socket permissions: %w", err)
 	}
 	return l, nil
-}
-
-// checkPrivateDir refuses socket directories owned by, or writable by, other
-// users, which would let them replace the socket.
-func checkPrivateDir(dir string) error {
-	fi, err := os.Stat(dir)
-	if err != nil {
-		return fmt.Errorf("stat socket dir: %w", err)
-	}
-	if !fi.IsDir() {
-		return errors.New("socket dir is not a directory: " + dir)
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-		return fmt.Errorf("socket dir %s is owned by uid %d, not the current user", dir, st.Uid)
-	}
-	if fi.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("socket dir %s is writable by other users (mode %v); use a private directory", dir, fi.Mode().Perm())
-	}
-	return nil
 }

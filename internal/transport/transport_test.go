@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,5 +74,41 @@ func TestCallNoDaemon(t *testing.T) {
 	err := Call(context.Background(), filepath.Join(t.TempDir(), "missing.sock"), "ping", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "is it running") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCheckPrivateDir(t *testing.T) {
+	base := t.TempDir()
+	private := filepath.Join(base, "private")
+	shared := filepath.Join(base, "shared")
+	link := filepath.Join(base, "link")
+	if err := os.Mkdir(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(shared, 0o777)
+	if err := os.Symlink(private, link); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		dir     string
+		wantErr string
+	}{
+		{private, ""},
+		{shared, "writable by other users"},
+		{link, "not a directory"},
+		{filepath.Join(base, "missing"), "no such file"},
+	}
+	for _, tt := range tests {
+		err := CheckPrivateDir(tt.dir)
+		if tt.wantErr == "" {
+			if err != nil {
+				t.Errorf("%s: %v", tt.dir, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%s: err = %v, want %q", tt.dir, err, tt.wantErr)
+		}
 	}
 }

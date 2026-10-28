@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -105,6 +108,9 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 // Call sends one request to the daemon at socket and decodes the result into out
 // (which may be nil).
 func Call(ctx context.Context, socket, method string, params, out any) error {
+	if err := CheckPrivateDir(filepath.Dir(socket)); err != nil {
+		return err
+	}
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", socket)
 	if err != nil {
@@ -143,3 +149,23 @@ func Call(ctx context.Context, socket, method string, params, out any) error {
 }
 
 func limitReader(r io.Reader) io.Reader { return io.LimitReader(r, maxBodyBytes) }
+
+// CheckPrivateDir rejects a socket directory that is a symlink, is owned by
+// another user, or is writable by group/other: any of those would let another
+// local user replace the socket. Both daemon and client call it.
+func CheckPrivateDir(dir string) error {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("socket dir: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("socket dir %s is not a directory (symlinks are not allowed)", dir)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+		return fmt.Errorf("socket dir %s is owned by uid %d, not the current user", dir, st.Uid)
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("socket dir %s is writable by other users (mode %v); use a private directory", dir, fi.Mode().Perm())
+	}
+	return nil
+}
