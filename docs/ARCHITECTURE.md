@@ -183,7 +183,33 @@ gh run watch    # then read the job summary, or download the bench-<os> artifact
 
 Outside a container the benchmark runs only with `CI=true`, and sizes the contention to the runner, since there is no CPU limit: the burst launches 4× `runtime.NumCPU()` jobs at once, and the staggered stream launches as many at intervals of 5 s / (2 × CPUs), so its arrival rate asks for about twice the machine. `heavy_limit` is max(2, CPUs/2). On macOS, peak running comes from `ps -o state=,comm=` instead of `/proc`. Each row is still the median of three runs, and the table header gives the OS, kernel, CPU count and `heavy_limit`. `THROT_BENCH_JOBS` and `THROT_BENCH_REPS` shrink a run for a quick check.
 
-CI results will be added here after the first run.
+First CI run ([workflow run 40710901573](https://github.com/cfcromn/Throt/actions/runs/40710901573), GitHub-hosted runners, CPU-only jobs, enforce with the default `balanced` profile):
+
+linux/amd64, Linux 6.17.0-1022-azure, 2 CPUs, heavy_limit 2, 5s of CPU per job, medians of 3 runs
+
+| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Makespan range | Peak running | Interventions | Max pressure |
+|---|---|---|---|---|---|---|---|---|---|
+| 8 at once | baseline | 0.9ms | 3.0ms | 4.9ms | 21.3s | 21.3s–21.5s | 8 | 0 | elevated |
+| 8 at once | Throt | 0.1ms | 1.0ms | 2.0ms | 23.1s | 23s–23.2s | 8 | 12 | elevated |
+| 8 staggered 1.25s | baseline | 0.1ms | 2.1ms | 3.9ms | 22.4s | 21.9s–22.7s | 8 | 0 | elevated |
+| 8 staggered 1.25s | Throt | 0.1ms | 1.0ms | 2.0ms | 23.6s | 23.5s–23.6s | 3 | 12 | elevated |
+
+darwin/arm64, Darwin 25.6.0, 5 CPUs, heavy_limit 2, 5s of CPU per job, medians of 3 runs
+
+| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Makespan range | Peak running | Interventions | Max pressure |
+|---|---|---|---|---|---|---|---|---|---|
+| 20 at once | baseline | 1.0ms | 1.1ms | 2.2ms | 20.6s | 20.4s–21s | 20 | 0 | elevated |
+| 20 at once | Throt | 1.0ms | 3.9ms | 6.5ms | 52.2s | 51.2s–52.7s | 20 | 36 | elevated |
+| 20 staggered 500ms | baseline | 2.0ms | 2.5ms | 4.9ms | 23.7s | 23.5s–24.5s | 19 | 0 | elevated |
+| 20 staggered 500ms | Throt | 3.7ms | 8.1ms | 8.1ms | 46.7s | 46.6s–48.2s | 3 | 36 | elevated |
+
+These results are less favorable than the container run, and they matter more:
+- **Linux runner:** without cgroup throttling the baseline tail is already small. Throt halves p99 (4.9 → 2.0 ms burst) for 5–8% more makespan. That's a small benefit at a small cost.
+- **macOS runner: Throt is worse.** Makespan is 2.5× longer (20.6 → 52.2 s), because `heavy_limit` 2 leaves 3 of 5 cores idle while the macOS scheduler handles CPU oversubscription well. Probe tails are higher too (p99 2.2 → 6.5 ms), most likely the daemon's own `ps` sampling at the 500 ms bench interval.
+- **The adaptive limit never grew.** Saturated CPU holds pressure at elevated, and AIMD only raises the limit at normal pressure.
+- **Only CPU contention was measured.** Memory pressure and swap, which are Throt's main target, are not exercised yet.
+
+This strengthens the default decision: the scheduler stays off, and CPU-only contention on a bare-metal kernel is not a reason to enable it.
 
 ## Local protocol
 
