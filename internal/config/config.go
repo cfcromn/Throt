@@ -29,7 +29,8 @@ type Config struct {
 type Scheduler struct {
 	// Mode is "off", "observe" (log decisions, never act), or "enforce".
 	Mode string `json:"mode"`
-	// HeavyLimit is how many attributed heavy workloads may run at once.
+	// HeavyLimit is how many heavy workloads may run at once. Unattributed
+	// ones count toward it but are never queued.
 	HeavyLimit int `json:"heavy_limit"`
 	// ResumeCooldown is the minimum time between two scheduler actions.
 	ResumeCooldown Duration `json:"resume_cooldown"`

@@ -255,7 +255,7 @@ func TestSnapshots(t *testing.T) {
 			heavy: []WorkloadView{{Key: key(6, 0), Name: "buildkitd", Class: domain.ClassContainerBuild, RSS: 2 << 20}},
 		},
 		{
-			name: "same-name heavy chains collapse into the topmost",
+			name: "heavy descendants collapse into the topmost heavy ancestor",
 			steps: []step{
 				{0, []ps{
 					{pid: 10, ppid: 1, name: "claude"},
@@ -286,8 +286,8 @@ func TestSnapshots(t *testing.T) {
 				{Key: key(17, 0), Agent: "codex-1", Name: "codex", Children: 1, RSS: 32 << 20},
 			},
 			heavy: []WorkloadView{
-				{Key: key(11, 0), Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10, CPU: 11, RSS: 11 << 20},
-				{Key: key(16, 0), Name: "ld", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10, RSS: 16 << 20},
+				// go, its go children, and ld (a different heavy name) are one workload.
+				{Key: key(11, 0), Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10, CPU: 11, RSS: 27 << 20},
 				{Key: key(18, 0), Name: "go", Class: domain.ClassBuild, Owner: "codex-1", OwnerPID: 17, RSS: 32 << 20},
 			},
 			total:  1,

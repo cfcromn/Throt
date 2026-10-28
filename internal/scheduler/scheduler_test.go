@@ -496,3 +496,28 @@ func TestDuplicateSnapshotEntriesAndSortedOutput(t *testing.T) {
 		Heavy: []process.WorkloadView{wv(3, "c"), wv(1, "a"), wv(2, "b")}})
 	expect(t, got, brief{ActionQueue, 2, ReasonPressureCritical}, brief{ActionPreempt, 3, ReasonPressureCritical})
 }
+
+func TestAgedResumesUnderHighPressure(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		running int
+		want    []brief
+	}{
+		{"aged with a free slot resumes", 1, []brief{{ActionResume, 100, ReasonAged}}},
+		{"aged without a free slot waits", 2, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := New(enforce(2))
+			s.baselined, s.lastSwitch = true, t0
+			var heavy []process.WorkloadView
+			for i := range tt.running {
+				heavy = append(heavy, wv(1+i, "a"))
+				s.seen[key(1+i)] = &entry{firstSeen: t0}
+			}
+			s.seen[key(100)] = &entry{firstSeen: t0, queuedSince: t0}
+			heavy = append(heavy, wv(100, "b"))
+			now := t0.Add(DefaultMaxQueueWait)
+			expect(t, s.Decide(Input{Now: now, Pressure: domain.PressureHigh, Heavy: heavy, Paused: keys(100)}), tt.want...)
+		})
+	}
+}

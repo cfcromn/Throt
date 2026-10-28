@@ -92,11 +92,19 @@ func (w *world) signals() string {
 	return strings.Join(w.sent, " ")
 }
 
+// debugEvents, when set by a test, dumps daemon events on a waitFor timeout.
+var debugEvents func() []domain.Event
+
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
+			if debugEvents != nil {
+				for _, e := range debugEvents() {
+					t.Log(e.Kind, e.Message)
+				}
+			}
 			t.Fatalf("timed out waiting for %s", what)
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -121,6 +129,12 @@ func TestSchedulerQueuesAndResumes(t *testing.T) {
 			}()
 			defer func() { stop(); <-done }()
 
+			debugEvents = func() []domain.Event {
+				var events []domain.Event
+				transport.Call(context.Background(), cfg.SocketPath, "events", nil, &events)
+				return events
+			}
+			defer func() { debugEvents = nil }()
 			status := func() StatusResult {
 				var st StatusResult
 				transport.Call(context.Background(), cfg.SocketPath, "status", nil, &st)
@@ -132,8 +146,9 @@ func TestSchedulerQueuesAndResumes(t *testing.T) {
 				return len(st.Heavy) == 1 && st.Pressure == domain.PressureNormal
 			})
 
-			// A second build starts while the only slot is taken.
+			// A second build (with a compiler child) starts while the only slot is taken.
 			w.add(domain.ProcessSample{PID: 12, PPID: 10, Name: "go"})
+			w.add(domain.ProcessSample{PID: 13, PPID: 12, Name: "cc1"})
 			if mode == "observe" {
 				waitFor(t, "observed decision", func() bool {
 					var events []domain.Event
@@ -154,15 +169,27 @@ func TestSchedulerQueuesAndResumes(t *testing.T) {
 				q := status().Scheduler.Queued
 				return len(q) == 1 && q[0].PID == 12
 			})
-			if got := w.signals(); got != "stop:12" {
-				t.Fatalf("signals = %q, want stop:12", got)
+			if got := w.signals(); got != "stop:12 stop:13" {
+				t.Fatalf("signals = %q, want stop:12 stop:13", got)
 			}
 
-			// The running build finishes, so the queued one gets the slot.
+			// The queued build's top process is killed while stopped; its child
+			// must not stay stopped forever.
+			w.exit(12)
+			waitFor(t, "orphaned child resumed", func() bool { return strings.HasPrefix(w.signals(), "stop:12 stop:13 cont:13") })
+			w.exit(13) // keep the rest of the scenario to one queued workload
+			waitFor(t, "queue empty", func() bool { return len(status().Scheduler.Queued) == 0 })
+
+			// Another build queues; the running build finishes, so it gets the slot.
+			w.add(domain.ProcessSample{PID: 14, PPID: 10, Name: "go"})
+			waitFor(t, "pid 14 queued", func() bool {
+				q := status().Scheduler.Queued
+				return len(q) == 1 && q[0].PID == 14
+			})
 			w.exit(11)
-			waitFor(t, "pid 12 resumed", func() bool { return len(status().Scheduler.Queued) == 0 })
-			if got := w.signals(); got != "stop:12 cont:12" {
-				t.Fatalf("signals = %q, want stop:12 cont:12", got)
+			waitFor(t, "pid 14 resumed", func() bool { return len(status().Scheduler.Queued) == 0 })
+			if got := w.signals(); !strings.HasSuffix(got, "stop:14 cont:14") {
+				t.Fatalf("signals = %q, want ... stop:14 cont:14", got)
 			}
 		})
 	}

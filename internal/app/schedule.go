@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cfcromn/Throt/internal/config"
+	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
@@ -30,55 +31,82 @@ func newScheduler(c config.Scheduler) *scheduler.Scheduler {
 	})
 }
 
+// maxQueueMembers bounds the workloads the scheduler will queue, so one
+// round's verified signals fit in its deadline.
+const maxQueueMembers = 256
+
 // schedule runs one scheduler round on the sampling goroutine and, in
 // enforce mode, executes its decisions through the verified controller.
 // Every decision is an event, so nothing the scheduler does is hidden.
 func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.PressureLevel, heavy []process.WorkloadView) {
-	// Split controller records into ours (queued) and manual pauses (held).
-	// A queued workload the user resumed by hand simply drops out of ours.
+	// The controller records who paused what, so a manual hold is never
+	// mistaken for scheduler queueing, even across restarts.
+	inSnapshot := make(map[domain.ProcessKey]bool, len(heavy))
+	for _, h := range heavy {
+		inSnapshot[h.Key] = true
+	}
 	var ours, held []domain.ProcessKey
-	still := make(map[domain.ProcessKey]bool, len(d.queued))
 	for _, p := range d.ctl.Paused() {
-		if d.queued[p.Key] {
-			ours = append(ours, p.Key)
-			still[p.Key] = true
-		} else {
+		switch {
+		case p.By != control.OriginScheduler:
 			held = append(held, p.Key)
+		case !inSnapshot[p.Key]:
+			// The top process exited (e.g. killed while stopped); its
+			// children would otherwise stay stopped with nobody to resume them.
+			d.schedulerResume(parent, p.Key, p.Name, p.Owner, "top_exited")
+		default:
+			ours = append(ours, p.Key)
 		}
 	}
-	d.queued = still
 
 	decisions := d.sched.Decide(scheduler.Input{Now: now, Pressure: level, Heavy: heavy, Paused: ours, Held: held})
-	if len(decisions) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
-	defer cancel()
 	for _, dec := range decisions {
 		d.emitDecision(dec)
 		if dec.Observed {
 			continue
 		}
-		var err error
 		switch dec.Action {
 		case scheduler.ActionQueue, scheduler.ActionPreempt:
-			d.graphMu.Lock()
-			target, ok := d.graph.Workload(dec.Key)
-			d.graphMu.Unlock()
-			if !ok {
-				continue // exited since the snapshot
-			}
-			if err = d.ctl.Pause(ctx, target); err == nil {
-				d.queued[dec.Key] = true
-			}
+			d.schedulerPause(parent, dec)
 		case scheduler.ActionResume:
-			err = d.ctl.Resume(ctx, dec.Key)
-			delete(d.queued, dec.Key) // a partial resume is retried by the controller
+			d.schedulerResume(parent, dec.Key, dec.Name, dec.Owner, "")
 		}
-		if err != nil {
-			d.emit(domain.EventControlFailed, fmt.Sprintf("scheduler %s %s failed: %v", dec.Action, dec.Name, err),
-				map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action)})
-		}
+	}
+}
+
+func (d *Daemon) schedulerPause(parent context.Context, dec scheduler.Decision) {
+	d.graphMu.Lock()
+	target, ok := d.graph.Workload(dec.Key)
+	d.graphMu.Unlock()
+	if !ok {
+		return // exited since the snapshot
+	}
+	if len(target.Members) > maxQueueMembers {
+		d.emit(domain.EventControlRefused, fmt.Sprintf("scheduler %s %s refused: %d processes exceeds %d", dec.Action, dec.Name, len(target.Members), maxQueueMembers),
+			map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action), "reason": "too_many_members"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
+	defer cancel()
+	if err := d.ctl.PauseAs(ctx, target, control.OriginScheduler); err != nil {
+		d.emit(domain.EventControlFailed, fmt.Sprintf("scheduler %s %s failed: %v", dec.Action, dec.Name, err),
+			map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action)})
+	}
+}
+
+// schedulerResume resumes a scheduler-paused workload. A non-empty reason
+// means the daemon decided it outside Decide, so it gets its own event.
+func (d *Daemon) schedulerResume(parent context.Context, key domain.ProcessKey, name, owner, reason string) {
+	if reason != "" {
+		d.emit(domain.EventSchedulerDecision, fmt.Sprintf("resume %s (%s): %s", name, owner, reason),
+			map[string]string{"decision": "resume", "pid": strconv.Itoa(key.PID), "name": name, "owner": owner, "reason": reason, "observed": "false"})
+	}
+	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
+	defer cancel()
+	// A partial resume stays recorded and is retried by the controller.
+	if err := d.ctl.Resume(ctx, key); err != nil {
+		d.emit(domain.EventControlFailed, fmt.Sprintf("scheduler resume %s failed: %v", name, err),
+			map[string]string{"pid": strconv.Itoa(key.PID), "action": "resume"})
 	}
 }
 
@@ -104,9 +132,11 @@ func (d *Daemon) emitDecision(dec scheduler.Decision) {
 }
 
 func (d *Daemon) schedulerStatus() SchedulerStatus {
-	queued := make([]domain.ProcessKey, 0, len(d.queued))
-	for k := range d.queued {
-		queued = append(queued, k)
+	queued := []domain.ProcessKey{}
+	for _, p := range d.ctl.Paused() {
+		if p.By == control.OriginScheduler {
+			queued = append(queued, p.Key)
+		}
 	}
 	p := d.sched.Policy()
 	return SchedulerStatus{Mode: p.Mode, HeavyLimit: p.HeavyLimit, Queued: queued}

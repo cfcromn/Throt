@@ -380,6 +380,13 @@ func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner m
 		if running < p.HeavyLimit {
 			return best, reason
 		}
+	case domain.PressureHigh:
+		// Pausing frees no memory, so high pressure can outlast the queue.
+		// Aged work still gets a free slot, one per cooldown, so nothing
+		// starves.
+		if running < p.HeavyLimit && aged(best) {
+			return best, reason
+		}
 	case domain.PressureUnknown:
 		// Fail open: resume with a free slot, and resume aged workloads
 		// regardless of slots so nothing waits forever on bad metrics.

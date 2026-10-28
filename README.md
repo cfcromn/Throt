@@ -102,7 +102,7 @@ Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.js
 }
 ```
 
-`scheduler.mode` is `off` (default), `observe` (log what it would do as `scheduler_decision` events), or `enforce` (queue new heavy workloads with SIGSTOP when `heavy_limit` attributed ones are already running, and resume them as slots free up). Try `observe` first and watch `throt events`.
+`scheduler.mode` is `off` (default), `observe` (log what it would do as `scheduler_decision` events), or `enforce` (queue new agent-owned heavy workloads with SIGSTOP when `heavy_limit` heavy workloads are already running, and resume them as slots free up). Try `observe` first and watch `throt events`.
 
 ## Roadmap
 

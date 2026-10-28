@@ -105,7 +105,15 @@ type PausedWorkload struct {
 	Members []domain.ProcessKey `json:"members"`
 	Since   time.Time           `json:"since"`
 	State   string              `json:"state"`
+	// By is who paused the workload: OriginManual or OriginScheduler.
+	By string `json:"by,omitempty"`
 }
+
+// Pause origins. A record without one (older state files) is manual.
+const (
+	OriginManual    = "manual"
+	OriginScheduler = "scheduler"
+)
 
 func (p PausedWorkload) clone() PausedWorkload {
 	p.Members = slices.Clone(p.Members)
@@ -205,6 +213,12 @@ func (c *Controller) gone(ctx context.Context, k domain.ProcessKey) (gone bool, 
 // already stopped are continued in reverse order; any that cannot be
 // continued stay recorded in the resuming state.
 func (c *Controller) Pause(ctx context.Context, t process.WorkloadTarget) error {
+	return c.PauseAs(ctx, t, OriginManual)
+}
+
+// PauseAs is Pause with the origin recorded on the record, so the
+// scheduler never mistakes a manual hold for its own queueing.
+func (c *Controller) PauseAs(ctx context.Context, t process.WorkloadTarget, by string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.eligible(t); err != nil {
@@ -214,7 +228,7 @@ func (c *Controller) Pause(ctx context.Context, t process.WorkloadTarget) error 
 		return fmt.Errorf("control: pause of %s: %w", keyString(t.Key), err)
 	}
 
-	rec := PausedWorkload{Key: t.Key, Name: t.Name, Owner: t.Owner, Since: c.now(), State: StatePausing}
+	rec := PausedWorkload{Key: t.Key, Name: t.Name, Owner: t.Owner, Since: c.now(), State: StatePausing, By: by}
 	for _, m := range t.Members {
 		rec.Members = append(rec.Members, m.Key)
 	}

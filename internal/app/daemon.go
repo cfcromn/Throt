@@ -91,7 +91,6 @@ type Daemon struct {
 
 	// Owned by the sampling goroutine.
 	sched        *scheduler.Scheduler
-	queued       map[domain.ProcessKey]bool // workloads the scheduler paused
 	engine       *pressure.Engine
 	failing      map[string]bool // sampler name -> currently failing
 	failures     map[string]string
@@ -114,7 +113,6 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 			process.WithCPUCount(runtime.NumCPU()), process.WithAgentUID(uint32(os.Getuid()))),
 		engine:   pressure.New(pressure.DefaultWindow, pressure.DefaultThresholds()),
 		sched:    newScheduler(cfg.Scheduler),
-		queued:   map[domain.ProcessKey]bool{},
 		failing:  map[string]bool{},
 		failures: map[string]string{},
 	}
