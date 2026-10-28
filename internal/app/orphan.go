@@ -49,14 +49,17 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 		return d.refused("resume", pid, reason)
 	}
 
-	// The snapshot can be up to a sample old: an orphan resumed since then
-	// must not be reported as resumed again.
-	if reason := d.notStopped(ctx, v.Key); reason != "" {
-		return d.refused("resume", pid, reason)
-	}
 	targets := []domain.ProcessKey{v.Key}
 	if leftPaused {
 		targets = d.orphanMembers(v, stopped, recorded)
+	}
+	// The snapshot can be up to a sample old: members resumed since then
+	// are skipped, and if none is still stopped the request is refused
+	// rather than reported as resumed again. The top may have been
+	// resumed by hand while its children are still stopped.
+	targets, reason := d.stillStopped(ctx, v.Key, targets)
+	if len(targets) == 0 {
+		return d.refused("resume", pid, reason)
 	}
 	resumed, err := d.continueAll(ctx, targets)
 	if err != nil {
@@ -94,6 +97,22 @@ func (d *Daemon) notStopped(ctx context.Context, key domain.ProcessKey) string {
 		return ""
 	}
 	return "not stopped (it is " + string(p.State) + "); nothing to resume"
+}
+
+// stillStopped returns the keys whose live state does not rule out a
+// resume (see notStopped), in order. When none is left, it also returns
+// why top cannot be resumed.
+func (d *Daemon) stillStopped(ctx context.Context, top domain.ProcessKey, keys []domain.ProcessKey) (kept []domain.ProcessKey, topReason string) {
+	topReason = "the process is gone"
+	for _, k := range keys {
+		reason := d.notStopped(ctx, k)
+		if reason == "" {
+			kept = append(kept, k)
+		} else if k == top {
+			topReason = reason
+		}
+	}
+	return kept, topReason
 }
 
 // orphanMembers returns the orphans among the members of the workload

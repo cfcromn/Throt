@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -212,5 +213,39 @@ func TestDaemonCtrlZJob(t *testing.T) {
 	}
 	if got := w.signals(); got != "cont:13" {
 		t.Fatalf("signals = %q, want cont:13 (forced: that process only)", got)
+	}
+}
+
+// TestResumeOrphanTopHandResumed checks a left-paused workload whose top
+// process was resumed by hand after the last sample: the stopped children
+// are still continued, and only a workload with no member stopped is
+// refused.
+func TestResumeOrphanTopHandResumed(t *testing.T) {
+	stopped := domain.StateStopped
+	w := newWorld(
+		domain.ProcessSample{PID: 10, PPID: 1, Name: "claude"},
+		domain.ProcessSample{PID: 11, PPID: 10, Name: "bash"},
+		domain.ProcessSample{PID: 12, PPID: 11, Name: "make", State: stopped},
+		domain.ProcessSample{PID: 13, PPID: 12, Name: "cc1", State: stopped},
+	)
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(t.TempDir(), "throtd.sock")
+	d := NewDaemon(cfg, w, w, w, slog.New(slog.DiscardHandler))
+	ctx := context.Background()
+	d.tick(ctx)
+	w.add(domain.ProcessSample{PID: 12, PPID: 11, Name: "make", State: domain.StateRunning}) // kill -CONT 12
+	raw, _ := json.Marshal(ControlParams{PID: 12})
+	if _, err := d.resume(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.signals(); got != "cont:13" {
+		t.Fatalf("signals = %q, want cont:13", got)
+	}
+	// Nothing is stopped any more, but the snapshot still says so.
+	if _, err := d.resume(ctx, raw); err == nil || !strings.Contains(err.Error(), "not stopped") {
+		t.Fatalf("second resume: err = %v, want a not-stopped refusal", err)
+	}
+	if got := w.signals(); got != "cont:13" {
+		t.Errorf("signals = %q, want only cont:13", got)
 	}
 }
