@@ -51,36 +51,11 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 
 	targets := []domain.ProcessKey{v.Key}
 	if leftPaused {
-		w, ok := d.workload(v.Key)
-		if ok {
-			orphan := make(map[domain.ProcessKey]bool, len(stopped))
-			for _, s := range stopped {
-				orphan[s.Key] = s.UID == d.uid && !recorded[s.Key]
-			}
-			targets = targets[:0]
-			for _, m := range slices.Backward(w.Members) {
-				if orphan[m.Key] && m.UID == d.uid {
-					targets = append(targets, m.Key)
-				}
-			}
-		}
+		targets = d.orphanMembers(v, stopped, recorded)
 	}
-	var errs []error
-	resumed := 0
-	for _, k := range targets {
-		cctx, cancel := context.WithTimeout(ctx, control.CallTimeout)
-		err := d.sig.Continue(cctx, k, d.uid)
-		cancel()
-		switch {
-		case errors.Is(err, domain.ErrProcessGone):
-		case err != nil:
-			errs = append(errs, err)
-		default:
-			resumed++
-		}
-	}
-	if len(errs) > 0 {
-		return d.controlError("resume", pid, errors.Join(errs...))
+	resumed, err := d.continueAll(ctx, targets)
+	if err != nil {
+		return d.controlError("resume", pid, err)
 	}
 	if resumed == 0 {
 		return d.refused("resume", pid, "the process is gone")
@@ -94,6 +69,53 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 	}
 	d.emit(domain.EventControlResumed, "resumed stopped pid "+strconv.Itoa(pid)+" ("+v.Name+") that throtd did not pause", attrs)
 	return nil
+}
+
+// orphanMembers returns the orphans among the members of the workload
+// whose top process is v, children first, or just v when the workload is
+// gone from the graph.
+func (d *Daemon) orphanMembers(v process.StoppedView, stopped []process.StoppedView, recorded map[domain.ProcessKey]bool) []domain.ProcessKey {
+	w, ok := d.workload(v.Key)
+	if !ok {
+		return []domain.ProcessKey{v.Key}
+	}
+	orphan := make(map[domain.ProcessKey]bool, len(stopped))
+	for _, s := range stopped {
+		orphan[s.Key] = d.orphaned(s, recorded)
+	}
+	var targets []domain.ProcessKey
+	for _, m := range slices.Backward(w.Members) {
+		if orphan[m.Key] && m.UID == d.uid {
+			targets = append(targets, m.Key)
+		}
+	}
+	return targets
+}
+
+// continueAll continues each of keys, verifying its identity first, and
+// returns how many it continued. A process that is gone is skipped.
+func (d *Daemon) continueAll(ctx context.Context, keys []domain.ProcessKey) (int, error) {
+	var errs []error
+	resumed := 0
+	for _, k := range keys {
+		cctx, cancel := context.WithTimeout(ctx, control.CallTimeout)
+		err := d.sig.Continue(cctx, k, d.uid)
+		cancel()
+		switch {
+		case errors.Is(err, domain.ErrProcessGone):
+		case err != nil:
+			errs = append(errs, err)
+		default:
+			resumed++
+		}
+	}
+	return resumed, errors.Join(errs...)
+}
+
+// orphaned reports whether s is a stopped process of the daemon's user
+// that no paused record explains.
+func (d *Daemon) orphaned(s process.StoppedView, recorded map[domain.ProcessKey]bool) bool {
+	return s.UID == d.uid && !recorded[s.Key]
 }
 
 // recordedKeys returns every process in the paused records, members

@@ -10,6 +10,7 @@ import (
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/monitor"
 	"github.com/cfcromn/Throt/internal/process"
+	"github.com/cfcromn/Throt/internal/scheduler"
 )
 
 // allMissing marks every host metric unavailable. A failed host sample still
@@ -28,95 +29,150 @@ func (d *Daemon) tick(parent context.Context) {
 	// Bound each round so a hung sampler (e.g. ps) cannot stall updates.
 	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
 	defer cancel()
-	latency, latencyOK := monitor.ProbeLatency(ctx, latencyProbe)
-	// Records from before and after the process sample: a workload paused
-	// or resumed while ps runs is in one of them, so it is not an orphan.
-	pausedBefore := d.ctl.Paused()
-	host, herr := d.host.SampleHost(ctx)
-	host.Latency = latency
-	if !latencyOK {
-		host.Missing = append(slices.Clone(host.Missing), domain.MetricLatency)
-	}
-	// A lease granted after this instant may belong to a process the
-	// sample below does not show yet.
-	sampled := time.Now()
-	procs, perr := d.procs.SampleProcesses(ctx)
+	s := d.takeSample(ctx)
 	if parent.Err() != nil {
 		return // shutting down; partial samples are meaningless
 	}
-	now := time.Now()
-	d.track("host", herr)
-	d.track("processes", perr)
+	d.track("host", s.herr)
+	d.track("processes", s.perr)
 
-	var snap process.Snapshot
-	var orphans []process.Orphan
-	var orphanCount int
-	var stoppedOrphans []domain.ProcessKey
-	if perr == nil {
-		d.graphMu.Lock()
-		changes := d.graph.Update(now, procs)
-		snap = d.graph.Snapshot()
-		d.graphMu.Unlock()
-		for _, c := range changes {
-			d.emitChange(c)
-		}
-		// Before anything below resumes a record and drops it.
-		recorded := recordedKeys(pausedBefore, d.ctl.Paused())
-		orphans, orphanCount = process.FindOrphans(snap.Stopped, d.uid, func(k domain.ProcessKey) bool { return recorded[k] })
-		d.reportOrphans(now, orphans)
-		for _, s := range snap.Stopped {
-			if s.UID == d.uid && !recorded[s.Key] {
-				stoppedOrphans = append(stoppedOrphans, s.Key)
-			}
-		}
-		d.forgetExited(ctx, procs)
+	var r processRound
+	if s.perr == nil {
+		r = d.observeProcesses(ctx, s)
 	}
 	// Retry even when sampling fails: that is when memory is tight and a
 	// resume is most likely to have failed.
 	d.retryResumes(ctx)
-	if herr != nil {
-		host = domain.HostSample{Time: now, Missing: allMissing}
-	} else if !host.Has(domain.MetricCPU) && snap.HasCPU {
-		// Platforms without a host CPU counter (macOS without cgo) get the
-		// sum of per-process CPU deltas instead.
-		host.CPUUsage = snap.TotalCPU
-		host.Missing = slices.DeleteFunc(slices.Clone(host.Missing), func(m domain.Metric) bool { return m == domain.MetricCPU })
-	}
+	host := hostReading(s, r.snap)
 	level, changed, reason := d.engine.Observe(host)
 
-	d.mu.Lock()
-	from := d.status.Pressure
-	d.status.Pressure, d.status.Reason, d.status.Degraded = level, reason, d.degradedSummary()
-	if herr == nil {
-		d.status.Host = &host
-	}
-	var ended []leaseEnd
-	if perr == nil {
-		d.status.Agents, d.status.Heavy = snap.Agents, snap.Heavy
-		d.status.Orphans, d.status.OrphanCount = orphans, orphanCount
-		d.stopped = snap.Stopped
-		ended = d.leases.observe(sampled, now, procs, snap.Heavy)
-		d.waiting.prune(now, sampled, procs)
-	} else {
-		ended = d.leases.expire(now)
-		d.waiting.prune(now, sampled, nil)
-	}
-	reserved := d.leases.owners()
-	waiters := d.waiting.line()
-	d.mu.Unlock()
+	from, ended, reserved, waiters := d.publish(s, r, host, level, reason)
 	d.emitLeaseEnds(ended)
-
 	if changed {
 		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
 			map[string]string{"from": from.String(), "to": level.String(), "reason": reason})
 	}
 	d.applyPolicy(parent)
-	if perr == nil {
+	if s.perr == nil {
 		// Only schedule on a fresh process snapshot: acting on stale data
 		// could queue a workload that already finished.
-		d.schedule(parent, now, level, d.engine.ThroughputOnly(), snap.Heavy, reserved, admitted(ended), waiters, stoppedOrphans)
-		d.account(now, snap)
+		d.schedule(parent, s.now, level, d.engine.ThroughputOnly(), r.snap.Heavy, reserved, admitted(ended), waiters, r.stoppedOrphans)
+		d.account(s.now, r.snap)
 	}
+	d.publishScheduler()
+}
+
+// sample is one tick's raw readings.
+type sample struct {
+	host domain.HostSample
+	herr error
+	// pausedBefore holds the paused records from before the process
+	// sample; with those from after it, a workload paused or resumed while
+	// ps runs is in one of them, so it is not an orphan.
+	pausedBefore []control.PausedWorkload
+	// sampled is when the process sample started: a lease granted after
+	// this instant may belong to a process the sample does not show yet.
+	sampled time.Time
+	procs   []domain.ProcessSample
+	perr    error
+	now     time.Time
+}
+
+// takeSample probes responsiveness and samples the host and the process
+// table.
+func (d *Daemon) takeSample(ctx context.Context) sample {
+	var s sample
+	latency, latencyOK := monitor.ProbeLatency(ctx, latencyProbe)
+	s.pausedBefore = d.ctl.Paused()
+	s.host, s.herr = d.host.SampleHost(ctx)
+	s.host.Latency = latency
+	if !latencyOK {
+		s.host.Missing = append(slices.Clone(s.host.Missing), domain.MetricLatency)
+	}
+	s.sampled = time.Now()
+	s.procs, s.perr = d.procs.SampleProcesses(ctx)
+	s.now = time.Now()
+	return s
+}
+
+// processRound is what a successful process sample yields.
+type processRound struct {
+	snap        process.Snapshot
+	orphans     []process.Orphan
+	orphanCount int
+	// stoppedOrphans holds the keys of all orphans, not only the MaxOrphans
+	// listed, for the scheduler to hold.
+	stoppedOrphans []domain.ProcessKey
+}
+
+// observeProcesses feeds a successful process sample to the graph, emits
+// its changes, finds and reports orphans, and forgets recorded processes
+// that exited.
+func (d *Daemon) observeProcesses(ctx context.Context, s sample) processRound {
+	d.graphMu.Lock()
+	changes := d.graph.Update(s.now, s.procs)
+	snap := d.graph.Snapshot()
+	d.graphMu.Unlock()
+	for _, c := range changes {
+		d.emitChange(c)
+	}
+	r := processRound{snap: snap}
+	// Before anything below resumes a record and drops it.
+	recorded := recordedKeys(s.pausedBefore, d.ctl.Paused())
+	r.orphans, r.orphanCount = process.FindOrphans(snap.Stopped, d.uid, func(k domain.ProcessKey) bool { return recorded[k] })
+	d.reportOrphans(s.now, r.orphans)
+	for _, v := range snap.Stopped {
+		if d.orphaned(v, recorded) {
+			r.stoppedOrphans = append(r.stoppedOrphans, v.Key)
+		}
+	}
+	d.forgetExited(ctx, s.procs)
+	return r
+}
+
+// hostReading is the host sample the pressure engine observes: every metric
+// missing when sampling failed, and on platforms without a host CPU counter
+// (macOS without cgo) the sum of per-process CPU deltas from snap instead.
+func hostReading(s sample, snap process.Snapshot) domain.HostSample {
+	host := s.host
+	if s.herr != nil {
+		return domain.HostSample{Time: s.now, Missing: allMissing}
+	}
+	if !host.Has(domain.MetricCPU) && snap.HasCPU {
+		host.CPUUsage = snap.TotalCPU
+		host.Missing = slices.DeleteFunc(slices.Clone(host.Missing), func(m domain.Metric) bool { return m == domain.MetricCPU })
+	}
+	return host
+}
+
+// publish stores the round's results in the status under d.mu and, in the
+// same step, ends the leases and drops the waiters the sample supersedes.
+// It returns the previous pressure level, the ended leases, and the
+// lease owners and waiters for the scheduler.
+func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level domain.PressureLevel, reason string) (from domain.PressureLevel, ended []leaseEnd, reserved []string, waiters []scheduler.Waiter) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	from = d.status.Pressure
+	d.status.Pressure, d.status.Reason, d.status.Degraded = level, reason, d.degradedSummary()
+	if s.herr == nil {
+		d.status.Host = &host
+	}
+	if s.perr == nil {
+		d.status.Agents, d.status.Heavy = r.snap.Agents, r.snap.Heavy
+		d.status.Orphans, d.status.OrphanCount = r.orphans, r.orphanCount
+		d.stopped = r.snap.Stopped
+		ended = d.leases.observe(s.sampled, s.now, s.procs, r.snap.Heavy)
+		d.waiting.prune(s.now, s.sampled, s.procs)
+	} else {
+		ended = d.leases.expire(s.now)
+		d.waiting.prune(s.now, s.sampled, nil)
+	}
+	return from, ended, d.leases.owners(), d.waiting.line()
+}
+
+// publishScheduler stores the scheduler's state after this round: its
+// status, and the queue and policy acquire shares the line with.
+func (d *Daemon) publishScheduler() {
 	sched := d.schedulerStatus()
 	line, linePolicy := d.sched.Queued(), d.sched.Policy()
 	d.mu.Lock()
