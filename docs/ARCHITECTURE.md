@@ -172,6 +172,19 @@ An earlier policy let saturated CPU alone raise pressure to high. Under a real q
 
 **Default decision:** the scheduler stays `off` by default. It trades some burst throughput for much better tail responsiveness, and whether that trade is right depends on the workload, so turning it on is an explicit choice (`scheduler.mode`, optionally with a `profile`).
 
+### Real machines
+
+The container above shares a VM with Docker Desktop and enforces its CPU limit through a cgroup quota. To measure without either, the `Bench` workflow (`.github/workflows/bench.yml`) runs the same benchmark on hosted `ubuntu-latest` and `macos-latest` runners, which are disposable VMs, so the enforce-mode daemon is safe there and macOS gets a real XNU kernel. It runs only on demand and weekly, never on push or pull request:
+
+```bash
+gh workflow run bench.yml
+gh run watch    # then read the job summary, or download the bench-<os> artifacts
+```
+
+Outside a container the benchmark runs only with `CI=true`, and sizes the contention to the runner, since there is no CPU limit: the burst launches 4× `runtime.NumCPU()` jobs at once, and the staggered stream launches as many at intervals of 5 s / (2 × CPUs), so its arrival rate asks for about twice the machine. `heavy_limit` is max(2, CPUs/2). On macOS, peak running comes from `ps -o state=,comm=` instead of `/proc`. Each row is still the median of three runs, and the table header gives the OS, kernel, CPU count and `heavy_limit`. `THROT_BENCH_JOBS` and `THROT_BENCH_REPS` shrink a run for a quick check.
+
+CI results will be added here after the first run.
+
 ## Local protocol
 
 Clients reach `throtd` over its Unix socket (`throt doctor` prints the path). Each connection carries one request and one response, both newline-terminated JSON of at most 1 MiB:

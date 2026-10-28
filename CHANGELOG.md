@@ -6,6 +6,9 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Added
+- Real-machine benchmarks: the `Bench` workflow (`gh workflow run bench.yml`, also weekly) runs `internal/bench` on hosted Linux and macOS runners, sized to the runner (4× its CPUs per scenario), and writes the medians of three runs to the job summary and an artifact. The benchmark now runs on macOS (CI only) as well as in a Linux container.
+
 ## [0.8.0-rc.1] - 2026-10-28
 
 Claude Code integration, fair admission, a security review, reproducible releases, and macOS end-to-end tests: the 1.0 groundwork.

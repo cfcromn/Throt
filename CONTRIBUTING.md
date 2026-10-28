@@ -20,9 +20,10 @@ make check   # vet + test + build
 make race    # tests with the race detector
 make ci      # the unit-test part of CI (gofmt, vet, race tests, build)
 make bench   # real-kernel benchmark, in Docker only
+gh workflow run bench.yml   # the benchmark on Linux and macOS CI runners
 ```
 
-**Never run an enforce-mode `throtd`, the e2e suite, or the benchmark on a machine with real agents.** It pauses their real builds. The e2e suite and the benchmark refuse to run outside CI or a container. Run them in Docker, building the test binary first, because under `go test` the `go` process would own every job:
+**Never run an enforce-mode `throtd`, the e2e suite, or the benchmark on a machine with real agents.** It pauses their real builds. The e2e suite and the benchmark refuse to run outside CI or a container; on macOS, which has no container, they run only on CI. For real-machine numbers, use the `Bench` workflow (on demand and weekly, see Benchmarks in `docs/ARCHITECTURE.md`). Locally, run them in Docker, building the test binary first, because under `go test` the `go` process would own every job:
 
 ```bash
 docker run --rm --init -v "$PWD":/src -w /src golang:1.26.10-alpine sh -c \
