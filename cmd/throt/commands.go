@@ -52,7 +52,7 @@ func isHelp(a string) bool {
 func commands() []command {
 	return []command{
 		{name: "top", run: cmdTop, help: "open the terminal UI (the default with no command)"},
-		{name: "status", run: cmdStatus, help: "show host resources and pressure"},
+		{name: "status", run: cmdStatus, help: "show host resources and pressure; --json for JSON"},
 		{name: "stats", run: cmdStats, flags: true, help: "show per-agent resource usage since throtd started; --json for JSON"},
 		{name: "ping", run: cmdPing, help: "check that throtd is reachable"},
 		{name: "events", run: cmdEvents, flags: true, help: "print recent daemon events as JSON lines; -f keeps printing new ones"},

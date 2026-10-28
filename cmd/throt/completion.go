@@ -42,7 +42,7 @@ _throt() {
         pause|resume|explain) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "$(_throt_pids)" -- "$cur")) ;;
         completion) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
         config) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "check show" -- "$cur")) || COMPREPLY=($(compgen -W "--config --json" -- "$cur")) ;;
-        version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
+        status|version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
         update) [[ "$prev" == --version || "$prev" == -version ]] || COMPREPLY=($(compgen -W "--check --version --pre --yes" -- "$cur")) ;;
         hook) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code" -- "$cur")) ;;
         setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) ;;
@@ -115,7 +115,7 @@ _throt() {
                 pause|resume|explain) (( CURRENT == 2 )) && _throt_pids ;;
                 completion) (( CURRENT == 2 )) && compadd bash zsh fish ;;
                 config) (( CURRENT == 2 )) && compadd check show || _arguments '--config[path to config file]:file:_files' '--json[print JSON]' ;;
-                version) _arguments '--json[print JSON]' ;;
+                status|version) _arguments '--json[print JSON]' ;;
                 update) _arguments '--check[only report whether an update is available]' '--version[install this release]:version:' '--pre[include prereleases]' '--yes[do not ask for confirmation]' ;;
                 hook) (( CURRENT == 2 )) && compadd claude-code ;;
                 setup) (( CURRENT == 2 )) && compadd claude-code codex ;;
@@ -164,7 +164,7 @@ complete -c throt -n '__fish_seen_subcommand_from pause resume explain' -x -a '(
 complete -c throt -n '__fish_seen_subcommand_from completion' -x -a 'bash zsh fish'
 complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show' -x -a 'check show'
 complete -c throt -n '__fish_seen_subcommand_from config' -l config -r -F -d 'path to config file'
-complete -c throt -n '__fish_seen_subcommand_from config version' -l json -d 'print JSON'
+complete -c throt -n '__fish_seen_subcommand_from config status version' -l json -d 'print JSON'
 complete -c throt -n '__fish_seen_subcommand_from update' -l check -d 'only report whether an update is available'
 complete -c throt -n '__fish_seen_subcommand_from update' -l version -x -d 'install this release'
 complete -c throt -n '__fish_seen_subcommand_from update' -l pre -d 'include prereleases'

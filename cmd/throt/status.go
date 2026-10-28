@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -13,10 +14,15 @@ import (
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
-// cmdStatus is 'throt status'.
+// cmdStatus is 'throt status [--json]'.
 func cmdStatus(ctx context.Context, e env, args []string) error {
-	if err := noArgs("status", args); err != nil {
-		return err
+	asJSON := false
+	switch {
+	case len(args) == 0:
+	case len(args) == 1 && (args[0] == "--json" || args[0] == "-json"):
+		asJSON = true
+	default:
+		return usageLine("usage: throt status [--json]")
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {
@@ -27,6 +33,11 @@ func cmdStatus(ctx context.Context, e env, args []string) error {
 	var st app.StatusResult
 	if err := transport.Call(ctx, cfg.SocketPath, "status", nil, &st); err != nil {
 		return err
+	}
+	if asJSON {
+		enc := json.NewEncoder(e.stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(st)
 	}
 	printStatus(e.stdout, st)
 	return nil
@@ -72,6 +83,22 @@ func printStatus(w io.Writer, st app.StatusResult) {
 		fmt.Fprintf(w, "PSI       %s\n", psi)
 	}
 
+	// The scheduler lines belong with the summary above, so they are
+	// written before the tables, which tw buffers until Flush.
+	fmt.Fprintf(w, "SCHEDULER %s, %s, %d queued, %d reserved\n", modeName(st.Scheduler.Mode), limitText(st.Scheduler), len(st.Scheduler.Queued), len(st.Scheduler.Leases))
+	const maxLeases = 5
+	for i, l := range st.Scheduler.Leases {
+		if i == maxLeases {
+			fmt.Fprintf(w, "RESERVED  ... and %d more\n", len(st.Scheduler.Leases)-maxLeases)
+			break
+		}
+		agent := l.Agent
+		if agent == "" {
+			agent = "-"
+		}
+		fmt.Fprintf(w, "RESERVED  pid %d (%s) since %s\n", l.Process.PID, agent, l.Granted.Format(time.TimeOnly))
+	}
+
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "\nAGENTS\nAGENT\tPID\tCPU\tMEM\tCHILDREN")
 	if len(st.Agents) == 0 {
@@ -84,19 +111,6 @@ func printStatus(w io.Writer, st app.StatusResult) {
 			break
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%.0f%%\t%s\t%d\n", a.Agent, a.Key.PID, a.CPU*100, gib(a.RSS), a.Children)
-	}
-	fmt.Fprintf(w, "SCHEDULER %s (heavy limit %d, %d queued, %d reserved)\n", st.Scheduler.Mode, st.Scheduler.HeavyLimit, len(st.Scheduler.Queued), len(st.Scheduler.Leases))
-	const maxLeases = 5
-	for i, l := range st.Scheduler.Leases {
-		if i == maxLeases {
-			fmt.Fprintf(w, "RESERVED  ... and %d more\n", len(st.Scheduler.Leases)-maxLeases)
-			break
-		}
-		agent := l.Agent
-		if agent == "" {
-			agent = "-"
-		}
-		fmt.Fprintf(w, "RESERVED  pid %d (%s) since %s\n", l.Process.PID, agent, l.Granted.Format(time.TimeOnly))
 	}
 	paused := make(map[int]bool, len(st.Paused))
 	for _, p := range st.Paused {
@@ -125,6 +139,17 @@ func printStatus(w io.Writer, st app.StatusResult) {
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.0f%%\t%s\t%s\n", owner, h.Key.PID, h.Name, h.Class, h.CPU*100, gib(h.RSS), state)
 	}
 	tw.Flush()
+}
+
+// limitText is the heavy limit as status and explain show it: "limit 3
+// (adaptive, start 2, max 10)" for an adaptive scheduler, whose limit
+// moves, else "limit 2".
+func limitText(sc app.SchedulerStatus) string {
+	s := fmt.Sprintf("limit %d", sc.HeavyLimit)
+	if sc.Adaptive {
+		s += fmt.Sprintf(" (adaptive, start %d, max %d)", sc.StartLimit, sc.MaxLimit)
+	}
+	return s
 }
 
 // psiDetail renders the Linux PSI readings the sample carries, as

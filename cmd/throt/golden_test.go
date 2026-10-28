@@ -459,7 +459,7 @@ const goldenUsage = `Usage: throt [flags] [command]
 
 Commands:
   top        open the terminal UI (the default with no command)
-  status     show host resources and pressure
+  status     show host resources and pressure; --json for JSON
   stats      show per-agent resource usage since throtd started; --json for JSON
   ping       check that throtd is reachable
   events     print recent daemon events as JSON lines; -f keeps printing new ones
@@ -547,7 +547,7 @@ _throt() {
         pause|resume|explain) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "$(_throt_pids)" -- "$cur")) ;;
         completion) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
         config) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "check show" -- "$cur")) || COMPREPLY=($(compgen -W "--config --json" -- "$cur")) ;;
-        version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
+        status|version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
         update) [[ "$prev" == --version || "$prev" == -version ]] || COMPREPLY=($(compgen -W "--check --version --pre --yes" -- "$cur")) ;;
         hook) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code" -- "$cur")) ;;
         setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) ;;
@@ -608,7 +608,7 @@ complete -c throt -n '__fish_seen_subcommand_from pause resume explain' -x -a '(
 complete -c throt -n '__fish_seen_subcommand_from completion' -x -a 'bash zsh fish'
 complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show' -x -a 'check show'
 complete -c throt -n '__fish_seen_subcommand_from config' -l config -r -F -d 'path to config file'
-complete -c throt -n '__fish_seen_subcommand_from config version' -l json -d 'print JSON'
+complete -c throt -n '__fish_seen_subcommand_from config status version' -l json -d 'print JSON'
 complete -c throt -n '__fish_seen_subcommand_from update' -l check -d 'only report whether an update is available'
 complete -c throt -n '__fish_seen_subcommand_from update' -l version -x -d 'install this release'
 complete -c throt -n '__fish_seen_subcommand_from update' -l pre -d 'include prereleases'
@@ -666,7 +666,7 @@ _throt() {
                 pause|resume|explain) (( CURRENT == 2 )) && _throt_pids ;;
                 completion) (( CURRENT == 2 )) && compadd bash zsh fish ;;
                 config) (( CURRENT == 2 )) && compadd check show || _arguments '--config[path to config file]:file:_files' '--json[print JSON]' ;;
-                version) _arguments '--json[print JSON]' ;;
+                status|version) _arguments '--json[print JSON]' ;;
                 update) _arguments '--check[only report whether an update is available]' '--version[install this release]:version:' '--pre[include prereleases]' '--yes[do not ask for confirmation]' ;;
                 hook) (( CURRENT == 2 )) && compadd claude-code ;;
                 setup) (( CURRENT == 2 )) && compadd claude-code codex ;;
@@ -842,7 +842,7 @@ print a sanitized diagnostic report (safe to share)
 		"explain": {code: 0, stdout: `make (pid 4312, build)
 state      running
 owner      claude-1 (pid 1000)
-scheduler  observe, heavy limit 2, 2/2 heavy running
+scheduler  observe, limit 2, 2/2 heavy running
 pressure   elevated
 
 RECENT EVENTS
@@ -1183,9 +1183,9 @@ LOAD      1.20 per CPU
 MEM       10.0 GiB used of 16.0 GiB
 LATENCY   3ms
 SWAP      512 MiB used of 2.0 GiB
+SCHEDULER observe, limit 2, 0 queued, 0 reserved
 
 AGENTS
-SCHEDULER observe (heavy limit 2, 0 queued, 0 reserved)
 AGENT     PID   CPU  MEM      CHILDREN
 claude-1  1000  5%   300 MiB  2
 
@@ -1194,11 +1194,71 @@ OWNER     PID   PROCESS  CLASS  CPU   MEM      STATE
 claude-1  4312  make     build  150%  2.0 GiB  running
 -         4400  gradle   build  25%   700 MiB  running
 `, stderr: ""},
-		"status --json": {code: 2, stdout: "", stderr: `throt: unexpected argument "--json"; see 'throt status -h'
-`},
+		"status --json": {code: 0, stdout: `{
+  "pressure": "elevated",
+  "reason": "load 1.20 per CPU",
+  "host": {
+    "time": "0001-01-01T00:00:00Z",
+    "cpu_usage": 0.42,
+    "load1": 1.2,
+    "mem_total": 17179869184,
+    "mem_available": 6442450944,
+    "swap_total": 2147483648,
+    "swap_used": 536870912,
+    "latency": 3000000
+  },
+  "agents": [
+    {
+      "process": {
+        "pid": 1000,
+        "start": "2026-10-28T14:00:00Z"
+      },
+      "agent": "claude-1",
+      "name": "",
+      "children": 2,
+      "cpu": 0.05,
+      "rss": 314572800
+    }
+  ],
+  "heavy": [
+    {
+      "process": {
+        "pid": 4312,
+        "start": "2026-10-28T14:00:00Z"
+      },
+      "name": "make",
+      "class": "build",
+      "owner": "claude-1",
+      "owner_pid": 1000,
+      "cpu": 1.5,
+      "rss": 2147483648
+    },
+    {
+      "process": {
+        "pid": 4400,
+        "start": "2026-10-28T14:00:00Z"
+      },
+      "name": "gradle",
+      "class": "build",
+      "owner": "",
+      "owner_pid": 0,
+      "cpu": 0.25,
+      "rss": 734003200
+    }
+  ],
+  "paused": null,
+  "scheduler": {
+    "mode": "observe",
+    "heavy_limit": 2,
+    "per_agent_limit": 0,
+    "queued": null,
+    "leases": null
+  }
+}
+`, stderr: ""},
 		"status -h": {code: 0, stdout: `usage: throt status
 
-show host resources and pressure
+show host resources and pressure; --json for JSON
 `, stderr: ""},
 		"status down": {code: 1, stdout: "", stderr: `throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
 `},

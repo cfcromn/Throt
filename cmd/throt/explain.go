@@ -74,7 +74,7 @@ func explain(w io.Writer, pid int, st app.StatusResult, events []domain.Event, c
 		owner = fmt.Sprintf("%s (pid %d)", h.Owner, h.OwnerPID)
 	}
 	sc := st.Scheduler
-	limits := fmt.Sprintf("heavy limit %d", sc.HeavyLimit)
+	limits := limitText(sc)
 	if sc.PerAgentLimit > 0 {
 		limits += fmt.Sprintf(", per-agent limit %d", sc.PerAgentLimit)
 	}
@@ -83,7 +83,13 @@ func explain(w io.Writer, pid int, st app.StatusResult, events []domain.Event, c
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "state\t%s\n", state)
 	fmt.Fprintf(tw, "owner\t%s\n", owner)
-	fmt.Fprintf(tw, "scheduler\t%s, %s, %d/%d heavy running\n", modeName(sc.Mode), limits, running(st), sc.HeavyLimit)
+	// With the scheduler off the limit is not enforced, so a running/limit
+	// ratio would only mislead.
+	if modeName(sc.Mode) == string(scheduler.ModeOff) {
+		fmt.Fprintf(tw, "scheduler\t%s, %s\n", modeName(sc.Mode), limits)
+	} else {
+		fmt.Fprintf(tw, "scheduler\t%s, %s, %d/%d heavy running\n", modeName(sc.Mode), limits, running(st), sc.HeavyLimit)
+	}
 	fmt.Fprintf(tw, "pressure\t%s\n", st.Pressure)
 	tw.Flush()
 
