@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+## [0.8.0-rc.1] - 2026-10-28
+
+Claude Code integration, fair admission, a security review, reproducible releases, and macOS end-to-end tests: the 1.0 groundwork.
+
 ### Added
 - `internal/e2e` soak test (`THROT_SOAK=1`, containers only, not run in CI): 10 minutes of agent job churn, PID reuse, manual pause/resume, `throt run`, mode reloads and a `throtd` crash and restart, checking for stranded stopped work, flat memory, goroutines, threads and file descriptors, `throt status` p99 under 1s, event `seq`/`instance` integrity, and the heavy limit.
 - One FIFO line for `throt run` lease waiters and scheduler-queued workloads, ordered by wait time, with `max_queue_wait` aging and per-agent budgets applying to both. Previously `acquire` refused every lease while anything was queued, so under steady agent load `throt run` waited for its timeout and then ran outside the limit. The scheduler no longer resumes a queued workload, or admits a newcomer, while an older waiter is in line. throtd remembers at most 256 waiters and forgets one after 2s without a poll or when it exits.
@@ -128,7 +132,8 @@ First observe-only release candidate. Throt does not control any process.
 - `throt doctor` sanitized diagnostics.
 - Release automation: macOS/Linux archives, checksums, and SBOMs via GoReleaser.
 
-[Unreleased]: https://github.com/cfcromn/Throt/compare/v0.7.0-rc.1...HEAD
+[Unreleased]: https://github.com/cfcromn/Throt/compare/v0.8.0-rc.1...HEAD
+[0.8.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.7.0-rc.1...v0.8.0-rc.1
 [0.7.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.6.0-rc.1...v0.7.0-rc.1
 [0.6.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.5.0-rc.1...v0.6.0-rc.1
 [0.5.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.4.0-rc.2...v0.5.0-rc.1
