@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
@@ -19,16 +20,23 @@ import (
 // shown in `throt status`.
 type ControlParams struct {
 	PID int `json:"pid"`
+	// Start, when set, must match the workload's start time, so a client
+	// acting on an older view never hits a process that reused the PID.
+	Start time.Time `json:"start,omitzero"`
 }
 
 func (d *Daemon) pause(ctx context.Context, raw json.RawMessage) (any, error) {
-	pid, err := controlPID(raw)
+	params, err := controlParams(raw)
 	if err != nil {
 		return nil, err
 	}
+	pid := params.PID
 	key, ok := d.heavyKey(pid)
 	if !ok {
 		return nil, d.refused("pause", pid, "not a heavy workload in the latest sample (see `throt status`)")
+	}
+	if !sameStart(params, key) {
+		return nil, d.refused("pause", pid, "the process changed since it was shown (PID reused)")
 	}
 	d.graphMu.Lock()
 	target, ok := d.graph.Workload(key)
@@ -45,14 +53,15 @@ func (d *Daemon) pause(ctx context.Context, raw json.RawMessage) (any, error) {
 }
 
 func (d *Daemon) resume(ctx context.Context, raw json.RawMessage) (any, error) {
-	pid, err := controlPID(raw)
+	params, err := controlParams(raw)
 	if err != nil {
 		return nil, err
 	}
+	pid := params.PID
 	var key domain.ProcessKey
 	found := false
 	for _, p := range d.ctl.Paused() {
-		if p.Key.PID == pid {
+		if p.Key.PID == pid && sameStart(params, p.Key) {
 			key, found = p.Key, true
 		}
 	}
@@ -67,15 +76,20 @@ func (d *Daemon) resume(ctx context.Context, raw json.RawMessage) (any, error) {
 	return nil, nil
 }
 
-func controlPID(raw json.RawMessage) (int, error) {
+func controlParams(raw json.RawMessage) (ControlParams, error) {
 	var p ControlParams
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return 0, fmt.Errorf("invalid params: %w", err)
+		return p, fmt.Errorf("invalid params: %w", err)
 	}
 	if p.PID <= 1 {
-		return 0, errors.New("invalid params: pid must be > 1")
+		return p, errors.New("invalid params: pid must be > 1")
 	}
-	return p.PID, nil
+	return p, nil
+}
+
+// sameStart reports whether a client-supplied start time (if any) matches.
+func sameStart(p ControlParams, k domain.ProcessKey) bool {
+	return p.Start.IsZero() || p.Start.Equal(k.Start)
 }
 
 // heavyKey resolves pid to the identity of the heavy workload shown in the

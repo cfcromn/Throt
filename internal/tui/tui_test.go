@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -25,17 +26,50 @@ type fakeClient struct {
 	status app.StatusResult
 	events []domain.Event
 	err    error
+
+	// sinces records the seq of every events call.
+	sinces []uint64
+	// calls records pause and resume requests as "pause 2000".
+	calls      []string
+	keys       []domain.ProcessKey // full keys sent with those requests
+	controlErr error
 }
 
 func (f *fakeClient) Status(context.Context) (app.StatusResult, error) {
 	return f.status, f.err
 }
 
-func (f *fakeClient) Events(_ context.Context, limit int) ([]domain.Event, error) {
+// EventsSince mirrors the daemon: newest limit events for seq 0, else the
+// oldest limit events after seq, or the newest when seq is ahead of them all.
+func (f *fakeClient) EventsSince(_ context.Context, seq uint64, limit int) ([]domain.Event, error) {
+	f.sinces = append(f.sinces, seq)
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.events[max(0, len(f.events)-limit):], nil
+	newest := f.events[max(0, len(f.events)-limit):]
+	if seq == 0 {
+		return newest, nil
+	}
+	i := slices.IndexFunc(f.events, func(e domain.Event) bool { return e.Seq > seq })
+	if i >= 0 {
+		return f.events[i:min(len(f.events), i+limit)], nil
+	}
+	if len(f.events) > 0 && f.events[len(f.events)-1].Seq < seq {
+		return newest, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeClient) Pause(_ context.Context, k domain.ProcessKey) error {
+	f.calls = append(f.calls, fmt.Sprint("pause ", k.PID))
+	f.keys = append(f.keys, k)
+	return f.controlErr
+}
+
+func (f *fakeClient) Resume(_ context.Context, k domain.ProcessKey) error {
+	f.calls = append(f.calls, fmt.Sprint("resume ", k.PID))
+	f.keys = append(f.keys, k)
+	return f.controlErr
 }
 
 var ansiRE = regexp.MustCompile("\x1b\\[[0-9;:?]*[ -/]*[@-~]")
@@ -116,8 +150,8 @@ func sampleStatus(agents, heavy int) app.StatusResult {
 func sampleEvents() []domain.Event {
 	at := time.Date(2026, 10, 28, 9, 31, 5, 0, time.Local)
 	return []domain.Event{
-		{Time: at, Kind: domain.EventDaemonStarted, Message: "listening on " + testSocket},
-		{Time: at.Add(time.Second), Kind: domain.EventPressureChanged, Message: "pressure normal -> high"},
+		{Seq: 1, Time: at, Kind: domain.EventDaemonStarted, Message: "listening on " + testSocket},
+		{Seq: 2, Time: at.Add(time.Second), Kind: domain.EventPressureChanged, Message: "pressure normal -> high"},
 	}
 }
 
@@ -413,5 +447,143 @@ func TestFitColumns(t *testing.T) {
 	}
 	if got := truncate("abcdef", 4); got != "abc…" {
 		t.Errorf("truncate = %q", got)
+	}
+}
+
+func TestTimelineIncremental(t *testing.T) {
+	c := &fakeClient{status: sampleStatus(1, 0), events: sampleEvents()}
+	m := newModel(t, c, 120, 40)
+	at := c.events[1].Time
+	c.events = append(c.events, domain.Event{Seq: 3, Time: at.Add(time.Second), Kind: domain.EventAgentDiscovered, Message: "third event"})
+	m = poll(t, m)
+	if fmt.Sprint(c.sinces) != "[0 2]" {
+		t.Fatalf("since values = %v, want [0 2]", c.sinces)
+	}
+	if len(m.events) != 3 || m.lastSeq != 3 {
+		t.Fatalf("after incremental poll: %d events, lastSeq %d; want 3, 3", len(m.events), m.lastSeq)
+	}
+	assertContains(t, view(m), "third event", "listening on")
+
+	// History stays bounded as events keep arriving.
+	for i := range eventLimit + 20 {
+		c.events = append(c.events, domain.Event{Seq: uint64(4 + i), Time: at, Kind: domain.EventAgentDiscovered, Message: fmt.Sprint("e", 4+i)})
+	}
+	m = poll(t, m)
+	m = poll(t, m)
+	if len(m.events) != eventLimit || m.lastSeq != uint64(3+eventLimit+20) {
+		t.Fatalf("bounded history: %d events, lastSeq %d; want %d, %d", len(m.events), m.lastSeq, eventLimit, 3+eventLimit+20)
+	}
+
+	// A restarted daemon numbers from 1 again; the history is replaced.
+	c.events = []domain.Event{{Seq: 1, Time: at, Kind: domain.EventDaemonStarted, Message: "restarted daemon"}}
+	m = poll(t, m)
+	if len(m.events) != 1 || m.lastSeq != 1 {
+		t.Fatalf("after restart: %d events, lastSeq %d; want 1, 1", len(m.events), m.lastSeq)
+	}
+	out := view(m)
+	assertContains(t, out, "restarted daemon")
+	if strings.Contains(out, "third event") {
+		t.Errorf("events from the old daemon still shown:\n%s", out)
+	}
+}
+
+// pressCmd presses one key and returns the model and the command it produced.
+func pressCmd(t *testing.T, m Model, key string) (Model, tea.Cmd) {
+	t.Helper()
+	next, cmd := m.Update(tea.KeyPressMsg{Code: rune(key[0]), Text: key})
+	return next.(Model), cmd
+}
+
+func footerLine(m Model) string {
+	lines := strings.Split(view(m), "\n")
+	return lines[len(lines)-1]
+}
+
+func TestControlConfirm(t *testing.T) {
+	for _, tt := range []struct {
+		key, verb string
+	}{{"p", "pause"}, {"r", "resume"}} {
+		c := &fakeClient{status: sampleStatus(1, 2)}
+		m := press(t, newModel(t, c, 120, 40), "tab", "j")
+		m = press(t, m, tt.key)
+		assertContains(t, footerLine(m), tt.verb+" gradle (pid 2001)? y/n")
+		if len(c.calls) != 0 {
+			t.Fatalf("%s sent before confirmation: %v", tt.key, c.calls)
+		}
+		m, cmd := pressCmd(t, m, "y")
+		if cmd == nil {
+			t.Fatalf("y after %s returned no command", tt.key)
+		}
+		m = update(t, m, cmd())
+		if want := []string{tt.verb + " 2001"}; !slices.Equal(c.calls, want) {
+			t.Fatalf("calls = %v, want %v", c.calls, want)
+		}
+		assertContains(t, footerLine(m), tt.verb+"d gradle (pid 2001)")
+		// The status line clears itself when its timer fires.
+		m = update(t, m, clearNoticeMsg{id: m.noticeID})
+		assertContains(t, footerLine(m), "q quit")
+	}
+}
+
+func TestControlCancel(t *testing.T) {
+	for _, key := range []string{"n", "q", "p", "j"} {
+		c := &fakeClient{status: sampleStatus(1, 1)}
+		m := press(t, newModel(t, c, 120, 40), "tab", "p")
+		// The cancel notice proves the key was consumed by the prompt (q did
+		// not quit, j did not move); its command is only the clear timer.
+		m = press(t, m, key)
+		if m.confirm != nil || len(c.calls) != 0 {
+			t.Fatalf("%q: confirm = %v, calls = %v; want cancelled with no call", key, m.confirm, c.calls)
+		}
+		assertContains(t, footerLine(m), "pause cancelled")
+	}
+}
+
+func TestControlError(t *testing.T) {
+	c := &fakeClient{status: sampleStatus(1, 1), controlErr: errors.New("pause refused: workload is gone")}
+	m := press(t, newModel(t, c, 120, 40), "tab", "p")
+	m, cmd := pressCmd(t, m, "y")
+	m = update(t, m, cmd())
+	assertContains(t, footerLine(m), "pause gradle (pid 2000) failed: pause refused: workload is gone")
+
+	// An older timer does not clear a newer notice.
+	m = press(t, m, "r", "n")
+	m = update(t, m, clearNoticeMsg{id: m.noticeID - 1})
+	assertContains(t, footerLine(m), "resume cancelled")
+}
+
+func TestControlKeysNeedHeavyFocus(t *testing.T) {
+	c := &fakeClient{status: sampleStatus(2, 2)}
+	m := newModel(t, c, 120, 40)
+	if m.focus != paneAgents {
+		t.Fatal("agents pane should have focus initially")
+	}
+	for _, key := range []string{"p", "r"} {
+		m = press(t, m, key, "y")
+		if m.confirm != nil || len(c.calls) != 0 || m.notice != "" {
+			t.Fatalf("%s with agents focused: confirm = %v, calls = %v, notice = %q", key, m.confirm, c.calls, m.notice)
+		}
+	}
+	// With no heavy workloads there is nothing to act on.
+	c.status = sampleStatus(1, 0)
+	m = press(t, poll(t, m), "tab", "p")
+	if m.confirm != nil {
+		t.Error("p prompted with no heavy workloads")
+	}
+	m = press(t, m, "?")
+	assertContains(t, view(m), "p / r", "pause / resume the selected heavy workload")
+}
+
+func TestTimelineResetsOnDaemonRestart(t *testing.T) {
+	m := Model{}
+	m.addEvents([]domain.Event{{Seq: 1, Instance: "a"}, {Seq: 2, Instance: "a"}})
+	// The new daemon is already past seq 2, so only the instance shows it.
+	m.addEvents([]domain.Event{{Seq: 3, Instance: "b"}})
+	if m.lastSeq != 0 || len(m.events) != 0 || m.instance != "b" {
+		t.Fatalf("after restart: lastSeq %d, %d events, instance %q; want a reset to b", m.lastSeq, len(m.events), m.instance)
+	}
+	m.addEvents([]domain.Event{{Seq: 1, Instance: "b"}, {Seq: 2, Instance: "b"}, {Seq: 3, Instance: "b"}})
+	if m.lastSeq != 3 || len(m.events) != 3 {
+		t.Fatalf("after refetch: lastSeq %d, %d events", m.lastSeq, len(m.events))
 	}
 }

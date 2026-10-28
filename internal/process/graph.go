@@ -149,6 +149,15 @@ func NewGraph(adapters []agent.Adapter, opts ...Option) *Graph {
 	return g
 }
 
+// SetAdapters replaces the agent adapters; earlier adapters still win. It
+// takes effect on the next Update, which re-matches every process: an agent
+// still matched by an adapter of the same name keeps its instance label, and
+// processes that become or stop being agents are reported as discovered or
+// lost like any other transition.
+func (g *Graph) SetAdapters(adapters []agent.Adapter) {
+	g.adapters = slices.Clone(adapters)
+}
+
 // Update replaces the process table with a fresh full snapshot taken at now
 // and returns lifecycle changes.
 //

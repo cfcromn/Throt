@@ -102,6 +102,7 @@ One structured event model feeds logs, diagnostics, and the TUI timeline: proces
 - **Adaptive** (AIMD): the effective limit starts at `heavy_limit`. It rises by 1 per 30s at normal pressure, halves (floor 1) at most once per 30s at high or critical pressure, holds at elevated, and resets at unknown pressure. Lowering it never preempts; it only delays new starts. Changes are `scheduler_limit` events.
 - **Per-agent budget:** with `per_agent_limit`, an agent's new heavy workload waits (`owner_budget_exhausted`) while that agent already runs that many, even if global slots are free.
 - If a queued workload's top process exits while stopped, its remaining members are resumed (`top_exited`). The scheduler only queues workloads of up to 256 processes.
+- **Reload:** `SIGHUP` or `throt reload` re-reads the config file. `scheduler.*`, `profile` and `agents` apply live; `socket_path`, `sample_interval` and `event_history` keep their running values and are reported as requiring a restart. A file that fails to load or validate changes nothing (`config_reload_failed`); otherwise `config_reloaded` lists the changed keys. Adapters apply at the next sample, and agents still matched by a same-named adapter keep their labels. The new policy is handed to the sampling goroutine through a one-slot channel and applied at its next round, where running workloads count as pre-existing. Leaving `enforce` resumes everything the scheduler queued (`enforce_disabled`), never manual pauses.
 
 **Fairness:** priority combines user override, workload class, queue age, project fairness, and previous preemption count. No project may hold every heavy slot indefinitely.
 
@@ -162,9 +163,10 @@ A request for any other protocol version is rejected with an error naming both v
 |---|---|---|---|
 | `ping` | – | `version`, `protocol`, `pid`, `uptime` | no |
 | `status` | – | `pressure`, `reason`, `host`, `agents`, `heavy`, `paused`, `scheduler`, `degraded` | no |
-| `events` | `limit` (0 or > 1000 means 1000) | recent events, oldest first: `time`, `kind`, `message`, `attrs` | no |
-| `pause` | `pid` | – | yes |
-| `resume` | `pid` | – | yes |
+| `events` | `limit` (0 or > 1000 means 1000); optional `since` (a `seq`) | without `since`, the newest `limit` events, oldest first: `seq`, `instance`, `time`, `kind`, `message`, `attrs`. With `since`, up to `limit` events with a greater `seq`, oldest first; poll again with the last `seq` to get the rest. `seq` starts at 1 and grows by one per event; it restarts with the daemon, so a `since` beyond the newest event returns the newest events and the client sees `seq` go down. `instance` identifies the daemon run; a change means it restarted, even if the new run already passed the old `seq` | no |
+| `pause` | `pid`; optional `start` (RFC 3339), refused if the process now has a different start time | – | yes |
+| `resume` | `pid`; optional `start`, as for `pause` | – | yes |
+| `reload` | – | `changed`, `requires_restart` (each `"key old -> new"`) | yes |
 
 Privileged methods also require the caller's uid (from peer credentials) to match the daemon's. The Go types in `internal/app` are the reference definitions; `throt mcp` exposes the read-only methods to coding agents.
 
