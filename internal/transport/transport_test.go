@@ -71,9 +71,14 @@ func TestProtocolMismatch(t *testing.T) {
 }
 
 func TestCallNoDaemon(t *testing.T) {
-	err := Call(context.Background(), filepath.Join(t.TempDir(), "missing.sock"), "ping", nil, nil)
-	if err == nil || !strings.Contains(err.Error(), "is it running") {
-		t.Fatalf("err = %v", err)
+	for _, sock := range []string{
+		filepath.Join(t.TempDir(), "missing.sock"),
+		filepath.Join(t.TempDir(), "no-dir", "missing.sock"),
+	} {
+		err := Call(context.Background(), sock, "ping", nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "is it running") {
+			t.Errorf("%s: err = %v", sock, err)
+		}
 	}
 }
 
