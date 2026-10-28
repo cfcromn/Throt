@@ -6,9 +6,9 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
-## [0.4.0-rc.1] - 2026-10-28
+## [0.4.0-rc.2] - 2026-10-28
 
-Adaptive scheduling and agent integration. The scheduler remains opt-in.
+Adaptive scheduling and agent integration. The scheduler remains opt-in. (The `v0.4.0-rc.1` tag was never released: a flaky test failed the release build.)
 
 ### Added
 - Foreground latency probe (timer lateness) as a pressure signal; shown in `throt status` and the TUI.
