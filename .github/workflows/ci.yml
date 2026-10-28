@@ -67,3 +67,27 @@ jobs:
           cache: true
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  smoke:
+    # The release also ships darwin_amd64 and linux_arm64 archives, which
+    # the jobs above never run: build, run and test on those architectures
+    # too. The test job already covers -race, so this one skips it.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build and run
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          go build -o "$RUNNER_TEMP/bin/" ./cmd/throt ./cmd/throtd
+          "$RUNNER_TEMP/bin/throt" version
+          "$RUNNER_TEMP/bin/throtd" -version
+      - name: Test
+        run: go test ./...

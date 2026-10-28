@@ -1,10 +1,11 @@
 name: Bench
 
-# Real-machine benchmarks (internal/bench) on hosted runners: the CPU
-# scenarios, then on macOS the memory scenarios (THROT_BENCH_MEMORY=1),
-# which drive the runner past its RAM. They can take over an hour per OS, so
-# they run on demand (gh workflow run bench.yml) and weekly, never on push
-# or pull request.
+# Real-machine benchmarks (internal/bench) on hosted runners: the CPU and
+# mixed scenarios, then the memory scenarios (THROT_BENCH_MEMORY=1), which
+# drive the machine past its RAM: on macOS directly, on Linux in a container
+# with a memory limit. They can take over an hour per OS, so they run on
+# demand (gh workflow run bench.yml) and weekly, never on push or pull
+# request.
 on:
   workflow_dispatch:
   schedule:
@@ -26,9 +27,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # The CPU scenarios take about 10 minutes; each memory run is capped at
-    # 7 minutes (3-minute job cap plus queue aging), 12 runs at worst.
-    timeout-minutes: 120
+    # The CPU and mixed scenarios take about 15 minutes; each memory run is
+    # capped at 7 minutes (3-minute job cap plus queue aging), 12 runs at
+    # worst.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -39,14 +41,29 @@ jobs:
         # Build the test binary and run it directly: under `go test`, the
         # `go` process (itself a heavy build) would be an ancestor of every
         # job and fold them into one workload.
-        # The memory scenarios run on macOS only: on a bare Linux runner
-        # they exhaust RAM and the job is killed, so Linux memory evidence
-        # comes from a container with a memory limit (docker run --memory).
+        # The memory scenarios run here on macOS only: on a bare Linux
+        # runner they exhaust RAM and the job is killed, so on Linux they
+        # run in a container (next step).
         run: |
           go test -c -o "$RUNNER_TEMP/bench.test" ./internal/bench
           if [ "$RUNNER_OS" = macOS ]; then export THROT_BENCH_MEMORY=1; fi
           THROT_BENCH=1 THROT_BENCH_OUT="$RUNNER_TEMP/bench-${{ matrix.os }}.md" \
             "$RUNNER_TEMP/bench.test" -test.run Bench -test.v -test.count=1 -test.timeout 115m
+      - name: Memory benchmark in a container
+        # The memory scenarios on the runner's real kernel, in a container
+        # whose memory limit they size from (3 GiB of RAM plus 1 GiB of
+        # swap). The image is the one make bench uses, at go.mod's Go
+        # version, because the benchmark builds its helpers with go. The
+        # test binary is built without cgo so it runs on Alpine's musl.
+        # It runs even when the CPU scenarios failed.
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: |
+          image="golang:$(go env GOVERSION | sed 's/^go//')-alpine"
+          CGO_ENABLED=0 go test -c -o "$RUNNER_TEMP/bench-static.test" ./internal/bench
+          docker run --rm --init --memory 3g --memory-swap 4g --cpus 2 \
+            -v "$RUNNER_TEMP":/out \
+            -e THROT_BENCH=1 -e THROT_BENCH_MEMORY=1 -e THROT_BENCH_OUT="/out/bench-${{ matrix.os }}.md" \
+            "$image" /out/bench-static.test -test.run TestBenchMemory -test.v -test.count=1 -test.timeout 100m
       - name: Summary
         if: always()
         run: |
