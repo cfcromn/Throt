@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,11 +11,12 @@ import (
 
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
+	"github.com/cfcromn/Throt/internal/transport"
 )
 
 const (
 	minWidth  = 40
-	minHeight = 12
+	minHeight = 10
 	// marker prefixes every table row; the selected row in the focused pane
 	// gets "> " so selection never depends on color alone.
 	markerWidth = 2
@@ -138,7 +140,9 @@ func (m Model) layout() layout {
 }
 
 // topLines renders the connection banner, the system section, and the
-// degraded notice.
+// degraded notice. On a short terminal the system details give way, so a
+// table stays visible: SWAP first, then the why line, MEM and CPU. The
+// pressure, the scheduler summary and the warnings always stay.
 func (m Model) topLines() []string {
 	w := m.width
 	var lines []string
@@ -147,8 +151,14 @@ func (m Model) topLines() []string {
 		lines = append(lines, truncate("connecting to throtd at "+m.socket+"…", w))
 	case !m.connected:
 		msg := fmt.Sprintf("cannot reach throtd at %s: start it with `throtd`", m.socket)
+		detail := fmt.Sprintf("retrying every %s; last error: %v", pollInterval, m.err)
+		if nr := (*transport.NotRunningError)(nil); errors.As(m.err, &nr) {
+			// Its error already says to start throtd; say it once.
+			msg = "throtd is not running — start it with `throtd`"
+			detail = fmt.Sprintf("retrying every %s (socket %s)", pollInterval, nr.Socket)
+		}
 		lines = append(lines, splitLines(m.st.banner.Render(lipgloss.Wrap(msg, w, "/")))...)
-		lines = append(lines, truncate(fmt.Sprintf("retrying every %s; last error: %v", pollInterval, m.err), w))
+		lines = append(lines, truncate(detail, w))
 	}
 
 	pressure := "n/a"
@@ -175,45 +185,104 @@ func (m Model) topLines() []string {
 		}
 	}
 	lines = append(lines, truncate(header, w))
-	if m.connected && m.status.Reason != "" {
-		lines = append(lines, m.reasonLine())
-	}
-	lines = append(lines, m.metricLines()...)
-	if s := m.schedulerLine(); s != "" {
-		lines = append(lines, s)
-	}
+
+	tail := m.schedulerLines()
 	if n := m.status.OrphanCount; m.connected && n > 0 {
 		noun := "processes"
 		if n == 1 {
 			noun = "process"
 		}
-		lines = append(lines, truncate(m.st.degraded.Render(
+		tail = append(tail, truncate(m.st.degraded.Render(
 			fmt.Sprintf("STOPPED  %d %s not paused by throtd (see throt doctor)", n, noun)), w))
 	}
-
 	if m.connected && m.status.Degraded != "" {
-		lines = append(lines, splitLines(m.st.degraded.Render(lipgloss.Wrap("DEGRADED  "+m.status.Degraded, w, "")))...)
+		tail = append(tail, splitLines(m.st.degraded.Render(lipgloss.Wrap("DEGRADED  "+m.status.Degraded, w, "")))...)
 	}
-	return lines
+
+	// details are the why line and the CPU, MEM and SWAP bars, "" when absent.
+	details := [4]string{"", "", "", ""}
+	if m.connected && m.status.Reason != "" {
+		details[0] = m.reasonLine()
+	}
+	copy(details[1:], m.metricLines())
+	room := m.height - 1 - minPaneLines - len(lines) - len(tail)
+	shown := func() int {
+		n := 0
+		for _, d := range details {
+			if d != "" {
+				n++
+			}
+		}
+		return n
+	}
+	for _, i := range [...]int{3, 0, 2, 1} {
+		if shown() <= room {
+			break
+		}
+		details[i] = ""
+	}
+	for _, d := range details {
+		if d != "" {
+			lines = append(lines, d)
+		}
+	}
+	return append(lines, tail...)
 }
 
-// schedulerLine summarizes the scheduler, or returns "" when it is off:
-// mode, the heavy limit (for an adaptive scheduler with its start and
-// ceiling), the per-agent cap, queued workloads and reserved leases.
-func (m Model) schedulerLine() string {
+// minPaneLines is what the system section leaves below it on a short
+// terminal: one table's title, header and a row.
+const minPaneLines = 3
+
+// schedulerLines summarizes the scheduler in the words of `throt status`,
+// or returns nothing when it is off: mode, the heavy limit (for an adaptive
+// scheduler with its start and ceiling), the per-agent cap, queued work (in
+// observe mode, the work it would queue) and reserved leases. A narrow
+// window wraps it between items rather than cutting any.
+func (m Model) schedulerLines() []string {
 	sc := m.status.Scheduler
 	if !m.connected || sc.Mode == "" || sc.Mode == "off" {
-		return ""
+		return nil
 	}
-	line := fmt.Sprintf("%s  %s  limit %d", m.st.title.Render("SCHEDULER"), sc.Mode, sc.HeavyLimit)
+	limit := fmt.Sprintf("limit %d", sc.HeavyLimit)
 	if sc.Adaptive {
-		line += fmt.Sprintf(" adaptive (start %d, max %d)", sc.StartLimit, sc.MaxLimit)
+		limit += fmt.Sprintf(" (adaptive, start %d, max %d)", sc.StartLimit, sc.MaxLimit)
 	}
+	items := []string{string(sc.Mode), limit}
 	if sc.PerAgentLimit > 0 {
-		line += fmt.Sprintf("  per-agent %d", sc.PerAgentLimit)
+		items = append(items, fmt.Sprintf("per-agent %d", sc.PerAgentLimit))
 	}
-	line += fmt.Sprintf("  queued %d  leases %d", len(sc.Queued), len(sc.Leases))
-	return truncate(line, m.width)
+	if sc.Mode == "observe" {
+		items = append(items, fmt.Sprintf("%d would queue", len(sc.WouldQueue)))
+	} else {
+		items = append(items, fmt.Sprintf("%d queued", len(sc.Queued)))
+	}
+	items = append(items, fmt.Sprintf("%d reserved", len(sc.Leases)))
+
+	const label = "SCHEDULER  "
+	// Continuations line up under the first item when the longest fits.
+	indent := len(label)
+	for _, it := range items {
+		if indent+lipgloss.Width(it)+1 > m.width {
+			indent = 2
+		}
+	}
+	var lines []string
+	line := m.st.title.Render(strings.TrimRight(label, " ")) + "  "
+	for i, it := range items {
+		if i < len(items)-1 {
+			it += ","
+		}
+		switch {
+		case i == 0:
+			line += it
+		case lipgloss.Width(line)+1+lipgloss.Width(it) <= m.width:
+			line += " " + it
+		default:
+			lines = append(lines, truncate(line, m.width))
+			line = strings.Repeat(" ", indent) + it
+		}
+	}
+	return append(lines, truncate(line, m.width))
 }
 
 // psiSummary renders the Linux PSI "some" shares the sample carries as
@@ -364,12 +433,14 @@ func (m Model) heavyPane(rows int) []string {
 	cells := make([][]string, len(m.heavy))
 	for i, h := range m.heavy {
 		cells[i] = []string{owner(h.Owner), fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), state(h.Key)}
+		cols[6].width = max(cols[6].width, lipgloss.Width(cells[i][6]))
 	}
 	return m.table(paneHeavy, "HEAVY WORKLOADS", "(no heavy workloads)", cols, cells, rows)
 }
 
 // stateOf returns a lookup of each workload's scheduling state: "QUEUED",
-// "PAUSED", or "" while it runs.
+// "PAUSED", "running (would queue)" for work observe mode would have
+// queued, or "" while it runs.
 func (m Model) stateOf() func(domain.ProcessKey) string {
 	paused := make(map[domain.ProcessKey]bool, len(m.status.Paused))
 	for _, p := range m.status.Paused {
@@ -379,12 +450,18 @@ func (m Model) stateOf() func(domain.ProcessKey) string {
 	for _, k := range m.status.Scheduler.Queued {
 		queued[k] = true
 	}
+	would := make(map[domain.ProcessKey]bool, len(m.status.Scheduler.WouldQueue))
+	for _, k := range m.status.Scheduler.WouldQueue {
+		would[k] = true
+	}
 	return func(k domain.ProcessKey) string {
 		switch {
 		case queued[k]:
 			return "QUEUED"
 		case paused[k]:
 			return "PAUSED"
+		case would[k]:
+			return "running (would queue)"
 		}
 		return ""
 	}
@@ -420,6 +497,7 @@ func (m Model) drillPane(rows int) []string {
 			st = "running"
 		}
 		cells[i] = []string{fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), st}
+		cols[5].width = max(cols[5].width, lipgloss.Width(st))
 	}
 	return m.table(paneDrill, "HEAVY WORKLOADS", "(no heavy workloads)", cols, cells, rows)
 }
@@ -523,9 +601,10 @@ func (m Model) fieldLines(title string, fields [][2]string) []string {
 	return append(lines, truncate(line, m.width))
 }
 
-// timeline renders the newest events first, one per line. Control,
-// scheduler and failure events carry a tag (CTL, SCHED, FAIL) as well as a
-// color. With a filter only matching kinds are listed.
+// timeline renders the newest events first, one per line. Messages are
+// whole sentences, so the kind is shown only for an event without one.
+// Control, scheduler and failure events carry a tag (CTL, SCHED, FAIL) as
+// well as a color. With a filter only matching events are listed.
 func (m Model) timeline(rows int) []string {
 	events := m.shownEvents()
 	title := m.st.title.Render("TIMELINE")
@@ -540,23 +619,24 @@ func (m Model) timeline(rows int) []string {
 		title += "  (events unavailable: " + m.eventsErr.Error() + ")"
 	}
 	lines := []string{truncate(title, m.width)}
-	kindWidth := min(18, m.width/3)
-	// time, tag and kind columns with their gaps
-	msgWidth := m.width - (2 + 8 + 2 + eventTagWidth + 2 + kindWidth + 2)
+	// time and tag columns with their gaps
+	msgWidth := m.width - (2 + 8 + 2 + eventTagWidth + 2)
 	for i := len(events) - 1; i >= 0 && len(lines) <= rows; i-- {
 		e := events[i]
 		st := m.st.event[classify(e.Kind)]
-		line := fmt.Sprintf("  %s  %s  %s  %s", e.Time.Local().Format("15:04:05"),
-			st.Render(eventTags[classify(e.Kind)]),
-			st.Render(pad(truncate(string(e.Kind), kindWidth), kindWidth, false)),
-			truncate(e.Message, max(0, msgWidth)))
+		text := e.Message
+		if text == "" {
+			text = string(e.Kind)
+		}
+		line := fmt.Sprintf("  %s  %s  %s", e.Time.Local().Format("15:04:05"),
+			st.Render(eventTags[classify(e.Kind)]), truncate(text, max(0, msgWidth)))
 		lines = append(lines, truncate(strings.TrimRight(line, " "), m.width))
 	}
 	switch {
 	case len(m.events) == 0:
 		lines = append(lines, "  (no events)")
 	case len(events) == 0:
-		lines = append(lines, truncate("  (no event kind matches the filter; esc clears it)", m.width))
+		lines = append(lines, truncate("  (no event matches the filter; esc clears it)", m.width))
 	}
 	return lines
 }
@@ -565,12 +645,12 @@ func (m Model) helpLines() []string {
 	lines := []string{
 		m.st.title.Render("HELP"),
 		"  q, ctrl+c   quit (throtd keeps running)",
-		"  tab         switch focus: agents / heavy workloads",
+		"  tab         switch focus: agents / heavy workloads (shift+tab too)",
 		"  j/k, ↑/↓    move the selection",
 		"  enter       agents: open the agent drilldown; heavy: details",
 		"  esc         leave the drilldown; close details and help;",
 		"              else clear the timeline filter",
-		"  /           filter the timeline by event kind (enter keeps, esc clears)",
+		"  /           filter the timeline by kind or text (enter keeps, esc clears)",
 		"  p / r       pause / resume the selected heavy workload (asks y/n)",
 		"  s           sort the table: cpu, mem, name, daemon order",
 		"  ?           toggle this help",
@@ -596,13 +676,41 @@ func (m Model) footer() string {
 		return truncate(m.notice, m.width)
 	}
 	if m.filtering {
-		return m.st.footer.Render(truncate("filter by kind: type text  backspace delete  enter keep  esc clear", m.width))
+		return m.st.footer.Render(truncate("filter: type text  backspace delete  enter keep  esc clear", m.width))
 	}
-	hints := "q quit  tab focus  j/k move  enter open  s sort  / filter  ? help"
-	if m.drill {
-		hints = "esc back  j/k move  p/r pause/resume  s sort  ? help"
+	// The footer always ends with ? help and q quit, which fit even at the
+	// minimum width; the other hints give way first, whole.
+	var hints string
+	switch {
+	case m.help:
+		hints = "esc close"
+	case m.drill:
+		hints = "esc back  j/k move  p/r pause/resume  s sort"
+	case m.focus == paneHeavy:
+		hints = "tab focus  j/k move  p/r pause/resume  enter details  s sort  / filter"
+	default:
+		hints = "tab focus  j/k move  enter open  s sort  / filter"
 	}
-	return m.st.footer.Render(truncate(hints, m.width))
+	const always = "? help  q quit"
+	if w := m.width - len(always) - 2; w > 0 {
+		if hints = truncateWords(hints, w); hints != "" {
+			return m.st.footer.Render(hints + "  " + always)
+		}
+	}
+	return m.st.footer.Render(truncate(always, m.width))
+}
+
+// truncateWords cuts s at the last double-space gap that leaves it at most
+// width cells wide, so a hint is dropped whole rather than cut.
+func truncateWords(s string, width int) string {
+	for lipgloss.Width(s) > width {
+		i := strings.LastIndex(s, "  ")
+		if i < 0 {
+			return ""
+		}
+		s = s[:i]
+	}
+	return s
 }
 
 // column describes one table column. A column with width 0 is flexible and
@@ -682,28 +790,22 @@ func formatRow(cols []column, widths []int, cells []string) string {
 }
 
 // truncate shortens s to at most width display cells, ending with "…" when
-// it cuts. It is ANSI-aware only in measuring: a styled string that does not
-// fit loses its styling.
+// it cuts. It counts cells per grapheme cluster, so wide characters and
+// emoji are measured as the terminal draws them and never split. It is
+// ANSI-aware only in measuring: a styled string that does not fit loses its
+// styling.
 func truncate(s string, width int) string {
 	if lipgloss.Width(s) <= width {
 		return s
 	}
-	if width <= 0 {
-		return ""
+	if width <= 1 {
+		return strings.Repeat("…", max(0, width))
 	}
-	s = stripStyles(s)
-	var b strings.Builder
-	w := 0
-	for _, r := range s {
-		rw := lipgloss.Width(string(r))
-		if w+rw > width-1 {
-			break
-		}
-		b.WriteRune(r)
-		w += rw
-	}
-	return b.String() + "…"
+	return truncStyle.MaxWidth(width-1).Render(stripStyles(s)) + "…"
 }
+
+// truncStyle only cuts; it adds no styling.
+var truncStyle = lipgloss.NewStyle()
 
 // stripStyles removes ANSI escape sequences (CSI ... final byte).
 func stripStyles(s string) string {

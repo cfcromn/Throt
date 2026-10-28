@@ -140,7 +140,7 @@ func TestSchedulerLine(t *testing.T) {
 	c := &fakeClient{status: richStatus(), events: classEvents()}
 	m := newModel(t, c, 140, 50)
 	line := lineWith(t, view(m), "SCHEDULER")
-	for _, want := range []string{"enforce", "limit 3 adaptive (start 2, max 8)", "per-agent 2", "queued 1", "leases 2"} {
+	for _, want := range []string{"SCHEDULER  enforce, limit 3 (adaptive, start 2, max 8), per-agent 2, 1 queued, 2 reserved"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("scheduler line %q lacks %q", line, want)
 		}
@@ -154,7 +154,7 @@ func TestSchedulerLine(t *testing.T) {
 	st.OrphanCount = 1
 	m = newModel(t, &fakeClient{status: st}, 140, 50)
 	line = lineWith(t, view(m), "SCHEDULER")
-	if strings.Contains(line, "adaptive") || strings.Contains(line, "per-agent") || !strings.Contains(line, "limit 3  queued 1  leases 0") {
+	if strings.Contains(line, "adaptive") || strings.Contains(line, "per-agent") || !strings.Contains(line, "enforce, limit 3, 1 queued, 0 reserved") {
 		t.Errorf("fixed scheduler line = %q", line)
 	}
 	assertContains(t, view(m), "STOPPED  1 process not")
@@ -240,7 +240,7 @@ func TestTimelineFilter(t *testing.T) {
 
 	// No match says so.
 	m = press(t, m, "/", "z", "enter")
-	assertContains(t, view(m), "(0 of 8)", "no event kind matches")
+	assertContains(t, view(m), "(0 of 8)", "no event matches")
 
 	// esc clears it, outside and inside the editor.
 	m = press(t, m, "esc")

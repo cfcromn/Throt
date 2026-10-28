@@ -157,8 +157,8 @@ type Model struct {
 	details bool
 	help    bool
 
-	// filter narrows the timeline to event kinds containing it (case
-	// insensitive); filtering is true while the user types it after /.
+	// filter narrows the timeline to events whose kind or message contains
+	// it (case insensitive); filtering is true while the user types it after /.
 	filter    string
 	filtering bool
 
@@ -166,6 +166,12 @@ type Model struct {
 	// background as last reported, assumed dark until then. st follows both.
 	color, dark bool
 	st          styles
+
+	// ctx ends background polls and ticks; stop cancels it when the user
+	// quits, so none of them outlives the program. A confirmed pause or
+	// resume is not tied to it: once sent, it runs to its own timeout.
+	ctx  context.Context
+	stop context.CancelFunc
 }
 
 // New returns a model that polls client. socket is shown in the
@@ -177,7 +183,24 @@ func New(client Client, socket string) Model {
 // newWithEnv is New reading the environment through getenv.
 func newWithEnv(client Client, socket string, getenv func(string) string) Model {
 	color := colorEnabled(getenv)
-	return Model{client: client, socket: socket, color: color, dark: true, st: newStyles(color, true)}
+	ctx, stop := context.WithCancel(context.Background())
+	return Model{client: client, socket: socket, color: color, dark: true, st: newStyles(color, true), ctx: ctx, stop: stop}
+}
+
+// context returns the model's background context; a zero Model has none.
+func (m Model) context() context.Context {
+	if m.ctx == nil {
+		return context.Background()
+	}
+	return m.ctx
+}
+
+// quit stops background work and ends the program.
+func (m Model) quit() tea.Cmd {
+	if m.stop != nil {
+		m.stop()
+	}
+	return tea.Quit
 }
 
 // Init starts polling immediately and, with color on, asks the terminal for
@@ -193,9 +216,9 @@ func (m Model) Init() tea.Cmd {
 // blocks the UI. Only one poll is in flight at a time: the next tick is
 // scheduled when its result arrives.
 func (m Model) poll() tea.Cmd {
-	c, since := m.client, m.lastSeq
+	c, since, parent := m.client, m.lastSeq, m.context()
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+		ctx, cancel := context.WithTimeout(parent, pollTimeout)
 		defer cancel()
 		var r pollMsg
 		r.status, r.statusErr = c.Status(ctx)
@@ -227,12 +250,23 @@ func (m Model) send(a action) tea.Cmd {
 func (m *Model) setNotice(s string) tea.Cmd {
 	m.noticeID++
 	m.notice = s
-	id := m.noticeID
-	return tea.Tick(noticeTTL, func(time.Time) tea.Msg { return clearNoticeMsg{id: id} })
+	return m.tick(noticeTTL, clearNoticeMsg{id: m.noticeID})
 }
 
-func tick() tea.Cmd {
-	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return tickMsg{} })
+// tick delivers msg after d, or nothing once the user has quit. Unlike
+// tea.Tick it does not hold a goroutine past quitting.
+func (m Model) tick(d time.Duration, msg tea.Msg) tea.Cmd {
+	ctx := m.context()
+	return func() tea.Msg {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			return msg
+		case <-ctx.Done():
+			return nil
+		}
+	}
 }
 
 // Update handles input, window resizes, and poll results.
@@ -248,7 +282,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.poll()
 	case pollMsg:
 		m.applyPoll(msg)
-		cmd = tick()
+		cmd = m.tick(pollInterval, tickMsg{})
 	case tea.KeyPressMsg:
 		cmd = m.handleKey(msg)
 	case controlMsg:
@@ -374,20 +408,20 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		case "y":
 			return m.send(*a)
 		case "ctrl+c":
-			return tea.Quit
+			return m.quit()
 		}
 		return m.setNotice(a.verb + " cancelled")
 	}
 	if m.filtering {
 		if k.String() == "ctrl+c" {
-			return tea.Quit
+			return m.quit()
 		}
 		m.filterKey(k)
 		return nil
 	}
 	switch k.String() {
 	case "q", "ctrl+c":
-		return tea.Quit
+		return m.quit()
 	case "p", "r":
 		p := m.active()
 		rows := m.workloads(p)
@@ -475,7 +509,7 @@ func (m *Model) filterKey(k tea.KeyPressMsg) {
 }
 
 // shownEvents returns the events the timeline lists, oldest first: those
-// whose kind contains the filter, ignoring case.
+// whose kind or message contains the filter, ignoring case.
 func (m Model) shownEvents() []domain.Event {
 	if m.filter == "" {
 		return m.events
@@ -483,7 +517,7 @@ func (m Model) shownEvents() []domain.Event {
 	f := strings.ToLower(m.filter)
 	var out []domain.Event
 	for _, e := range m.events {
-		if strings.Contains(strings.ToLower(string(e.Kind)), f) {
+		if strings.Contains(strings.ToLower(string(e.Kind)), f) || strings.Contains(strings.ToLower(e.Message), f) {
 			out = append(out, e)
 		}
 	}
