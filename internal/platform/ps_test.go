@@ -79,6 +79,21 @@ func TestParsePS(t *testing.T) {
 	}
 }
 
+func TestParsePSDropsForgedRecords(t *testing.T) {
+	// "/tmp/evil\n1 0 0 ..." is one executable path containing a newline that
+	// forges a record for PID 1.
+	in := "  500   1 501 100 0:00.00 Mon Oct  5 09:00:00 2026 /tmp/evil\n" +
+		"    1   0   0 100 0:00.00 Mon Oct  5 09:00:00 2026 fake\n" +
+		"    1   0   0 100 0:00.00 Sun Oct 18 11:06:02 2026 /sbin/launchd\n"
+	got, err := parsePS(strings.NewReader(in), time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].PID != 500 {
+		t.Fatalf("got %+v, want only pid 500", got)
+	}
+}
+
 func TestParsePSReadError(t *testing.T) {
 	boom := errors.New("boom")
 	if _, err := parsePS(iotest.ErrReader(boom), time.UTC); !errors.Is(err, boom) {

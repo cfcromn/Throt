@@ -27,16 +27,26 @@ const psLstartLayout = "Mon Jan 2 15:04:05 2006"
 // parsePS parses ps output in the psColumns format. lstart is interpreted in
 // loc. Malformed lines are skipped; an error is returned only when r fails.
 func parsePS(r io.Reader, loc *time.Location) ([]domain.ProcessSample, error) {
-	var out []domain.ProcessSample
+	var all []domain.ProcessSample
+	seen := make(map[int]int) // pid -> occurrences
 	sc := bufio.NewScanner(r)
 	sc.Buffer(nil, 1<<20)
 	for sc.Scan() {
 		if p, ok := parsePSLine(sc.Text(), loc); ok {
-			out = append(out, p)
+			all = append(all, p)
+			seen[p.PID]++
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("read ps output: %w", err)
+	}
+	// An executable name containing a newline can forge extra records. A PID
+	// that appears twice is ambiguous, so drop every record for it.
+	out := all[:0]
+	for _, p := range all {
+		if seen[p.PID] == 1 {
+			out = append(out, p)
+		}
 	}
 	return out, nil
 }
