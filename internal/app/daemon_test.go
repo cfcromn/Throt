@@ -465,3 +465,20 @@ func TestControlRefusesStaleStart(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestPressureWindowFollowsInterval checks that the pressure window holds
+// ten samples at long sample intervals, and 30s at short ones.
+func TestPressureWindowFollowsInterval(t *testing.T) {
+	for interval, want := range map[time.Duration]time.Duration{
+		2 * time.Second:  30 * time.Second,
+		5 * time.Second:  50 * time.Second,
+		10 * time.Second: 100 * time.Second,
+	} {
+		cfg := config.Default()
+		cfg.SampleInterval = config.Duration(interval)
+		d := NewDaemon(cfg, fakeSampler{}, fakeSampler{}, &fakeSignaler{}, slog.New(slog.DiscardHandler))
+		if got := d.engine.Window(); got != want {
+			t.Errorf("interval %v: window %v, want %v", interval, got, want)
+		}
+	}
+}

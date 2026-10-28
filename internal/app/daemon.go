@@ -139,7 +139,7 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		procs:  procs,
 		graph: process.NewGraph(Adapters(cfg.Agents),
 			process.WithCPUCount(runtime.NumCPU()), process.WithAgentUID(uint32(os.Getuid()))),
-		engine:   pressure.New(pressure.DefaultWindow, pressure.DefaultThresholds()),
+		engine:   pressure.New(pressure.WindowFor(time.Duration(cfg.SampleInterval)), pressure.DefaultThresholds()),
 		sched:    newScheduler(cfg.Scheduler),
 		failing:  map[string]bool{},
 		failures: map[string]string{},

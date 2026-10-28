@@ -16,8 +16,19 @@ import (
 // memory without bound. The oldest samples are dropped first.
 const MaxSamples = 256
 
-// DefaultWindow is used when New is given a non-positive window.
+// DefaultWindow is used when New is given a non-positive window. It is
+// also the shortest window WindowFor returns.
 const DefaultWindow = 30 * time.Second
+
+// WindowSamples is how many sample intervals WindowFor fits in a window.
+const WindowSamples = 10
+
+// WindowFor returns the window for a sample interval: DefaultWindow, or
+// WindowSamples intervals when that is longer, so the window's medians
+// always come from several samples.
+func WindowFor(interval time.Duration) time.Duration {
+	return max(DefaultWindow, WindowSamples*interval)
+}
 
 // LevelThresholds are the enter thresholds for one pressure level. A signal
 // reaches the level when its window statistic is >= the threshold. A zero
@@ -217,6 +228,9 @@ func New(window time.Duration, th Thresholds) *Engine {
 		reason:  "no_samples",
 	}
 }
+
+// Window returns the rolling window.
+func (e *Engine) Window() time.Duration { return e.window }
 
 // Level returns the current stable level.
 func (e *Engine) Level() domain.PressureLevel { return e.level }

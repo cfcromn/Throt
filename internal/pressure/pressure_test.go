@@ -580,3 +580,21 @@ func TestRecoveryAfterSamplingGap(t *testing.T) {
 		t.Fatalf("transitions after the gap = %+v, want normal at t=50 (a full dwell after it)", got)
 	}
 }
+
+func TestWindowFor(t *testing.T) {
+	for _, tc := range []struct{ interval, want time.Duration }{
+		{100 * time.Millisecond, DefaultWindow},
+		{2 * time.Second, DefaultWindow},
+		{3 * time.Second, DefaultWindow},
+		{5 * time.Second, 50 * time.Second},
+		{10 * time.Second, 100 * time.Second},
+		{0, DefaultWindow},
+	} {
+		if got := WindowFor(tc.interval); got != tc.want {
+			t.Errorf("WindowFor(%v) = %v, want %v", tc.interval, got, tc.want)
+		}
+		if got := New(WindowFor(tc.interval), DefaultThresholds()).Window(); got != tc.want {
+			t.Errorf("New(WindowFor(%v)).Window() = %v, want %v", tc.interval, got, tc.want)
+		}
+	}
+}

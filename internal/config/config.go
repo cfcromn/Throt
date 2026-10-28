@@ -19,10 +19,10 @@ import (
 	"time"
 )
 
-// MaxSampleInterval is the longest sample interval: the pressure window
-// must hold at least three samples, or its medians come from one noisy
-// reading and swap growth (a rate between samples) is never measured.
-const MaxSampleInterval = pressure.DefaultWindow / 3
+// MaxSampleInterval is the longest sample interval. The pressure window
+// (pressure.WindowFor) grows to ten intervals, and recovery waits twice
+// the window, so at 10s pressure already takes minutes to clear.
+const MaxSampleInterval = 10 * time.Second
 
 // MaxResumeCooldown is the longest resume_cooldown. The scheduler resumes
 // at most one queued workload per cooldown, so a longer one would leave
@@ -257,7 +257,7 @@ func (c Config) Validate() error {
 		return errors.New("sample_interval must be at least 100ms")
 	}
 	if time.Duration(c.SampleInterval) > MaxSampleInterval {
-		return fmt.Errorf("sample_interval must be at most %v, so the %v pressure window holds several samples", MaxSampleInterval, pressure.DefaultWindow)
+		return fmt.Errorf("sample_interval must be at most %v; the pressure window is %d intervals, %v at that interval", MaxSampleInterval, pressure.WindowSamples, pressure.WindowFor(MaxSampleInterval))
 	}
 	if c.EventHistory < 1 || c.EventHistory > 100_000 {
 		return errors.New("event_history must be between 1 and 100000")
