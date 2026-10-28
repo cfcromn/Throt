@@ -8,6 +8,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ### Added
 - Run-at-login (launchd, systemd) and upgrade/rollback instructions.
+- `make bench`: containerized real-kernel benchmark (baseline vs enforce), with results in `docs/ARCHITECTURE.md`.
+
+### Changed
+- LICENSE copyright holder romanized.
 
 ## [0.4.0-rc.2] - 2026-10-28
 
