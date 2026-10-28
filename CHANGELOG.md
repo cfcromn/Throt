@@ -15,6 +15,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 ### Changed
 - LICENSE copyright holder romanized.
 - Linux host pressure is cgroup v2-aware: CPU (including throttling), memory and swap are measured against the tightest `cpu.max`, `memory.max` and `memory.swap.max` limits of the daemon's cgroup and its ancestors, falling back to host-wide figures per metric; the host-wide load average is reported missing under a CPU quota.
+- CPU and load alone now cap pressure at elevated; high and critical come from memory, swap, and foreground latency. Saturated build cores no longer halve the adaptive limit.
 - On macOS, memory used no longer drives pressure while the kernel verdict is available; it sat at 80–90% on idle machines and held pressure at elevated.
 
 ### Security

@@ -96,9 +96,13 @@ type Thresholds struct {
 func DefaultThresholds() Thresholds {
 	const mib = 1 << 20
 	return Thresholds{
-		Elevated:         LevelThresholds{KernelMemory: domain.MemoryPressureWarning, MemoryUsed: 0.80, SwapGrowth: 1 * mib, CPU: 0.85, Load: 1.0, Latency: 25 * time.Millisecond},
-		High:             LevelThresholds{KernelMemory: domain.MemoryPressureCritical, MemoryUsed: 0.90, SwapGrowth: 8 * mib, CPU: 0.95, Load: 1.5, Latency: 100 * time.Millisecond},
-		Critical:         LevelThresholds{MemoryUsed: 0.95, SwapGrowth: 32 * mib, Load: 3.0},
+		Elevated: LevelThresholds{KernelMemory: domain.MemoryPressureWarning, MemoryUsed: 0.80, SwapGrowth: 1 * mib, CPU: 0.85, Load: 1.0, Latency: 25 * time.Millisecond},
+		// CPU and load stop at elevated: builds saturating every core is the
+		// throughput Throt exists to protect, not a problem by itself. Their
+		// effect on the person at the keyboard is measured directly by the
+		// latency probe, which (with memory and swap) drives high/critical.
+		High:             LevelThresholds{KernelMemory: domain.MemoryPressureCritical, MemoryUsed: 0.90, SwapGrowth: 8 * mib, Latency: 100 * time.Millisecond},
+		Critical:         LevelThresholds{MemoryUsed: 0.95, SwapGrowth: 32 * mib},
 		ExitMargin:       0.05,
 		SwapExitRatio:    0.5,
 		LatencyExitRatio: 0.75,
