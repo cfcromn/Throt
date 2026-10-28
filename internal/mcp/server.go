@@ -28,6 +28,7 @@ import (
 type Client interface {
 	Status(ctx context.Context) (app.StatusResult, error)
 	Events(ctx context.Context, limit int) ([]domain.Event, error)
+	Stats(ctx context.Context) (app.StatsResult, error)
 }
 
 const (

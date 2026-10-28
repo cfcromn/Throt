@@ -40,12 +40,13 @@ The result is CPU saturation, memory pressure, swap growth, thermal throttling, 
 
 ```text
 $ throt
-SYSTEM  pressure HIGH  memory_used>=0.9
-CPU   ██████████████████████████████░░░░░░░░░░   74%  load 1.12/cpu
-MEM   ██████████████████████████████████████░░   95%  30.5 GiB / 32.0 GiB
-SWAP  ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░   35%  1.4 GiB / 4.0 GiB
+SYSTEM  pressure HIGH  latency 4ms ▁▁▂▁▁▃▂▁▁▁▂▁▁▁▂▁
+  why: memory 90%+ used  (memory_used>=0.9)
+CPU   ██████████████████████████████░░░░░░░░░░   74%  ▃▄▄▅▆▆▇▆▅▆▆▇▆▅▆▆  load 1.12/cpu
+MEM   ██████████████████████████████████████░░   95%  ▆▆▆▆▇▇▇▇▇▇▇▇▇███  30.5 GiB / 32.0 GiB
+SWAP  ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░   35%  ▁▁▁▁▁▂▅█▃▁▁▁▁▁▁▁  1.4 GiB / 4.0 GiB
 ▸ AGENTS (3)
-  AGENT                                 PID     CPU        MEM  CHILDREN
+  AGENT                                 PID    CPU▼        MEM  CHILDREN
 > codex-1                              4120    231%    2.8 GiB         5
   claude-1                             3988    104%    1.8 GiB         7
   claude-2                             5310     12%    921 MiB         2
@@ -58,10 +59,20 @@ TIMELINE
   14:02:13  agent_discovered    agent_discovered codex-1
   14:02:11  daemon_started      listening on /run/user/501/throt/throtd.sock
 
-q quit  tab focus  j/k move  enter details  ? help
+q quit  tab focus  j/k move  enter open  s sort  ? help
 ```
 
-CPU is a percentage of one core, so a process using two cores shows 200%. Keys: `tab` switches between the agents and heavy-workload tables, `j`/`k` or the arrow keys move the selection, `enter` shows details for the selected row, `p`/`r` pause or resume the selected heavy workload after a `y/n` confirmation, `?` shows help, `q` quits. Metrics the platform cannot provide show as `n/a`, and if `throtd` is not running the TUI says so and reconnects when it starts. Narrow terminals (down to 40×12) drop low-value columns and truncate names.
+CPU is a percentage of one core, so a process using two cores shows 200%. The line under `SYSTEM` says in plain words which signal drives the pressure level. Sparklines show the last 60 polls of CPU, memory used, swap growth (on the `SWAP` line) and foreground latency (in the header); the TUI keeps this history itself and loses it when it exits or loses `throtd`.
+
+Keys:
+
+- `tab` switches between the agents and heavy-workload tables; `j`/`k` or the arrow keys move the selection.
+- `enter` on an agent opens its drilldown: the agent's PID, CPU, memory and children, and every heavy workload it owns with its state (running, `PAUSED`, `QUEUED`). `esc` goes back. On a heavy workload, `enter` toggles its details.
+- `p`/`r` pause or resume the selected heavy workload, in the heavy table or a drilldown, after a `y/n` confirmation.
+- `s` cycles the table's sort column: CPU, memory, name, then throtd's order. The sorted column is marked `▼` (descending) or `▲` (ascending).
+- `?` shows help, `q` quits.
+
+Metrics the platform cannot provide show as `n/a`, and if `throtd` is not running the TUI says so and reconnects when it starts. Narrow terminals drop the sparklines first (below 55 columns), then shrink the bars, drop low-value columns and truncate names; below 40×12 the TUI asks for a larger window.
 
 ## Install
 
@@ -117,6 +128,7 @@ throtd &        # start the daemon
 throt           # terminal UI (same as `throt top`)
 throt ping      # check that the client can reach it
 throt status    # pressure, host resources, agents, heavy workloads
+throt stats     # per-agent CPU time, peak memory, heavy jobs, time queued since throtd started (--json)
 throt events    # recent daemon events as JSON lines
 throt events -f # keep printing new events until interrupted
 throt explain PID # why a heavy workload is running, paused, or queued
@@ -124,14 +136,34 @@ throt doctor    # sanitized diagnostics to paste into a bug report
 throt pause PID # pause a heavy workload owned by one of your agents
 throt resume PID
 throt reload    # re-read the config without restarting (or send throtd SIGHUP)
+throt run -- npm run build    # wait for a free heavy slot, then run the command
+throt completion zsh          # shell completion script (bash, zsh, fish)
 ```
+
+### Wait before starting: `throt run`
+
+`throt run [--timeout D] [--no-wait] -- CMD [ARGS...]` is the gentle alternative to being paused: it checks capacity *before* the command starts, using the same verdict as `throt_capacity`. It polls `throtd` once per second until a heavy job is OK to start (pressure below high, a free heavy slot, nothing queued, and the calling agent within its `per_agent_limit`), printing a notice to stderr at most every 10s. Then it execs the command in its own place, so the PID, signals, and exit status are the command's own. The agent is the nearest agent process among its ancestors. A missing command exits 127.
+
+- `--timeout D` stops waiting after `D` and runs the command anyway (the default, 0, waits forever).
+- `--no-wait` checks once, prints the verdict, and runs regardless.
+
+It fails open: if `throtd` is unreachable, it prints one notice and runs immediately, so a stopped daemon never blocks your work. It never pauses anything. It is also advisory: nothing is reserved, so two `throt run` commands that check at the same moment can both start. With `scheduler.mode` set to `enforce`, `throtd` still queues the extra one.
+
+To have coding agents use it, add a line such as this to your `AGENTS.md` or `CLAUDE.md`:
+
+```markdown
+Prefix heavy commands (builds, full test suites, container builds) with `throt run --`, e.g. `throt run -- npm run build`.
+```
+
+Shell completion: `source <(throt completion bash)` or `source <(throt completion zsh)` in your shell's rc file, or `throt completion fish | source`. After `pause`, `resume`, and `explain` it completes the heavy-workload PIDs from `throt status`.
 
 ## Use with coding agents (MCP)
 
-`throt mcp` runs a read-only [MCP](https://modelcontextprotocol.io) server on stdio. Agents can check pressure and heavy-slot capacity before starting a big build instead of competing with the scheduler. It offers three tools:
+`throt mcp` runs a read-only [MCP](https://modelcontextprotocol.io) server on stdio. Agents can check pressure and heavy-slot capacity before starting a big build instead of competing with the scheduler. It offers four tools:
 - `throt_status`: pressure, resources, agents, and heavy workloads.
 - `throt_capacity`: an advisory `ok_to_start` with a reason and suggestion.
 - `throt_events`: recent daemon events.
+- `throt_stats`: per-agent CPU time, peak memory, heavy jobs, and time queued since throtd started.
 
 None of them pauses, resumes, or changes configuration; control stays with you through the CLI. `throtd` must be running. `throt_capacity` defaults to the agent that launched the server. Tool output, including process names and PIDs, goes into the agent's context, so it reaches your model provider.
 

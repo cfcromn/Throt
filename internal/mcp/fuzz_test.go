@@ -67,6 +67,7 @@ func FuzzServe(f *testing.F) {
 		`{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"throt_capacity","arguments":{"agent":"claude-1"}}}`,
 		`{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"throt_events","arguments":{"limit":1}}}`,
 		`{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"throt_events","arguments":{"limit":0}}}`,
+		`{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"throt_stats"}}`,
 		`{"jsonrpc":"2.0","id":null,"method":"ping"}`,
 		`{"jsonrpc":"2.0","ID":14,"method":"ping"}`,
 		"{\"jsonrpc\":\"2.0\",\"id\":\"\xff\",\"method\":\"ping\"}",

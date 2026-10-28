@@ -27,6 +27,7 @@ import (
 	"github.com/cfcromn/Throt/internal/pressure"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
+	"github.com/cfcromn/Throt/internal/stats"
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
@@ -70,6 +71,10 @@ type StatusResult struct {
 	Scheduler SchedulerStatus          `json:"scheduler"`
 }
 
+// StatsResult is returned by the "stats" method: per-agent usage since the
+// daemon started, in memory only.
+type StatsResult = stats.Report
+
 // HostSampler reads host-wide metrics.
 type HostSampler interface {
 	SampleHost(ctx context.Context) (domain.HostSample, error)
@@ -104,6 +109,9 @@ type Daemon struct {
 	mu     sync.Mutex // guards status
 	status StatusResult
 
+	statsMu sync.Mutex // guards acct; held briefly
+	acct    *stats.Accountant
+
 	// cfgPath is the file Reload re-reads; empty disables reloading.
 	cfgPath string
 	// Reload handoff. The scheduler and engine belong to the sampling
@@ -135,6 +143,7 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		sched:    newScheduler(cfg.Scheduler),
 		failing:  map[string]bool{},
 		failures: map[string]string{},
+		acct:     stats.New(),
 		live:     cfg,
 		policyCh: make(chan scheduler.Policy, 1),
 	}
@@ -163,6 +172,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		"ping":   d.ping,
 		"events": d.recentEvents,
 		"status": d.currentStatus,
+		"stats":  d.currentStats,
 		"pause":  d.pause,
 		"resume": d.resume,
 		"reload": d.reload,
@@ -261,6 +271,7 @@ func (d *Daemon) tick(parent context.Context) {
 		// Only schedule on a fresh process snapshot: acting on stale data
 		// could queue a workload that already finished.
 		d.schedule(parent, now, level, snap.Heavy)
+		d.account(now, snap)
 	}
 	sched := d.schedulerStatus()
 	d.mu.Lock()
@@ -312,6 +323,26 @@ func (d *Daemon) currentStatus(context.Context, json.RawMessage) (any, error) {
 	d.mu.Unlock()
 	st.Paused = d.ctl.Paused()
 	return st, nil
+}
+
+// account adds a fresh snapshot to the per-agent usage. Workloads the
+// scheduler holds after this round are charged queue time until the next.
+func (d *Daemon) account(now time.Time, snap process.Snapshot) {
+	var queued []domain.ProcessKey
+	for _, p := range d.ctl.Paused() {
+		if p.By == control.OriginScheduler {
+			queued = append(queued, p.Key)
+		}
+	}
+	d.statsMu.Lock()
+	d.acct.Observe(now, snap, queued)
+	d.statsMu.Unlock()
+}
+
+func (d *Daemon) currentStats(context.Context, json.RawMessage) (any, error) {
+	d.statsMu.Lock()
+	defer d.statsMu.Unlock()
+	return d.acct.Report(), nil
 }
 
 func (d *Daemon) emit(kind domain.EventKind, msg string, attrs map[string]string) {

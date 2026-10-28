@@ -314,10 +314,10 @@ func TestLeastHeadroom(t *testing.T) {
 		ok     bool
 	}{
 		{"none", nil, cgroupLevel{}, false},
-		{"one", []cgroupLevel{{gib, gib / 4}}, cgroupLevel{gib, gib / 4}, true},
-		{"smaller limit, more headroom", []cgroupLevel{{4 * gib, gib}, {8 * gib, 7 * gib}}, cgroupLevel{8 * gib, 7 * gib}, true},
-		{"smaller limit, less headroom", []cgroupLevel{{gib, gib / 2}, {8 * gib, gib}}, cgroupLevel{gib, gib / 2}, true},
-		{"over limit is zero headroom", []cgroupLevel{{8 * gib, gib}, {gib, 2 * gib}}, cgroupLevel{gib, 2 * gib}, true},
+		{"one", []cgroupLevel{{Limit: gib, Used: gib / 4}}, cgroupLevel{Limit: gib, Used: gib / 4}, true},
+		{"smaller limit, more headroom", []cgroupLevel{{Limit: 4 * gib, Used: gib}, {Limit: 8 * gib, Used: 7 * gib}}, cgroupLevel{Limit: 8 * gib, Used: 7 * gib}, true},
+		{"smaller limit, less headroom", []cgroupLevel{{Limit: gib, Used: gib / 2}, {Limit: 8 * gib, Used: gib}}, cgroupLevel{Limit: gib, Used: gib / 2}, true},
+		{"over limit is zero headroom", []cgroupLevel{{Limit: 8 * gib, Used: gib}, {Limit: gib, Used: 2 * gib}}, cgroupLevel{Limit: gib, Used: 2 * gib}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -337,11 +337,11 @@ func TestCgroupMemory(t *testing.T) {
 		hostTotal, hostAvl uint64
 		total, avail       uint64
 	}{
-		{"limit below host", cgroupLevel{gib, gib / 4}, 8 * gib, 6 * gib, gib, 3 * gib / 4},
-		{"limit above host", cgroupLevel{16 * gib, gib}, 8 * gib, 6 * gib, 8 * gib, 6 * gib},
-		{"headroom above host total", cgroupLevel{16 * gib, 0}, 8 * gib, 8 * gib, 8 * gib, 8 * gib},
-		{"over limit floors at zero", cgroupLevel{gib, 2 * gib}, 8 * gib, 6 * gib, gib, 0},
-		{"host has less available", cgroupLevel{gib, 0}, 8 * gib, gib / 8, gib, gib / 8},
+		{"limit below host", cgroupLevel{Limit: gib, Used: gib / 4}, 8 * gib, 6 * gib, gib, 3 * gib / 4},
+		{"limit above host", cgroupLevel{Limit: 16 * gib, Used: gib}, 8 * gib, 6 * gib, 8 * gib, 6 * gib},
+		{"headroom above host total", cgroupLevel{Limit: 16 * gib, Used: 0}, 8 * gib, 8 * gib, 8 * gib, 8 * gib},
+		{"over limit floors at zero", cgroupLevel{Limit: gib, Used: 2 * gib}, 8 * gib, 6 * gib, gib, 0},
+		{"host has less available", cgroupLevel{Limit: gib, Used: 0}, 8 * gib, gib / 8, gib, gib / 8},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -361,10 +361,10 @@ func TestCgroupSwap(t *testing.T) {
 		hostTotal   uint64
 		total, used uint64
 	}{
-		{"limit below host", cgroupLevel{gib, gib / 4}, 4 * gib, gib, gib / 4},
-		{"limit above host", cgroupLevel{8 * gib, gib}, 4 * gib, 4 * gib, gib},
-		{"over limit", cgroupLevel{gib, 2 * gib}, 4 * gib, gib, gib},
-		{"no host swap", cgroupLevel{gib, 0}, 0, 0, 0},
+		{"limit below host", cgroupLevel{Limit: gib, Used: gib / 4}, 4 * gib, gib, gib / 4},
+		{"limit above host", cgroupLevel{Limit: 8 * gib, Used: gib}, 4 * gib, 4 * gib, gib},
+		{"over limit", cgroupLevel{Limit: gib, Used: 2 * gib}, 4 * gib, gib, gib},
+		{"no host swap", cgroupLevel{Limit: gib, Used: 0}, 0, 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -521,5 +521,31 @@ func TestApplyCgroupHeadroom(t *testing.T) {
 	applyCgroupMemory(&got, []string{leaf, pod})
 	if got.MemTotal != host.MemTotal || got.MemAvailable != host.MemAvailable {
 		t.Errorf("unreadable pod usage: got %+v, want host figures", got)
+	}
+}
+
+func TestMemoryPressureDirFollowsLeastHeadroom(t *testing.T) {
+	// A pod nearly at its 8G limit holds a leaf with a calm 4G limit: the
+	// pod's memory.pressure is the one that reflects the squeeze.
+	const gib = 1 << 30
+	mk := func(limit, current uint64) string {
+		d := t.TempDir()
+		for name, v := range map[string]string{
+			"memory.max":     strconv.FormatUint(limit, 10),
+			"memory.current": strconv.FormatUint(current, 10),
+			"memory.stat":    "anon 1\ninactive_file 0\n",
+		} {
+			if err := os.WriteFile(filepath.Join(d, name), []byte(v+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return d
+	}
+	leaf, pod := mk(4*gib, gib), mk(8*gib, 8*gib-100<<20)
+	if got := memoryPressureDir([]string{leaf, pod}); got != pod {
+		t.Errorf("memoryPressureDir = %s, want the pod %s", got, pod)
+	}
+	if got := memoryPressureDir(nil); got != "" {
+		t.Errorf("no cgroup: %q, want host", got)
 	}
 }

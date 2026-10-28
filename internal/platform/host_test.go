@@ -51,6 +51,11 @@ func checkRanges(t *testing.T, s domain.HostSample) {
 	if s.Has(domain.MetricSwap) && s.SwapUsed > s.SwapTotal {
 		t.Errorf("SwapUsed %d > SwapTotal %d", s.SwapUsed, s.SwapTotal)
 	}
+	for _, m := range []domain.Metric{domain.MetricMemoryStall, domain.MetricIOStall, domain.MetricCPUStall} {
+		if st, ok := s.StallFor(m); ok && (st.Some < 0 || st.Some > 1 || st.Full < 0 || st.Full > 1) {
+			t.Errorf("%s = %+v, want fractions 0..1", m, st)
+		}
+	}
 }
 
 func TestSampleHostDarwin(t *testing.T) {
@@ -60,8 +65,9 @@ func TestSampleHostDarwin(t *testing.T) {
 	first, second := sampleTwice(t)
 	for _, s := range []domain.HostSample{first, second} {
 		checkRanges(t, s)
-		if !slices.Equal(s.Missing, []domain.Metric{domain.MetricCPU}) {
-			t.Errorf("Missing = %v, want only cpu", s.Missing)
+		want := []domain.Metric{domain.MetricCPU, domain.MetricMemoryStall, domain.MetricIOStall, domain.MetricCPUStall}
+		if !slices.Equal(s.Missing, want) {
+			t.Errorf("Missing = %v, want %v", s.Missing, want)
 		}
 		if !s.HasMemoryPressure() {
 			t.Errorf("MemoryPressure = %v, want a known kernel verdict", s.MemoryPressure)
@@ -86,6 +92,13 @@ func TestSampleHostLinux(t *testing.T) {
 		}
 		if s.Has(domain.MetricMemoryPressure) {
 			t.Error("memory pressure present, want missing on linux")
+		}
+		for _, m := range []domain.Metric{domain.MetricMemoryStall, domain.MetricIOStall, domain.MetricCPUStall} {
+			st, ok := s.StallFor(m)
+			if ok == !s.Has(m) {
+				t.Errorf("%s: StallFor ok = %v but Has = %v", m, ok, s.Has(m))
+			}
+			t.Logf("%s: %+v present=%v", m, st, ok)
 		}
 	}
 }
@@ -125,7 +138,8 @@ func TestSampleErrorsFinish(t *testing.T) {
 
 	var all sampleErrors
 	boom := errors.New("boom")
-	for _, m := range []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap, domain.MetricMemoryPressure} {
+	for _, m := range []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap, domain.MetricMemoryPressure,
+		domain.MetricMemoryStall, domain.MetricIOStall, domain.MetricCPUStall} {
 		all.fail(m, boom)
 	}
 	if err := all.finish(&s); !errors.Is(err, boom) {

@@ -17,7 +17,22 @@ const (
 	// (macOS kern.memorystatus_vm_pressure_level). Other platforms report
 	// it missing.
 	MetricMemoryPressure Metric = "memory_pressure"
+	// MetricMemoryStall, MetricIOStall and MetricCPUStall are the Linux
+	// kernel's pressure stall information (PSI, /proc/pressure/*): the share
+	// of recent wall time in which tasks waited on memory, I/O or CPU. Other
+	// platforms, and Linux kernels without PSI, report them missing.
+	MetricMemoryStall Metric = "memory_stall"
+	MetricIOStall     Metric = "io_stall"
+	MetricCPUStall    Metric = "cpu_stall"
 )
+
+// Stall is one PSI resource reading: the share of the last 10 seconds
+// (avg10 / 100) in which some task (Some), or every non-idle task at once
+// (Full), was stalled on the resource. Both are fractions, 0..1.
+type Stall struct {
+	Some float64 `json:"some"`
+	Full float64 `json:"full"`
+}
 
 // HostSample is one observation of host-wide resources. Fields for metrics
 // listed in Missing are zero and must be ignored.
@@ -39,6 +54,13 @@ type HostSample struct {
 	// MetricMemoryPressure). The zero value is unknown and counts as missing
 	// even when MetricMemoryPressure is not listed in Missing.
 	MemoryPressure MemoryPressure `json:"memory_pressure,omitempty"`
+	// MemoryStall, IOStall and CPUStall are PSI readings (see
+	// MetricMemoryStall). nil is unknown and counts as missing even when the
+	// metric is not listed in Missing, so a sample from a producer that
+	// predates PSI never reads as zero stall.
+	MemoryStall *Stall `json:"memory_stall,omitempty"`
+	IOStall     *Stall `json:"io_stall,omitempty"`
+	CPUStall    *Stall `json:"cpu_stall,omitempty"`
 	// Missing lists metrics the platform could not provide for this sample.
 	Missing []Metric `json:"missing,omitempty"`
 }
@@ -57,6 +79,24 @@ func (s HostSample) Has(m Metric) bool {
 // memory-pressure verdict.
 func (s HostSample) HasMemoryPressure() bool {
 	return s.Has(MetricMemoryPressure) && s.MemoryPressure.Known()
+}
+
+// StallFor returns the PSI reading for m (MetricMemoryStall, MetricIOStall
+// or MetricCPUStall) and whether the sample carries it.
+func (s HostSample) StallFor(m Metric) (Stall, bool) {
+	var p *Stall
+	switch m {
+	case MetricMemoryStall:
+		p = s.MemoryStall
+	case MetricIOStall:
+		p = s.IOStall
+	case MetricCPUStall:
+		p = s.CPUStall
+	}
+	if p == nil || !s.Has(m) {
+		return Stall{}, false
+	}
+	return *p, true
 }
 
 // MemoryPressure is a kernel memory-pressure verdict, ordered by severity.
