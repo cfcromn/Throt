@@ -11,7 +11,7 @@ Throt is a local-first Go daemon and terminal UI that observes coding-agent proc
 
 ## Status
 
-**Pre-alpha.** The daemon samples host resources and reports a pressure level; process attribution and scheduling are under active development. Expect breaking changes before 1.0.
+**Pre-alpha.** The daemon samples host resources, reports a pressure level, and attributes processes and heavy workloads to coding agents. The TUI and scheduling are under active development. Expect breaking changes before 1.0.
 
 ## Problem
 
@@ -68,7 +68,7 @@ go install github.com/cfcromn/Throt/cmd/throtd@latest
 
 throtd &        # start the daemon
 throt ping      # check that the client can reach it
-throt status    # host resources and pressure level
+throt status    # pressure, host resources, agents, heavy workloads
 throt events    # recent daemon events as JSON lines
 ```
 

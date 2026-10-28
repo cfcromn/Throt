@@ -11,14 +11,20 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/cfcromn/Throt/internal/agent"
 	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/monitor"
 	"github.com/cfcromn/Throt/internal/pressure"
+	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
@@ -46,10 +52,22 @@ type EventsParams struct {
 type StatusResult struct {
 	Pressure domain.PressureLevel `json:"pressure"`
 	Reason   string               `json:"reason,omitempty"`
-	// Host is the latest sample; nil until the first sample succeeds.
-	Host *domain.HostSample `json:"host,omitempty"`
-	// Degraded is set when the latest sampling attempt failed.
+	// Host is the latest successful sample; nil until one succeeds.
+	Host   *domain.HostSample     `json:"host,omitempty"`
+	Agents []process.AgentView    `json:"agents"`
+	Heavy  []process.WorkloadView `json:"heavy"`
+	// Degraded describes failing samplers; empty when all succeed.
 	Degraded string `json:"degraded,omitempty"`
+}
+
+// HostSampler reads host-wide metrics.
+type HostSampler interface {
+	SampleHost(ctx context.Context) (domain.HostSample, error)
+}
+
+// ProcessSampler reads the process table.
+type ProcessSampler interface {
+	SampleProcesses(ctx context.Context) ([]domain.ProcessSample, error)
 }
 
 // Daemon is throtd's runtime state.
@@ -57,24 +75,33 @@ type Daemon struct {
 	cfg     config.Config
 	log     *slog.Logger
 	events  *domain.EventLog
-	sampler monitor.HostSampler
+	host    HostSampler
+	procs   ProcessSampler
 	started time.Time
 
-	mu       sync.Mutex // guards the fields below
+	// Owned by the sampling goroutine.
+	graph    *process.Graph
 	engine   *pressure.Engine
-	status   StatusResult
-	degraded bool
+	failing  map[string]bool // sampler name -> currently failing
+	failures map[string]string
+
+	mu     sync.Mutex // guards status
+	status StatusResult
 }
 
-// NewDaemon returns a daemon for cfg that samples the host with sampler and
-// logs to log.
-func NewDaemon(cfg config.Config, sampler monitor.HostSampler, log *slog.Logger) *Daemon {
+// NewDaemon returns a daemon for cfg using the given samplers, logging to log.
+func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, log *slog.Logger) *Daemon {
 	return &Daemon{
-		cfg:     cfg,
-		log:     log,
-		events:  domain.NewEventLog(cfg.EventHistory),
-		sampler: sampler,
-		engine:  pressure.New(pressure.DefaultWindow, pressure.DefaultThresholds()),
+		cfg:    cfg,
+		log:    log,
+		events: domain.NewEventLog(cfg.EventHistory),
+		host:   host,
+		procs:  procs,
+		graph: process.NewGraph(agent.DefaultAdapters(),
+			process.WithCPUCount(runtime.NumCPU()), process.WithAgentUID(uint32(os.Getuid()))),
+		engine:   pressure.New(pressure.DefaultWindow, pressure.DefaultThresholds()),
+		failing:  map[string]bool{},
+		failures: map[string]string{},
 	}
 }
 
@@ -105,7 +132,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		monitor.Run(ctx, time.Duration(d.cfg.SampleInterval), d.sampler, d.observe, d.sampleFailed)
+		monitor.Run(ctx, time.Duration(d.cfg.SampleInterval), d.tick)
 	}()
 	err = srv.Serve(ctx, l)
 	cancel()
@@ -114,47 +141,98 @@ func (d *Daemon) Run(ctx context.Context) error {
 	return err
 }
 
-func (d *Daemon) observe(s domain.HostSample) {
+// allMissing marks every host metric unavailable. A failed host sample still
+// reaches the pressure engine this way, so stale readings age out of the
+// window and pressure falls back to unknown instead of freezing.
+var allMissing = []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap}
+
+// sampleTimeout bounds one sampling round.
+const sampleTimeout = 5 * time.Second
+
+// tick takes one host and process sample and publishes the result.
+func (d *Daemon) tick(parent context.Context) {
+	// Bound each round so a hung sampler (e.g. ps) cannot stall updates.
+	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
+	defer cancel()
+	host, herr := d.host.SampleHost(ctx)
+	procs, perr := d.procs.SampleProcesses(ctx)
+	if parent.Err() != nil {
+		return // shutting down; partial samples are meaningless
+	}
+	now := time.Now()
+	d.track("host", herr)
+	d.track("processes", perr)
+
+	var snap process.Snapshot
+	if perr == nil {
+		for _, c := range d.graph.Update(now, procs) {
+			d.emitChange(c)
+		}
+		snap = d.graph.Snapshot()
+	}
+	if herr != nil {
+		host = domain.HostSample{Time: now, Missing: allMissing}
+	} else if !host.Has(domain.MetricCPU) && snap.HasCPU {
+		// Platforms without a host CPU counter (macOS without cgo) get the
+		// sum of per-process CPU deltas instead.
+		host.CPUUsage = snap.TotalCPU
+		host.Missing = slices.DeleteFunc(slices.Clone(host.Missing), func(m domain.Metric) bool { return m == domain.MetricCPU })
+	}
+	level, changed, reason := d.engine.Observe(host)
+
 	d.mu.Lock()
-	level, changed, reason := d.engine.Observe(s)
 	from := d.status.Pressure
-	d.status = StatusResult{Pressure: level, Reason: reason, Host: &s}
-	recovered := d.degraded
-	d.degraded = false
+	d.status.Pressure, d.status.Reason, d.status.Degraded = level, reason, d.degradedSummary()
+	if herr == nil {
+		d.status.Host = &host
+	}
+	if perr == nil {
+		d.status.Agents, d.status.Heavy = snap.Agents, snap.Heavy
+	}
 	d.mu.Unlock()
 
-	if recovered {
-		d.emit(domain.EventRecovered, "host sampling recovered", nil)
-	}
 	if changed {
 		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
 			map[string]string{"from": from.String(), "to": level.String(), "reason": reason})
 	}
 }
 
-// sampleFailed feeds the engine an all-missing sample so stale readings age
-// out of the window and pressure falls back to unknown instead of freezing.
-// The last good host sample stays visible; its Time shows its age.
-func (d *Daemon) sampleFailed(err error) {
-	empty := domain.HostSample{
-		Time:    time.Now(),
-		Missing: []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap},
+// track records a sampler's result and emits an event on each transition
+// between failing and healthy, not on every failed tick.
+func (d *Daemon) track(name string, err error) {
+	switch {
+	case err != nil && !d.failing[name]:
+		d.failing[name] = true
+		d.emit(domain.EventDegraded, name+" sampling failed: "+err.Error(), map[string]string{"sampler": name})
+	case err == nil && d.failing[name]:
+		d.failing[name] = false
+		d.emit(domain.EventRecovered, name+" sampling recovered", map[string]string{"sampler": name})
 	}
-	d.mu.Lock()
-	level, changed, reason := d.engine.Observe(empty)
-	from := d.status.Pressure
-	d.status.Pressure, d.status.Reason, d.status.Degraded = level, reason, err.Error()
-	first := !d.degraded
-	d.degraded = true
-	d.mu.Unlock()
+	if err != nil {
+		d.failures[name] = err.Error()
+	} else {
+		delete(d.failures, name)
+	}
+}
 
-	if first { // log transitions only, not every failed tick
-		d.emit(domain.EventDegraded, "host sampling failed: "+err.Error(), nil)
+func (d *Daemon) degradedSummary() string {
+	var parts []string
+	for _, name := range []string{"host", "processes"} {
+		if msg, ok := d.failures[name]; ok {
+			parts = append(parts, name+": "+msg)
+		}
 	}
-	if changed {
-		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
-			map[string]string{"from": from.String(), "to": level.String(), "reason": reason})
+	return strings.Join(parts, "; ")
+}
+
+func (d *Daemon) emitChange(c process.Change) {
+	attrs := map[string]string{"pid": strconv.Itoa(c.Process.PID), "name": c.Name}
+	msg := string(c.Kind) + " " + c.Name
+	if c.Agent != "" {
+		attrs["agent"] = c.Agent
+		msg = string(c.Kind) + " " + c.Agent
 	}
+	d.emit(c.Kind, msg, attrs)
 }
 
 func (d *Daemon) currentStatus(context.Context, json.RawMessage) (any, error) {

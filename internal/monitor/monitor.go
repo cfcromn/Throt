@@ -4,31 +4,16 @@ package monitor
 import (
 	"context"
 	"time"
-
-	"github.com/cfcromn/Throt/internal/domain"
 )
 
-// HostSampler reads host-wide metrics.
-type HostSampler interface {
-	SampleHost(ctx context.Context) (domain.HostSample, error)
-}
-
-// Run samples every interval until ctx is cancelled, calling onSample with
-// each result or onError with each failure. It runs in the caller's
-// goroutine; callbacks must not block for long, since a slow callback delays
-// (rather than queues) the next sample.
-func Run(ctx context.Context, interval time.Duration, s HostSampler, onSample func(domain.HostSample), onError func(error)) {
+// Run calls tick immediately and then every interval until ctx is
+// cancelled. It runs in the caller's goroutine. A slow tick delays (rather
+// than queues) the next one, so work never piles up.
+func Run(ctx context.Context, interval time.Duration, tick func(context.Context)) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
-		if sample, err := s.SampleHost(ctx); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			onError(err)
-		} else {
-			onSample(sample)
-		}
+		tick(ctx)
 		select {
 		case <-ctx.Done():
 			return
