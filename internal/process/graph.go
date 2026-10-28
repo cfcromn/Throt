@@ -119,7 +119,22 @@ type proc struct {
 	// stoppedSince is when an Update first saw this process stopped in the
 	// current run of stopped samples; zero while it is not stopped.
 	stoppedSince time.Time
+	// activeAt is when a launcher's subtree was last active (see
+	// launcherHeavy); zero if never, and for other processes.
+	activeAt time.Time
 }
+
+// A launcher (agent.Launcher: npm, pnpm, yarn, bun) is heavy only while its
+// subtree, itself included, uses at least launcherCPU cores or
+// launcherRSS bytes, and for launcherHold after that, so a build pausing
+// for I/O is not dropped and rediscovered. A stopped launcher that was heavy
+// stays heavy: a queued build uses no CPU. An idle one, such as an MCP
+// server under npm exec, never takes a heavy slot.
+const (
+	launcherCPU  = 0.5
+	launcherRSS  = 512 << 20
+	launcherHold = time.Minute
+)
 
 // Graph tracks processes across full snapshots. It is not safe for
 // concurrent use; the owner serializes calls and shares Snapshots instead.
@@ -196,6 +211,9 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 			p.cpu, p.hasCPU = d/dt, true
 			busy += d
 		}
+		if ok {
+			p.activeAt = old.activeAt
+		}
 		if s.State == domain.StateStopped {
 			p.stoppedSince = now
 			if ok && !old.stoppedSince.IsZero() {
@@ -208,6 +226,7 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 	slices.SortFunc(order, func(a, b *proc) int { return cmp.Compare(a.s.PID, b.s.PID) })
 
 	g.link(order, byPID)
+	active := g.launcherActivity(order)
 	for _, p := range order {
 		p.adapter = g.match(p.s)
 		switch {
@@ -215,7 +234,7 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 			p.class, p.track = domain.ClassAgent, trackAgent
 		default:
 			p.class = agent.Classify(p.s)
-			if p.class.Heavy() {
+			if p.class.Heavy() && (!agent.Launcher(p.s.Name) || g.launcherHeavy(now, p, active[p])) {
 				p.track = trackHeavy
 			}
 		}
@@ -233,6 +252,52 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 	g.procs = next
 	g.snap = g.build(order, busy, dt, rates)
 	return changes
+}
+
+// launcherActivity sums CPU and RSS over the subtree of every launcher and
+// reports which launchers are active now. Each process adds itself to every
+// launcher above it, so nested launchers both count it.
+func (g *Graph) launcherActivity(order []*proc) map[*proc]bool {
+	type use struct {
+		cpu float64
+		rss uint64
+	}
+	var sums map[*proc]*use
+	for _, p := range order {
+		for q := p; q != nil; q = q.parent {
+			if !agent.Launcher(q.s.Name) {
+				continue
+			}
+			if sums == nil {
+				sums = map[*proc]*use{}
+			}
+			u := sums[q]
+			if u == nil {
+				u = &use{}
+				sums[q] = u
+			}
+			u.cpu += p.cpu
+			u.rss += p.s.RSS
+		}
+	}
+	active := make(map[*proc]bool, len(sums))
+	for q, u := range sums {
+		active[q] = u.cpu >= launcherCPU || u.rss >= launcherRSS
+	}
+	return active
+}
+
+// launcherHeavy reports whether launcher p is heavy at now, recording its
+// activity; see launcherCPU.
+func (g *Graph) launcherHeavy(now time.Time, p *proc, active bool) bool {
+	if active {
+		p.activeAt = now
+		return true
+	}
+	if old := g.procs[p.s.Key()]; old != nil && old.track == trackHeavy && p.s.State == domain.StateStopped {
+		return true
+	}
+	return !p.activeAt.IsZero() && now.Sub(p.activeAt) < launcherHold
 }
 
 // link sets parent pointers from PPIDs. PPID 0 or 1 (the kernel and init or

@@ -20,6 +20,7 @@ type ps struct {
 	cpu       float64
 	rss       uint64
 	uid       uint32
+	state     domain.ProcessState
 }
 
 func (p ps) sample() domain.ProcessSample {
@@ -31,6 +32,7 @@ func (p ps) sample() domain.ProcessSample {
 		CPUTime: time.Duration(p.cpu * float64(time.Second)),
 		RSS:     p.rss << 20,
 		UID:     p.uid,
+		State:   p.state,
 	}
 }
 
@@ -424,5 +426,57 @@ func TestCustomAdaptersAndOrder(t *testing.T) {
 	want := []Change{ch(agentFound, 7, 0, "node", "wrap-1")}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("changes = %+v, want %+v", got, want)
+	}
+}
+
+// TestLauncherHeavyOnlyWhileActive checks that an idle package-manager
+// launcher (an MCP server under npm exec) is not a heavy workload, a busy
+// one is, it stays heavy for launcherHold after going idle and while
+// stopped, and is dropped after that.
+func TestLauncherHeavyOnlyWhileActive(t *testing.T) {
+	heavy := func(g *Graph) []int {
+		var out []int
+		for _, h := range g.Snapshot().Heavy {
+			out = append(out, h.Key.PID)
+		}
+		return out
+	}
+	g := newGraph()
+	agentP := ps{pid: 10, ppid: 1, name: "claude"}
+	idle := ps{pid: 20, ppid: 10, name: "npm", rss: 7}
+	idleNode := ps{pid: 21, ppid: 20, name: "node", rss: 60}
+	build := ps{pid: 30, ppid: 10, name: "npm", rss: 50}
+	node := ps{pid: 31, ppid: 30, name: "node", rss: 300}
+	g.Update(epoch, samples([]ps{agentP, idle, idleNode, build, node}))
+	if got := heavy(g); len(got) != 0 {
+		t.Fatalf("first sample heavy = %v, want none (no CPU rates yet)", got)
+	}
+	node.cpu = 2 // 1 core over 2s, through the child
+	g.Update(epoch.Add(2*time.Second), samples([]ps{agentP, idle, idleNode, build, node}))
+	if got := heavy(g); !reflect.DeepEqual(got, []int{30}) {
+		t.Fatalf("heavy = %v, want [30]: the busy launcher only", got)
+	}
+	// Idle again: held for launcherHold.
+	g.Update(epoch.Add(30*time.Second), samples([]ps{agentP, idle, idleNode, build, node}))
+	if got := heavy(g); !reflect.DeepEqual(got, []int{30}) {
+		t.Fatalf("heavy within hold = %v, want [30]", got)
+	}
+	// Stopped (queued) past the hold: still heavy.
+	stopped := build
+	stopped.state = domain.StateStopped
+	g.Update(epoch.Add(90*time.Second), samples([]ps{agentP, idle, idleNode, stopped, node}))
+	if got := heavy(g); !reflect.DeepEqual(got, []int{30}) {
+		t.Fatalf("stopped launcher heavy = %v, want [30]", got)
+	}
+	// Running and idle past the hold: dropped.
+	g.Update(epoch.Add(100*time.Second), samples([]ps{agentP, idle, idleNode, build, node}))
+	if got := heavy(g); len(got) != 0 {
+		t.Fatalf("idle launcher after hold heavy = %v, want none", got)
+	}
+	// Large memory alone makes it active.
+	node.rss = 600
+	g.Update(epoch.Add(102*time.Second), samples([]ps{agentP, idle, idleNode, build, node}))
+	if got := heavy(g); !reflect.DeepEqual(got, []int{30}) {
+		t.Fatalf("heavy by memory = %v, want [30]", got)
 	}
 }

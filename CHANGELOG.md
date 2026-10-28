@@ -18,6 +18,7 @@ The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md
 - The `reason` attr of every `control_refused` event is now a stable code. Refusals throtd decides itself used to put a sentence there; they now use `start_mismatch`, `gone`, `peer_mismatch`, `unidentified`, `paused_member`, `needs_force`, `job_control` or `not_stopped` (or the controller's `not_heavy`, `foreign_uid`, `not_paused`). The sentence stays in the event message and the error the client sees.
 
 ### Fixed
+- Idle `npm`, `pnpm`, `yarn` and `bun` processes, such as an MCP server under `npm exec` in every agent session, are no longer heavy workloads; in enforce mode they took every slot. A launcher is heavy only while its subtree uses at least half a core or 512 MiB, and for a minute after.
 - Work the scheduler queued no longer stays stopped while process sampling keeps failing (on macOS, `ps` failing to fork under memory pressure): no scheduler round runs then, so after `max_queue_wait` of failed samples throtd resumes it (reason `processes_unavailable`).
 
 ### Security
