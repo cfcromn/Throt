@@ -893,7 +893,8 @@ tool (alone, or after "cd DIR &&", variable assignments, or "time"), wait up
 to D for throtd to report capacity for a heavy job, then let it run
 unchanged. Advisory: no slot is reserved. It never blocks, denies, or
 changes a tool call, and returns at once on any error or when throtd is
-unreachable. Keep D below the hook's "timeout" in settings.json.
+unreachable. Keep D below the hook's "timeout" in settings.json. With
+THROT_HOOK_DEBUG=1 it says on stderr why it ignored an event.
 
 Flags:
   -max-wait duration
