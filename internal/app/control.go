@@ -39,9 +39,7 @@ func (d *Daemon) pause(ctx context.Context, raw json.RawMessage) (any, error) {
 	if !sameStart(params, key) {
 		return nil, d.refused("pause", pid, "the process changed since it was shown (PID reused)")
 	}
-	d.graphMu.Lock()
-	target, ok := d.graph.Workload(key)
-	d.graphMu.Unlock()
+	target, ok := d.workload(key)
 	if !ok {
 		return nil, d.refused("pause", pid, "workload is gone")
 	}
@@ -79,13 +77,10 @@ func (d *Daemon) resume(ctx context.Context, raw json.RawMessage) (any, error) {
 
 func controlParams(raw json.RawMessage) (ControlParams, error) {
 	var p ControlParams
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return p, fmt.Errorf("invalid params: %w", err)
+	if err := decodeParams(raw, &p); err != nil {
+		return p, err
 	}
-	if p.PID <= 1 {
-		return p, errors.New("invalid params: pid must be > 1")
-	}
-	return p, nil
+	return p, checkPID(p.PID)
 }
 
 // sameStart reports whether a client-supplied start time (if any) matches.

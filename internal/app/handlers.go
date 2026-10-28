@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -45,8 +46,8 @@ type EventsParams struct {
 func (d *Daemon) recentEvents(_ context.Context, raw json.RawMessage) (any, error) {
 	var p EventsParams
 	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &p); err != nil {
-			return nil, fmt.Errorf("invalid params: %w", err)
+		if err := decodeParams(raw, &p); err != nil {
+			return nil, err
 		}
 	}
 	if p.Limit <= 0 || p.Limit > MaxEventsPerCall {
@@ -66,15 +67,38 @@ func (d *Daemon) recentEvents(_ context.Context, raw json.RawMessage) (any, erro
 
 func (d *Daemon) currentStatus(context.Context, json.RawMessage) (any, error) {
 	d.mu.Lock()
-	st := d.status
-	st.Scheduler.Leases = d.leases.views()
+	st := d.statusWithLeases()
 	d.mu.Unlock()
 	st.Paused = d.ctl.Paused()
 	return st, nil
+}
+
+// statusWithLeases returns a copy of the latest status with the active
+// leases filled in. d.mu is held.
+func (d *Daemon) statusWithLeases() StatusResult {
+	st := d.status
+	st.Scheduler.Leases = d.leases.views()
+	return st
 }
 
 func (d *Daemon) currentStats(context.Context, json.RawMessage) (any, error) {
 	d.statsMu.Lock()
 	defer d.statsMu.Unlock()
 	return d.acct.Report(), nil
+}
+
+// decodeParams unmarshals a method's params into v.
+func decodeParams(raw json.RawMessage, v any) error {
+	if err := json.Unmarshal(raw, v); err != nil {
+		return fmt.Errorf("invalid params: %w", err)
+	}
+	return nil
+}
+
+// checkPID refuses a pid of init or below, which no workload can have.
+func checkPID(pid int) error {
+	if pid <= 1 {
+		return errors.New("invalid params: pid must be > 1")
+	}
+	return nil
 }

@@ -105,9 +105,7 @@ func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.Pr
 }
 
 func (d *Daemon) schedulerPause(parent context.Context, dec scheduler.Decision) {
-	d.graphMu.Lock()
-	target, ok := d.graph.Workload(dec.Key)
-	d.graphMu.Unlock()
+	target, ok := d.workload(dec.Key)
 	if !ok {
 		return // exited since the snapshot
 	}

@@ -51,9 +51,7 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 
 	targets := []domain.ProcessKey{v.Key}
 	if leftPaused {
-		d.graphMu.Lock()
-		w, ok := d.graph.Workload(v.Key)
-		d.graphMu.Unlock()
+		w, ok := d.workload(v.Key)
 		if ok {
 			orphan := make(map[domain.ProcessKey]bool, len(stopped))
 			for _, s := range stopped {

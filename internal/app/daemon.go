@@ -199,6 +199,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	return err
 }
 
+// workload returns the current members of the workload with top process
+// key. It holds graphMu only for the lookup, so the caller may signal the
+// result.
+func (d *Daemon) workload(key domain.ProcessKey) (process.WorkloadTarget, bool) {
+	d.graphMu.Lock()
+	defer d.graphMu.Unlock()
+	return d.graph.Workload(key)
+}
+
 // privilegedMethods may only be called by the user running the daemon: they
 // signal processes, change its configuration, or reserve heavy slots.
 func privilegedMethods() []string { return []string{"pause", "resume", "reload", "acquire"} }

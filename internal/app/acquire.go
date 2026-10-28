@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -63,42 +62,62 @@ const maxIdentifyLookups = 8
 // below a heavy workload or a lease holder is granted without a lease.
 func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p AcquireParams
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+	if err := decodeParams(raw, &p); err != nil {
+		return nil, err
 	}
-	if p.PID <= 1 {
-		return nil, errors.New("invalid params: pid must be > 1")
+	if err := checkPID(p.PID); err != nil {
+		return nil, err
 	}
-	// A lease is the caller's own: where the kernel reports the peer PID,
-	// it must be the process the lease is for.
-	if peer, ok := transport.PeerPIDFrom(ctx); ok && peer != p.PID {
-		return nil, d.refused("acquire", p.PID, fmt.Sprintf("caller pid %d is not pid %d", peer, p.PID))
+	self, err := d.acquireCaller(ctx, p.PID)
+	if err != nil {
+		return nil, err
 	}
-	if d.ident == nil {
-		return nil, d.refused("acquire", p.PID, "cannot identify processes on this platform")
-	}
-	self, err := d.identify(ctx, p.PID)
-	switch {
-	case err != nil:
-		return nil, d.refused("acquire", p.PID, "cannot identify the caller: "+err.Error())
-	case self.Start.IsZero():
-		return nil, d.refused("acquire", p.PID, "the caller has no start time")
-	case self.UID != d.uid:
-		return nil, d.refused("acquire", p.PID, "the process belongs to another user")
-	}
-	key := self.Key()
 	chain := d.ancestry(ctx, self.PPID)
 	paused := d.ctl.Paused()
 	now := time.Now()
-
-	d.mu.Lock()
-	if l, ok := d.leases.find(key); ok {
-		d.mu.Unlock()
-		return AcquireResult{Granted: true, Reason: "already holds a lease", LeaseID: l.ID}, nil
+	res, l := d.admit(self.Key(), chain, paused, now)
+	if l.ID != "" {
+		d.emit(domain.EventLeaseGranted, fmt.Sprintf("lease %s granted to pid %d (%s): %s", l.ID, p.PID, ownerLabel(l.Agent), res.Verdict.Reason),
+			map[string]string{"lease_id": l.ID, "pid": strconv.Itoa(p.PID), "agent": l.Agent})
 	}
-	st := d.status
+	return res, nil
+}
+
+// acquireCaller resolves pid, the acquire caller, from the OS. It refuses a
+// caller that is not the peer, cannot be identified, or belongs to another
+// user.
+func (d *Daemon) acquireCaller(ctx context.Context, pid int) (domain.ProcessSample, error) {
+	// A lease is the caller's own: where the kernel reports the peer PID,
+	// it must be the process the lease is for.
+	if peer, ok := transport.PeerPIDFrom(ctx); ok && peer != pid {
+		return domain.ProcessSample{}, d.refused("acquire", pid, fmt.Sprintf("caller pid %d is not pid %d", peer, pid))
+	}
+	if d.ident == nil {
+		return domain.ProcessSample{}, d.refused("acquire", pid, "cannot identify processes on this platform")
+	}
+	self, err := d.identify(ctx, pid)
+	switch {
+	case err != nil:
+		return self, d.refused("acquire", pid, "cannot identify the caller: "+err.Error())
+	case self.Start.IsZero():
+		return self, d.refused("acquire", pid, "the caller has no start time")
+	case self.UID != d.uid:
+		return self, d.refused("acquire", pid, "the process belongs to another user")
+	}
+	return self, nil
+}
+
+// admit decides an acquire by key, whose ancestors are chain, and grants
+// the lease it returns. The check and the grant happen under d.mu. A zero
+// Lease means none was granted now, also when key already holds one.
+func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.PausedWorkload, now time.Time) (AcquireResult, Lease) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if l, ok := d.leases.find(key); ok {
+		return AcquireResult{Granted: true, Reason: "already holds a lease", LeaseID: l.ID}, Lease{}
+	}
+	st := d.statusWithLeases()
 	st.Paused = paused
-	st.Scheduler.Leases = d.leases.views()
 	agent := nearestAgent(chain, st.Agents)
 	v := assess(st, agent, true)
 	res := AcquireResult{Reason: v.Reason, Verdict: v}
@@ -123,13 +142,7 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 	} else {
 		d.waiting.touch(key, agent, now)
 	}
-	d.mu.Unlock()
-
-	if res.LeaseID != "" {
-		d.emit(domain.EventLeaseGranted, fmt.Sprintf("lease %s granted to pid %d (%s): %s", l.ID, p.PID, ownerLabel(agent), v.Reason),
-			map[string]string{"lease_id": l.ID, "pid": strconv.Itoa(p.PID), "agent": agent})
-	}
-	return res, nil
+	return res, l
 }
 
 // firstInLine reports whether caller key, a lease waiter of agent, comes
