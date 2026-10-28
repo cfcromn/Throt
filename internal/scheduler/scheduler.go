@@ -297,9 +297,9 @@ type Scheduler struct {
 	seen      map[domain.ProcessKey]*entry
 	// lastSwitch is when the last resume or preemption was decided.
 	lastSwitch time.Time
-	// lastPressureSwitch is when the last preemption, or queueing for high
-	// or critical pressure, was decided. Within ResumeCooldown of it no
-	// resume skips the cooldown.
+	// lastPressureSwitch is the last round at high or critical pressure,
+	// or the last preemption. Within ResumeCooldown of it no resume skips
+	// the cooldown.
 	lastPressureSwitch time.Time
 	// limit is the effective heavy limit, in [1, policy.HeavyLimit].
 	limit int
@@ -458,6 +458,12 @@ func (s *Scheduler) Decide(in Input) []Decision {
 	}
 	if !s.lastPressureSwitch.IsZero() && in.Now.Before(s.lastPressureSwitch) {
 		s.lastPressureSwitch = time.Time{}
+	}
+	if in.Pressure == domain.PressureHigh || in.Pressure == domain.PressureCritical {
+		// Pressure that stays high with nothing to decide must still space
+		// the recovery, or every queued workload resumes in its first calm
+		// round.
+		s.lastPressureSwitch = in.Now
 	}
 	s.lastRound = in.Now
 	s.adapt(in.Now, in.Pressure, in.ThroughputOnly)
@@ -734,7 +740,7 @@ func (s *Scheduler) yields(in Input, c *cand, perOwner map[string]int) bool {
 // replacement adds no load: ReasonWorkloadExited) or pressure is calm:
 // normal, or elevated by throughput only (ReasonPressureNormal,
 // ReasonPressureThroughput). It never does at high or critical pressure,
-// nor within ResumeCooldown of a preemption or of queueing for high or
+// nor within ResumeCooldown of a preemption or of a round at high or
 // critical pressure, so recovery stays spaced. exited is the number of
 // exits not yet refilled this round.
 func (s *Scheduler) cooldownExempt(in Input, running, exited int) string {

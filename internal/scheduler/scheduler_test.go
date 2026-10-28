@@ -803,3 +803,31 @@ func TestNewcomerQueuesBehindWaiter(t *testing.T) {
 	// Unknown pressure fails open, as for queued work.
 	expect(t, s.Decide(Input{Now: at(2), Pressure: domain.PressureUnknown, Heavy: []process.WorkloadView{wv(3, "a")}, Waiters: w}))
 }
+
+// TestRecoveryAfterSustainedHighIsSpaced checks that pressure staying high
+// with nothing to decide still spaces the recovery: the first calm round
+// must not resume every queued workload at once.
+func TestRecoveryAfterSustainedHighIsSpaced(t *testing.T) {
+	s := New(enforce(4))
+	s.baselined = true
+	var heavy []process.WorkloadView
+	for i, pid := range []int{10, 11, 12, 13} {
+		heavy = append(heavy, wv(pid, "a"+fmt.Sprint(pid)))
+		s.seen[key(pid)] = &entry{firstSeen: at(i), queuedSince: at(i)}
+	}
+	in := Input{Pressure: domain.PressureHigh, Heavy: heavy, Paused: keys(10, 11, 12, 13)}
+	for sec := 100; sec < 110; sec++ {
+		in.Now = at(sec)
+		s.Decide(in)
+	}
+	in.Now, in.Pressure = at(111), domain.PressureNormal
+	resumes := 0
+	for _, d := range s.Decide(in) {
+		if d.Action == ActionResume {
+			resumes++
+		}
+	}
+	if resumes > 1 {
+		t.Fatalf("first calm round after sustained high resumed %d workloads, want at most 1", resumes)
+	}
+}
