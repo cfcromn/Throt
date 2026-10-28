@@ -47,14 +47,18 @@ import (
 // compressor can shrink it), then writes one word per page for PASSES passes
 // over the buffer, keeping its whole working set hot, and exits. A swapped
 // out or paused job takes longer but does the same work. CAP is a hard
-// wall-clock limit: the job exits with status 3 when it is reached, whether
-// or not it was paused, so a lost job cannot hold memory for long. With
-// -mem-calibrate BYTES it prints passes per second for a buffer of that size.
+// limit on wall time spent not stopped: the job exits with status 3 when it
+// is reached, so a lost job cannot hold memory for long. Time stopped
+// (queued by Throt) does not count: a stopped job holds its memory either
+// way, and counting it would report a queued job that never ran as one that
+// ran out of time. With -mem-calibrate BYTES it prints passes per second
+// for a buffer of that size.
 const jobSource = `package main
 
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -89,12 +93,40 @@ func arg(i int) uint64 {
 	return n
 }
 
+// capAfter exits with status 3 once limit of wall time has passed outside
+// SIGSTOP. A stop shows as the tick gap that a SIGCONT ends; the overdue
+// tick may arrive before the signal, so a long gap waits one tick for it.
+// Thrashing delays ticks without a SIGCONT, so it still counts.
+func capAfter(limit time.Duration) {
+	cont := make(chan os.Signal, 1)
+	signal.Notify(cont, syscall.SIGCONT)
+	tick := time.NewTicker(100 * time.Millisecond)
+	deadline, last := time.Now().Add(limit), time.Now()
+	var gap time.Duration
+	for {
+		select {
+		case <-tick.C:
+			// Not the tick's own time: a tick sent just before the stop
+			// waits in the channel and would hide the gap.
+			now := time.Now()
+			gap, last = now.Sub(last), now
+			if gap > time.Second {
+				continue
+			}
+		case <-cont:
+			now := time.Now()
+			deadline = deadline.Add(max(gap, now.Sub(last)))
+			gap, last = 0, now
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintf(os.Stderr, "make: memory job hit its %s cap\n", limit)
+			os.Exit(3)
+		}
+	}
+}
+
 func memJob() {
-	limit := time.Duration(arg(4)) * time.Second
-	time.AfterFunc(limit, func() {
-		fmt.Fprintf(os.Stderr, "make: memory job hit its %s cap\n", limit)
-		os.Exit(3)
-	})
+	go capAfter(time.Duration(arg(4)) * time.Second)
 	buf := fill(arg(2))
 	for range arg(3) {
 		touch(buf)
@@ -235,21 +267,22 @@ const (
 	sampleInterval = 500 * time.Millisecond
 	jobCPU         = 5 * time.Second
 	runTimeout     = 10 * time.Minute
-	defaultReps    = 3
+	// settleTimeout bounds the wait for pressure below high before a run.
+	settleTimeout = 3 * time.Minute
+	defaultReps   = 3
 
 	// The memory scenarios: memJobs jobs of memShare percent of RAM each,
 	// so all of them together want 8 x 22% = 176% of it. Each keeps its
 	// working set hot for about memHold of uncontended work, and exits at
-	// memJobCap of wall time however far it got. A job paused past its cap
-	// exits as soon as it is resumed, so a run may also wait out the
-	// scheduler's max_queue_wait (5m by default) before the last job is
-	// admitted: memRunTimeout leaves room for that.
+	// memJobCap of wall time outside SIGSTOP however far it got. The last
+	// job may wait out the scheduler's max_queue_wait (5m by default) and
+	// then run to its cap: memRunTimeout leaves room for that.
 	memJobs       = 8
 	memShare      = 22
 	memHold       = 6 * time.Second
 	memEvery      = time.Second
 	memJobCap     = 3 * time.Minute
-	memRunTimeout = 7 * time.Minute
+	memRunTimeout = 10 * time.Minute
 )
 
 // scenario is a set of job arrivals, as offsets from the first launch.
@@ -922,6 +955,19 @@ func runScenario(t *testing.T, bin string, sc scenario, mode, line string, tune 
 		st, err := status(socket)
 		return err == nil && st.Pressure != domain.PressureUnknown
 	})
+	// The previous run's thrashing outlasts it (PSI averages, swap-in), and
+	// a run started at high pressure measures that run: Throt would queue
+	// every job on it. Give the machine time to settle first.
+	for settle := time.Now().Add(settleTimeout); ; time.Sleep(500 * time.Millisecond) {
+		st, err := status(socket)
+		if err == nil && st.Pressure < domain.PressureHigh {
+			break
+		}
+		if time.Now().After(settle) {
+			t.Logf("pressure still %s (%s) after %s; starting anyway", st.Pressure, st.Reason, settleTimeout)
+			break
+		}
+	}
 	if st, _ := status(socket); len(st.Heavy) > 0 {
 		// e.g. running under "go test", whose go process is itself a build.
 		t.Fatalf("a heavy workload (%s) is already running; it would take a slot", st.Heavy[0].Name)
@@ -1014,6 +1060,16 @@ func runScenario(t *testing.T, bin string, sc scenario, mode, line string, tune 
 		t.Fatalf("events: %v", err)
 	}
 	for _, e := range events {
+		switch e.Kind {
+		case domain.EventSchedulerDecision, domain.EventSchedulerLimit, domain.EventPressureChanged,
+			domain.EventControlFailed, domain.EventControlRefused, domain.EventDegraded, domain.EventRecovered:
+			// The timeline is what explains a result, so the CI log keeps it.
+			msg := e.Message
+			if e.Kind == domain.EventPressureChanged {
+				msg += " (" + e.Attrs["reason"] + ")"
+			}
+			t.Logf("%8s %s", secs(e.Time.Sub(begin)), msg)
+		}
 		switch e.Kind {
 		case domain.EventSchedulerDecision:
 			if e.Attrs["observed"] != "true" {
