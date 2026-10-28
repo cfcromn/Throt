@@ -13,6 +13,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/cfcromn/Throt/internal/app"
+	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
 )
@@ -171,12 +172,19 @@ func TestRenderNarrow(t *testing.T) {
 	out := view(m)
 	assertFits(t, out, 60, 20)
 	assertContains(t, out, "pressure HIGH", "AGENTS", "HEAVY WORKLOADS", "gradle", "a-very-long", "…", "q quit")
-	// The heavy table drops its PID column first at this width.
+	// The heavy table drops PID, then CLASS, before STATE at this width.
 	heavy := out[strings.Index(out, "HEAVY WORKLOADS"):]
 	header := strings.Split(heavy, "\n")[1]
-	if strings.Contains(header, "PID") || !strings.Contains(header, "CLASS") {
-		t.Errorf("narrow heavy header = %q, want CLASS without PID", header)
+	if strings.Contains(header, "PID") || strings.Contains(header, "CLASS") || !strings.Contains(header, "STATE") {
+		t.Errorf("narrow heavy header = %q, want STATE without PID or CLASS", header)
 	}
+}
+
+func TestPausedState(t *testing.T) {
+	st := sampleStatus(1, 1)
+	st.Paused = []control.PausedWorkload{{Key: st.Heavy[0].Key}}
+	m := newModel(t, &fakeClient{status: st, events: sampleEvents()}, 120, 40)
+	assertContains(t, view(m), "PAUSED")
 }
 
 func TestTooSmall(t *testing.T) {

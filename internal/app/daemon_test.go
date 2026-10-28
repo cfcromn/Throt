@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +33,39 @@ func (fakeSampler) SampleHost(context.Context) (domain.HostSample, error) {
 	return domain.HostSample{Time: time.Now(), MemTotal: 100, MemAvailable: 50}, nil
 }
 
+// fakeSignaler reports identities for fakeSampler's processes and records
+// signals instead of sending them.
+type fakeSignaler struct {
+	mu   sync.Mutex
+	sent []string
+}
+
+func (f *fakeSignaler) Identity(_ context.Context, pid int) (time.Time, uint32, error) {
+	procs, _ := fakeSampler{}.SampleProcesses(context.Background())
+	for _, p := range procs {
+		if p.PID == pid {
+			return p.Start, p.UID, nil
+		}
+	}
+	return time.Time{}, 0, domain.ErrProcessGone
+}
+
+func (f *fakeSignaler) record(sig string, pid int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, fmt.Sprintf("%s:%d", sig, pid))
+	return nil
+}
+
+func (f *fakeSignaler) Stop(pid int) error     { return f.record("stop", pid) }
+func (f *fakeSignaler) Continue(pid int) error { return f.record("cont", pid) }
+
+func (f *fakeSignaler) signals() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.sent, " ")
+}
+
 // shortTempDir keeps socket paths under the 104-byte sun_path limit on macOS.
 func shortTempDir(t *testing.T) string {
 	t.Helper()
@@ -44,12 +79,17 @@ func shortTempDir(t *testing.T) string {
 
 func startDaemon(t *testing.T, sock string) (cancel func() error) {
 	t.Helper()
+	return startDaemonWith(t, sock, &fakeSignaler{})
+}
+
+func startDaemonWith(t *testing.T, sock string, sig *fakeSignaler) (cancel func() error) {
+	t.Helper()
 	cfg := config.Default()
 	cfg.SocketPath = sock
 	ctx, stop := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- NewDaemon(cfg, fakeSampler{}, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(ctx)
+		done <- NewDaemon(cfg, fakeSampler{}, fakeSampler{}, sig, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(ctx)
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -113,7 +153,7 @@ func TestDaemonRefusesSecondInstance(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.SocketPath = sock
-	err := NewDaemon(cfg, fakeSampler{}, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	err := NewDaemon(cfg, fakeSampler{}, fakeSampler{}, &fakeSignaler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("err = %v", err)
 	}
@@ -140,7 +180,7 @@ func TestDaemonKeepsNonSocketFile(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.SocketPath = sock
-	err := NewDaemon(cfg, fakeSampler{}, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	err := NewDaemon(cfg, fakeSampler{}, fakeSampler{}, &fakeSignaler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "not a socket") {
 		t.Fatalf("err = %v", err)
 	}
@@ -157,8 +197,99 @@ func TestDaemonRejectsSharedSocketDir(t *testing.T) {
 	os.Chmod(dir, 0o777) // bypass umask
 	cfg := config.Default()
 	cfg.SocketPath = filepath.Join(dir, "throtd.sock")
-	err := NewDaemon(cfg, fakeSampler{}, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	err := NewDaemon(cfg, fakeSampler{}, fakeSampler{}, &fakeSignaler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "writable by other users") {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+func TestDaemonPauseResume(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "throtd.sock")
+	sig := &fakeSignaler{}
+	stop := startDaemonWith(t, sock, sig)
+	ctx := context.Background()
+
+	// Wait for the first sample so pid 11 shows up as a heavy workload.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var st StatusResult
+		if err := transport.Call(ctx, sock, "status", nil, &st); err == nil && len(st.Heavy) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no heavy workload sampled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := transport.Call(ctx, sock, "pause", ControlParams{PID: 10}, nil); err == nil || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("pausing the agent itself: err = %v", err)
+	}
+	if err := transport.Call(ctx, sock, "pause", ControlParams{PID: 11}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "paused.json")); err != nil {
+		t.Errorf("paused state not persisted: %v", err)
+	}
+	if err := transport.Call(ctx, sock, "pause", ControlParams{PID: 11}, nil); err == nil {
+		t.Fatal("double pause succeeded")
+	}
+	var st StatusResult
+	if err := transport.Call(ctx, sock, "status", nil, &st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Paused) != 1 || st.Paused[0].Key.PID != 11 {
+		t.Errorf("paused = %+v", st.Paused)
+	}
+	if err := transport.Call(ctx, sock, "resume", ControlParams{PID: 11}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sig.signals(); got != "stop:11 cont:11" {
+		t.Errorf("signals = %q", got)
+	}
+
+	// Shutdown resumes anything still paused.
+	if err := transport.Call(ctx, sock, "pause", ControlParams{PID: 11}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := sig.signals(); got != "stop:11 cont:11 stop:11 cont:11" {
+		t.Errorf("signals after shutdown = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "paused.json")); !os.IsNotExist(err) {
+		t.Errorf("paused state left behind: %v", err)
+	}
+}
+
+func TestDaemonRecoversPausedState(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "throtd.sock")
+	// A previous daemon crashed with pid 11 paused.
+	sig := &fakeSignaler{}
+	first := startDaemonWith(t, sock, sig)
+	deadline := time.Now().Add(2 * time.Second)
+	for transport.Call(context.Background(), sock, "pause", ControlParams{PID: 11}, nil) != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("pause never succeeded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	state, err := os.ReadFile(filepath.Join(dir, "paused.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first()
+	if err := os.WriteFile(filepath.Join(dir, "paused.json"), state, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sig2 := &fakeSignaler{}
+	stop := startDaemonWith(t, sock, sig2)
+	if got := sig2.signals(); got != "cont:11" {
+		t.Errorf("recovery signals = %q, want cont:11", got)
+	}
+	stop()
 }

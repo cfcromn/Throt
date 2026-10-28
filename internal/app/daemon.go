@@ -21,6 +21,7 @@ import (
 
 	"github.com/cfcromn/Throt/internal/agent"
 	"github.com/cfcromn/Throt/internal/config"
+	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/monitor"
 	"github.com/cfcromn/Throt/internal/pressure"
@@ -58,6 +59,8 @@ type StatusResult struct {
 	Heavy  []process.WorkloadView `json:"heavy"`
 	// Degraded describes failing samplers; empty when all succeed.
 	Degraded string `json:"degraded,omitempty"`
+	// Paused lists workloads paused by `throt pause`.
+	Paused []control.PausedWorkload `json:"paused"`
 }
 
 // HostSampler reads host-wide metrics.
@@ -79,8 +82,12 @@ type Daemon struct {
 	procs   ProcessSampler
 	started time.Time
 
+	ctl *control.Controller // safe for concurrent use
+
+	graphMu sync.Mutex // guards graph; held briefly, never while signaling
+	graph   *process.Graph
+
 	// Owned by the sampling goroutine.
-	graph    *process.Graph
 	engine   *pressure.Engine
 	failing  map[string]bool // sampler name -> currently failing
 	failures map[string]string
@@ -89,9 +96,11 @@ type Daemon struct {
 	status StatusResult
 }
 
-// NewDaemon returns a daemon for cfg using the given samplers, logging to log.
-func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, log *slog.Logger) *Daemon {
+// NewDaemon returns a daemon for cfg using the given samplers and process
+// signaler, logging to log.
+func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig control.Signaler, log *slog.Logger) *Daemon {
 	return &Daemon{
+		ctl:    control.New(sig, uint32(os.Getuid()), time.Now),
 		cfg:    cfg,
 		log:    log,
 		events: domain.NewEventLog(cfg.EventHistory),
@@ -121,11 +130,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	d.started = time.Now()
 	d.emit(domain.EventDaemonStarted, "listening on "+d.cfg.SocketPath, nil)
+	d.recoverPaused(ctx)
 	srv := transport.NewServer(map[string]transport.Handler{
 		"ping":   d.ping,
 		"events": d.recentEvents,
 		"status": d.currentStatus,
-	})
+		"pause":  d.pause,
+		"resume": d.resume,
+	}, transport.WithPrivileged("pause", "resume"))
 
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
@@ -137,6 +149,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	err = srv.Serve(ctx, l)
 	cancel()
 	wg.Wait()
+	d.resumeAll() // fail open: never leave work paused behind us
 	d.emit(domain.EventDaemonStopped, "shutdown", nil)
 	return err
 }
@@ -165,10 +178,14 @@ func (d *Daemon) tick(parent context.Context) {
 
 	var snap process.Snapshot
 	if perr == nil {
-		for _, c := range d.graph.Update(now, procs) {
+		d.graphMu.Lock()
+		changes := d.graph.Update(now, procs)
+		snap = d.graph.Snapshot()
+		d.graphMu.Unlock()
+		for _, c := range changes {
 			d.emitChange(c)
 		}
-		snap = d.graph.Snapshot()
+		d.forgetExited(procs)
 	}
 	if herr != nil {
 		host = domain.HostSample{Time: now, Missing: allMissing}
@@ -237,8 +254,10 @@ func (d *Daemon) emitChange(c process.Change) {
 
 func (d *Daemon) currentStatus(context.Context, json.RawMessage) (any, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.status, nil
+	st := d.status
+	d.mu.Unlock()
+	st.Paused = d.ctl.Paused()
+	return st, nil
 }
 
 func (d *Daemon) emit(kind domain.EventKind, msg string, attrs map[string]string) {

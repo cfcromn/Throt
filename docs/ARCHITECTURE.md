@@ -34,6 +34,17 @@ Core scheduling logic must not import the TUI, OS-specific packages, or a partic
 - Heavy workloads (build, test, container-build) are classified by executable name. A heavy process folds into its topmost same-name, same-owner heavy ancestor, so `go` → `go` shows once.
 - Only executable base names are read, never arguments or environment. On macOS, `/bin/ps` runs twice. The first pass has no free-text columns and defines the process set. The second supplies names from argv[0], reduced to the executable's first word so process titles can't leak arguments. A PID with an ambiguous (forged) name line gets no name, which leaves it unattributed and observe-only.
 
+## Control
+
+`throt pause PID` / `throt resume PID` act on a heavy workload shown in `throt status`. The daemon only pauses when all of these hold:
+- the caller's uid matches the daemon's (peer credentials);
+- the workload is heavy and attributed to an agent;
+- every member process belongs to the daemon's user.
+
+Members are the workload's process plus its descendants owned by the same agent. They are stopped parent-first with `SIGSTOP` and resumed child-first with `SIGCONT`. Before each signal, the process's identity (PID + start time + uid) is re-read from the OS, and a mismatch means the process is skipped, never signaled. If a stop fails, everything already stopped is resumed.
+
+Paused workloads are written to `paused.json` in the private socket directory. On shutdown the daemon resumes everything. After a crash, the next daemon resumes whatever it finds there whose identity still matches. Restoring never pauses anything.
+
 ## Failure behavior
 
 - daemon crash: controlled processes continue (paused work is resumed on shutdown);

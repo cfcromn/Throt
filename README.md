@@ -11,7 +11,7 @@ Throt is a local-first Go daemon and terminal UI that observes coding-agent proc
 
 ## Status
 
-**Pre-alpha (v0.1 Observe).** Throt samples host resources, reports a stable pressure level, attributes processes and heavy workloads to coding agents, and shows it all in a TUI. It does not control any process yet; scheduling is next. Expect breaking changes before 1.0.
+**Pre-alpha (v0.1 Observe).** Throt samples host resources, reports a stable pressure level, attributes processes and heavy workloads to coding agents, and shows it all in a TUI. Manual pause/resume of agent-owned heavy workloads is available; automatic scheduling is next. Expect breaking changes before 1.0.
 
 ## Problem
 
@@ -81,6 +81,8 @@ throt ping      # check that the client can reach it
 throt status    # pressure, host resources, agents, heavy workloads
 throt events    # recent daemon events as JSON lines
 throt doctor    # sanitized diagnostics to paste into a bug report
+throt pause PID # pause a heavy workload owned by one of your agents
+throt resume PID
 ```
 
 ## Roadmap

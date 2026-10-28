@@ -15,7 +15,8 @@ Extra review is required for local IPC, process signaling/control, privilege bou
 ## Design stance
 
 - Throt runs without elevated privileges and never silently broadens them.
-- The local socket lives in an owner-only directory and is mode 0600; client and daemon both verify the directory before use. Before any process-control method ships, the daemon will also verify the peer's uid.
+- The local socket lives in an owner-only directory and is mode 0600; client and daemon both verify the directory before use. Process-control methods additionally verify the caller's uid via peer credentials (`SO_PEERCRED` / `LOCAL_PEERCRED`).
+- Process control only targets heavy workloads attributed to one of the user's own agents, and re-verifies every process's identity (PID, start time, uid) immediately before signaling it.
 - Unknown or ambiguously attributed processes are observe-only.
 
 ## Privacy
