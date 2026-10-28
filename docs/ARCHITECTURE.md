@@ -130,6 +130,23 @@ A scheduler can make graphs calmer while making real work slower, so changes to 
 - **Scenarios:** 1 agent + 1 build; 4 agents with light work; 6–8 agents with overlapping builds; Docker + JVM + JS builds; memory-heavy; long job mixed with short jobs (starvation).
 - **Method:** fixed fixtures, warm-up, repetitions, same machine for baseline vs. Throt, report medians and tails.
 
+### Results
+
+`make bench` runs `internal/bench` in a `golang:1.26.4-alpine` container limited with `--cpus=2`, where the PID namespace keeps the enforce-mode daemon away from the host's agents. It builds three helpers: an agent stub named `claude`, a job named `make` that burns one core for about 5 s of calibrated CPU work, and a probe that sleeps 10 ms in a loop and records how late it wakes. The in-process daemon uses the real Linux samplers and controller with a 500 ms sample interval. Baseline is `scheduler.mode` off; Throt is enforce with `heavy_limit` 2 and `resume_cooldown` 1s, other settings default. Makespan runs from the first job start to the last exit; peak running is sampled every 100 ms from `/proc`; interventions are scheduler decisions (queue and resume) in the event log.
+
+Medians of three runs on an Apple M5 Pro (macOS 26.5.1), Docker Desktop 29.5.3, linuxkit 6.12.76 arm64 VM with 10 CPUs and 7.75 GiB:
+
+| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Peak running | Interventions |
+|---|---|---|---|---|---|---|---|
+| 8 jobs at once | baseline | 1.5ms | 70.5ms | 79.8ms | 17.1s | 8 | 0 |
+| 8 jobs at once | Throt | 1.8ms | 2.3ms | 2.6ms | 22.4s | 8 | 12 |
+| 10 jobs, one per 1s | baseline | 1.6ms | 66.9ms | 79.8ms | 23.7s | 10 | 0 |
+| 10 jobs, one per 1s | Throt | 1.8ms | 2.3ms | 2.6ms | 27.7s | 3 | 16 |
+
+Run to run, p95 and makespan varied by about 10% at most. Pressure stayed normal throughout: `/proc/stat` and the load average describe the whole 10-CPU VM, not the 2-CPU quota, and the daemon's median latency stayed low. Peak running is 8 for the burst because Throt can only queue work that already exists, so all 8 jobs run for up to one sample interval before 6 are paused. The probe also measures cgroup throttling (see Scheduler): with 8 runnable jobs the container spends its 200 ms of quota early in each 100 ms period and then everything, the probe included, waits for the next one. Most of the baseline tail is that throttling, so a plain 2-core host would likely show a smaller gap. Baseline finishes 40 s of nominal CPU work in 17.1 s, under the 20 s the quota implies, so the quota and the calibration are approximate: compare modes, not absolute times.
+
+Under this setup Throt cuts probe p95 and p99 from about 70–80 ms to under 3 ms, costs about 0.3 ms at p50, and makes the batch 17–31% slower, because two jobs alone leave no slack and each slot handoff waits up to one sample interval plus the cooldown.
+
 ## Local protocol
 
 Clients reach `throtd` over its Unix socket (`throt doctor` prints the path). Each connection carries one request and one response, both newline-terminated JSON of at most 1 MiB:
