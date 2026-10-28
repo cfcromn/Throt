@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
+	"github.com/cfcromn/Throt/internal/config"
 )
 
 func TestLightInvocationsDoNotWait(t *testing.T) {
@@ -315,13 +316,25 @@ func TestRunHookFailsOpen(t *testing.T) {
 	}
 }
 
-// TestHookCheckBadConfig checks that an unreadable config means "run now".
-func TestHookCheckBadConfig(t *testing.T) {
+// TestClientConfigBadConfig checks that a broken config warns once and
+// falls back to the default socket, so client commands, the hook included,
+// still reach a throtd running on its last good config.
+func TestClientConfigBadConfig(t *testing.T) {
 	path := t.TempDir() + "/config.json"
-	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"scheduler": {"mode": "enforc"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := hookCheck(path)(context.Background()); err == nil {
-		t.Error("bad config did not fail the check")
+	var errw bytes.Buffer
+	cfg := clientConfig(path, &errw)
+	if cfg.SocketPath != config.DefaultSocketPath() {
+		t.Errorf("socket %q, want the default %q", cfg.SocketPath, config.DefaultSocketPath())
+	}
+	want := "throt: config " + path + ` is invalid: scheduler.mode must be off, observe, or enforce, not "enforc"; using the default socket` + "\n"
+	if errw.String() != want {
+		t.Errorf("stderr %q, want %q", errw.String(), want)
+	}
+	errw.Reset()
+	if clientConfig(t.TempDir()+"/missing.json", &errw); errw.Len() != 0 {
+		t.Errorf("missing file warned: %q", errw.String())
 	}
 }

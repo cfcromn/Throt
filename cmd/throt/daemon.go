@@ -60,10 +60,7 @@ func cmdPing(ctx context.Context, e env, args []string) error {
 	if err := noArgs("ping", args); err != nil {
 		return err
 	}
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
+	cfg := e.clientConfig()
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	var r app.PingResult

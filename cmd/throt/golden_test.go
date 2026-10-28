@@ -89,6 +89,10 @@ func goldenCases() []goldenCase {
 		{name: "status -h", args: []string{"status", "-h"}},
 		{name: "status --json", args: []string{"status", "--json"}},
 		{name: "status down invalid config", args: []string{"-config", "$DIR/bad.json", "status"}, down: true},
+		{name: "ping invalid config", args: []string{"-config", "$DIR/bad.json", "ping"}},
+		{name: "resume invalid config", args: []string{"-config", "$DIR/bad.json", "resume", "4312"}},
+		{name: "events invalid config", args: []string{"-config", "$DIR/bad.json", "events", "-n", "1"}},
+		{name: "hook invalid config", args: []string{"-config", "$DIR/bad.json", "hook", "claude-code", "--max-wait", "1s"}, stdin: `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"make -j8"}}`},
 
 		{name: "stats", args: []string{"stats"}},
 		{name: "stats --json", args: []string{"stats", "--json"}},
@@ -839,6 +843,9 @@ print a sanitized diagnostic report (safe to share)
 `},
 		"events extra": {code: 2, stdout: "", stderr: `throt: usage: throt events [-f] [-n N]
 `},
+		"events invalid config": {code: 0, stdout: `{"seq":2,"time":"2026-10-28T14:00:02Z","kind":"scheduler_decision","attrs":{"decision":"admit","limit":"2","observed":"true","pid":"4312","pressure":"elevated","reason":"heavy_slots_exhausted","running":"1"}}
+`, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
+`},
 		"explain": {code: 0, stdout: `make (pid 4312, build)
 state      running
 owner      claude-1 (pid 1000)
@@ -902,7 +909,26 @@ Flags:
 		"hook claude-code light": {code: 0, stdout: "", stderr: ""},
 		"hook codex": {code: 2, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
 `},
-		"invalid config": {code: 1, stdout: "", stderr: `throt: config $DIR/bad.json: scheduler.mode must be off, observe, or enforce, not "sometimes"
+		"hook invalid config": {code: 0, stdout: `{"systemMessage":"throt: no heavy-job slot after 1s (all heavy slots are in use (2 running, limit 2)); running anyway"}
+`, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
+`},
+		"invalid config": {code: 0, stdout: `PRESSURE  ELEVATED (load 1.20 per CPU)
+CPU       42%
+LOAD      1.20 per CPU
+MEM       10.0 GiB used of 16.0 GiB
+LATENCY   3ms
+SWAP      512 MiB used of 2.0 GiB
+SCHEDULER observe, limit 2, 0 queued, 0 reserved
+
+AGENTS
+AGENT     PID   CPU  MEM      CHILDREN
+claude-1  1000  5%   300 MiB  2
+
+HEAVY WORKLOADS
+OWNER     PID   PROCESS  CLASS  CPU   MEM      STATE
+claude-1  4312  make     build  150%  2.0 GiB  running
+-         4400  gradle   build  25%   700 MiB  running
+`, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
 `},
 		"mcp": {code: 0, stdout: "", stderr: ""},
 		"mcp --help": {code: 0, stdout: `usage: throt mcp
@@ -939,6 +965,9 @@ check that throtd is reachable
 `},
 		"ping extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt ping -h'
 `},
+		"ping invalid config": {code: 0, stdout: `throtd v9.9.9 (protocol v1, pid 77, up 1h2m3s)
+`, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
+`},
 		"reload": {code: 0, stdout: `applied: scheduler.mode off -> observe
 requires restart: socket_path
 `, stderr: ""},
@@ -965,6 +994,9 @@ earlier throtd left paused) when it is a heavy workload of an
 agent; --force resumes any other such process of yours too,
 such as a shell job suspended with Ctrl-Z (prefer fg there)
 `, stderr: ""},
+		"resume invalid config": {code: 0, stdout: `resumed pid 4312
+`, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
+`},
 		"resume missing": {code: 2, stdout: "", stderr: `throt: usage: throt resume [--force] PID
 `},
 		"resume not a pid": {code: 2, stdout: "", stderr: `throt: usage: throt resume [--force] PID
@@ -999,7 +1031,7 @@ Flags:
 		"run down": {code: 0, stdout: `hi
 `, stderr: `throt: throtd is not reachable (connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory); running without waiting
 `},
-		"run invalid config": {code: 0, stdout: "", stderr: `throt: throtd is not reachable (config $DIR/bad.json: scheduler.mode must be off, observe, or enforce, not "sometimes"); running without waiting
+		"run invalid config": {code: 0, stdout: "", stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
 `},
 		"run missing": {code: 2, stdout: "", stderr: `throt: missing command; see 'throt run -h'
 `},
@@ -1262,7 +1294,8 @@ show host resources and pressure; --json for JSON
 `, stderr: ""},
 		"status down": {code: 1, stdout: "", stderr: `throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
 `},
-		"status down invalid config": {code: 1, stdout: "", stderr: `throt: config $DIR/bad.json: scheduler.mode must be off, observe, or enforce, not "sometimes"
+		"status down invalid config": {code: 1, stdout: "", stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
+throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
 `},
 		"too many arguments": {code: 2, stdout: "", stderr: `throt: unexpected argument "a"; see 'throt ping -h'
 `},

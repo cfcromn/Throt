@@ -147,5 +147,24 @@ func (e env) loadConfig() (config.Config, error) {
 	return config.Load(e.cfgPath)
 }
 
+// clientConfig is the config of a command that only talks to throtd.
+func (e env) clientConfig() config.Config {
+	return clientConfig(e.cfgPath, e.stderr)
+}
+
+// clientConfig loads the config at path for a client command. A broken
+// file must not lock the user out of a running throtd, which keeps its
+// last good config (say, to resume what it queued), so on error it warns
+// on stderr and returns the defaults, with the default socket path.
+func clientConfig(path string, stderr io.Writer) config.Config {
+	cfg, err := config.Load(path)
+	if err != nil {
+		msg := strings.TrimPrefix(err.Error(), "config "+path+": ")
+		fmt.Fprintf(stderr, "throt: config %s is invalid: %s; using the default socket\n", path, msg)
+		return config.Default()
+	}
+	return cfg
+}
+
 // callTimeout bounds the daemon calls of one-shot commands.
 const callTimeout = 5 * time.Second

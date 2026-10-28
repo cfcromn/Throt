@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"github.com/cfcromn/Throt/internal/agent"
-	"github.com/cfcromn/Throt/internal/app"
-	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/shellwords"
 )
@@ -89,7 +87,7 @@ func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) e
 	ctx, cancel := context.WithTimeout(context.Background(), *maxWait+runCallTimeout)
 	defer cancel()
 	h := hookWaiter{
-		newCheck: func() checkFunc { return hookCheck(cfgPath) },
+		newCheck: func() checkFunc { return hookCheck(clientConfig(cfgPath, errw).SocketPath) },
 		now:      time.Now,
 		sleep:    sleepCtx,
 	}
@@ -100,13 +98,9 @@ func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) e
 // hookCheck is the advisory capacity verdict for the agent found through
 // this process's ancestors. Claude Code runs the hook through a shell, so
 // the agent is usually the grandparent.
-func hookCheck(cfgPath string) checkFunc {
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		return func(context.Context) (bool, app.Verdict, error) { return false, app.Verdict{}, err }
-	}
+func hookCheck(socket string) checkFunc {
 	r := runner{
-		status:    daemonClient{socket: cfg.SocketPath}.Status,
+		status:    daemonClient{socket: socket}.Status,
 		ppid:      os.Getppid(),
 		ancestors: processAncestors,
 	}

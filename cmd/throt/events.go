@@ -22,10 +22,7 @@ func cmdEvents(ctx context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
+	cfg := e.clientConfig()
 	if followEvents {
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()

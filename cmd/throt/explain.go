@@ -27,10 +27,7 @@ func cmdExplain(ctx context.Context, e env, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
+	cfg := e.clientConfig()
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	var st app.StatusResult

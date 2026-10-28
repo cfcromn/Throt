@@ -17,11 +17,8 @@ func cmdTop(ctx context.Context, e env, args []string) error {
 	if err := noArgs("top", args); err != nil {
 		return err
 	}
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
-	_, err = tea.NewProgram(tui.New(daemonClient{socket: cfg.SocketPath}, cfg.SocketPath)).Run()
+	cfg := e.clientConfig()
+	_, err := tea.NewProgram(tui.New(daemonClient{socket: cfg.SocketPath}, cfg.SocketPath)).Run()
 	return err
 }
 
@@ -31,10 +28,7 @@ func cmdMCP(ctx context.Context, e env, args []string) error {
 	if err := noArgs("mcp", args); err != nil {
 		return err
 	}
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
+	cfg := e.clientConfig()
 	log := slog.New(slog.NewTextHandler(e.stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	return mcp.New(daemonClient{socket: cfg.SocketPath}, app.Version, log).Serve(ctx, e.stdin, e.stdout)
 }

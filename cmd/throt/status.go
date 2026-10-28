@@ -24,10 +24,7 @@ func cmdStatus(ctx context.Context, e env, args []string) error {
 	default:
 		return usageLine("usage: throt status [--json]")
 	}
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
+	cfg := e.clientConfig()
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	var st app.StatusResult

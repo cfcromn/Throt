@@ -328,17 +328,13 @@ func cmdRun(ctx context.Context, e env, args []string) error {
 		stderr:    e.stderr,
 		ancestors: processAncestors,
 	}
-	cfg, err := e.loadConfig()
-	if err != nil {
-		// Fail open: a broken config must not hold the command back.
-		r.status = func(context.Context) (app.StatusResult, error) { return app.StatusResult{}, err }
-	} else {
-		c := daemonClient{socket: cfg.SocketPath}
-		r.status = c.Status
-		// throtd resolves this process's identity and parent itself.
-		self := app.AcquireParams{PID: os.Getpid()}
-		r.acquire = func(ctx context.Context) (app.AcquireResult, error) { return c.Acquire(ctx, self) }
-	}
+	// A broken config falls back to the default socket, so the command
+	// still waits for a throtd that runs on its last good config.
+	c := daemonClient{socket: e.clientConfig().SocketPath}
+	r.status = c.Status
+	// throtd resolves this process's identity and parent itself.
+	self := app.AcquireParams{PID: os.Getpid()}
+	r.acquire = func(ctx context.Context) (app.AcquireResult, error) { return c.Acquire(ctx, self) }
 	return r.run(ctx, o)
 }
 

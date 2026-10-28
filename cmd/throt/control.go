@@ -49,10 +49,7 @@ func pidArg(args []string, usage string) (int, error) {
 
 // sendControl sends the pause or resume method for pid.
 func sendControl(ctx context.Context, e env, method string, pid int, force bool) error {
-	cfg, err := e.loadConfig()
-	if err != nil {
-		return err
-	}
+	cfg := e.clientConfig()
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	if err := transport.Call(ctx, cfg.SocketPath, method, app.ControlParams{PID: pid, Force: force}, nil); err != nil {
