@@ -842,8 +842,7 @@ print a sanitized diagnostic report (safe to share)
 `, stderr: ""},
 		"events -n": {code: 0, stdout: `{"seq":2,"time":"2026-10-28T14:00:02Z","kind":"scheduler_decision","attrs":{"decision":"admit","limit":"2","observed":"true","pid":"4312","pressure":"elevated","reason":"heavy_slots_exhausted","running":"1"}}
 `, stderr: ""},
-		"events down": {code: 1, stdout: "", stderr: `throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
-`},
+		"events down": {code: 1, stdout: "", stderr: "throt: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},
 		"events extra": {code: 2, stdout: "", stderr: `throt: usage: throt events [-f] [-n N]
 `},
 		"events invalid config": {code: 0, stdout: `{"seq":2,"time":"2026-10-28T14:00:02Z","kind":"scheduler_decision","attrs":{"decision":"admit","limit":"2","observed":"true","pid":"4312","pressure":"elevated","reason":"heavy_slots_exhausted","running":"1"}}
@@ -967,8 +966,7 @@ pause a heavy workload (SIGSTOP) shown in 'status'
 
 check that throtd is reachable
 `, stderr: ""},
-		"ping down": {code: 1, stdout: "", stderr: `throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
-`},
+		"ping down": {code: 1, stdout: "", stderr: "throt: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},
 		"ping extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt ping -h'
 `},
 		"ping invalid config": {code: 0, stdout: `throtd v9.9.9 (protocol v1, pid 77, up 1h2m3s)
@@ -1035,8 +1033,7 @@ Flags:
     	stop waiting after this long and run anyway (0 waits forever) (default 5m0s)
 `, stderr: ""},
 		"run down": {code: 0, stdout: `hi
-`, stderr: `throt: throtd is not reachable (connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory); running without waiting
-`},
+`, stderr: "throt: throtd is not reachable (throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`); running without waiting\n"},
 		"run invalid config": {code: 0, stdout: "", stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
 `},
 		"run missing": {code: 2, stdout: "", stderr: `throt: missing command; see 'throt run -h'
@@ -1290,6 +1287,7 @@ claude-1  4312  make     build  150%  2.0 GiB  running
     "heavy_limit": 2,
     "per_agent_limit": 0,
     "queued": null,
+    "would_queue": null,
     "leases": null
   }
 }
@@ -1298,11 +1296,8 @@ claude-1  4312  make     build  150%  2.0 GiB  running
 
 show host resources and pressure; --json for JSON
 `, stderr: ""},
-		"status down": {code: 1, stdout: "", stderr: `throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
-`},
-		"status down invalid config": {code: 1, stdout: "", stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
-throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
-`},
+		"status down":                {code: 1, stdout: "", stderr: "throt: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},
+		"status down invalid config": {code: 1, stdout: "", stderr: "throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not \"sometimes\"; using the default socket\nthrot: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},
 		"too many arguments": {code: 2, stdout: "", stderr: `throt: unexpected argument "a"; see 'throt ping -h'
 `},
 		"top -h": {code: 0, stdout: `usage: throt top
@@ -1366,14 +1361,7 @@ Flags:
 print the client version; --json adds the protocol and Go
 versions, and throtd's version when it is reachable
 `, stderr: ""},
-		"version -json down": {code: 0, stdout: `{
-  "version": "dev",
-  "protocol": 1,
-  "go": "$GO",
-  "daemon": null,
-  "daemon_error": "connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory"
-}
-`, stderr: ""},
+		"version -json down": {code: 0, stdout: "{\n  \"version\": \"dev\",\n  \"protocol\": 1,\n  \"go\": \"$GO\",\n  \"daemon\": null,\n  \"daemon_error\": \"throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\"\n}\n", stderr: ""},
 		"version extra": {code: 2, stdout: "", stderr: `throt: usage: throt version [--json]
 `},
 		"version invalid config": {code: 0, stdout: `dev
