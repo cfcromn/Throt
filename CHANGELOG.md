@@ -6,6 +6,9 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Security
+- macOS process names replace control characters with `?`, as on Linux, so a process cannot put terminal escapes into names that `throt doctor`, `throt status` or events print.
+
 ## [0.9.0-rc.1] - 2026-10-29
 
 Evidence from real machines and fixes from it: CI benchmarks and soak, `throt update`, a scheduler that no longer serializes admission, memory-pressure fixes, a fuzzed and hardened input surface, and a TUI that fits every terminal.

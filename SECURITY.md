@@ -35,7 +35,7 @@ Extra review is required for local IPC, process signaling/control, privilege bou
 | Parsers and privacy | Sound. Linux `/proc` and cgroup parsing and macOS `kern.procargs2` parsing are bounds-checked and fuzzed. Nothing reads or stores arguments beyond argv[0], cut to a base name, or the environment; `throt doctor` names only the user's stopped processes and redacts home and user name. |
 
 No finding of medium severity or higher. Accepted (low):
-- **macOS names keep control characters.** Linux replaces them in `comm` with `?`; macOS names come from argv[0] (`kern.procargs2`, or `ps`, which prints them raw too), so a process of the user can put terminal escapes in its name, shown for stopped processes in `throt doctor` and in a `resume --force` event. Other users' processes are shown only when the name equals a built-in one. A same-user process can already write to the user's terminals.
+- **macOS names kept control characters** (fixed after the review). Linux replaces them in `comm` with `?`; macOS names come from argv[0] (`kern.procargs2`, or `ps`, which prints them raw too), so a process of the user could put terminal escapes in its name, shown in `throt doctor` and in a `resume --force` event. macOS names now get the same `?` replacement.
 - **`throt hook --max-wait` has no upper bound.** Claude Code's hook timeout ends a long wait, and the call still runs.
 - **`throt update` runs `gh` and the new binaries without `WaitDelay`.** A child that inherits their stdout could hold the command past its timeout; both programs are trusted (the binaries only after their checksum matched).
 

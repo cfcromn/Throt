@@ -110,6 +110,8 @@ func TestPSName(t *testing.T) {
 		"/usr/bin/x --tok=a/b":                           "x",
 		"/usr/bin/x secret":                              "x",
 		"/Applications/My App.app/Contents/MacOS/My App": "My",
+		"evil\x1b]0;pwned\x07":                           "evil?]0;pwned?",
+		"/tmp/a\tb":                                      "a?b",
 	} {
 		if got := psName(in); got != want {
 			t.Errorf("psName(%q) = %q, want %q", in, got, want)
