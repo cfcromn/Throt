@@ -725,6 +725,121 @@ func TestEnforceScheduler(t *testing.T) {
 	e.waitRunning(third)
 }
 
+// comm returns the command name of pid from /proc, or "" if it is gone.
+func comm(pid int) string {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// leaseEvents returns the lease events in the daemon's log, oldest first.
+func (e *env) leaseEvents() []map[string]string {
+	e.t.Helper()
+	var out []map[string]string
+	for line := range strings.SplitSeq(strings.TrimSpace(e.mustThrot("events", "-n", "1000")), "\n") {
+		var ev struct {
+			Kind  string            `json:"kind"`
+			Attrs map[string]string `json:"attrs"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			e.t.Fatalf("events line %q: %v", line, err)
+		}
+		if strings.HasPrefix(ev.Kind, "lease_") {
+			ev.Attrs["kind"] = ev.Kind
+			out = append(out, ev.Attrs)
+		}
+	}
+	return out
+}
+
+func TestRunLease(t *testing.T) {
+	// Adaptive is off so the limit cannot grow during the test.
+	const policy = `"heavy_limit":%d,"resume_cooldown":"0s","adaptive":false`
+	e := newEnv(t, `{`+baseConfig+`,"scheduler":{"mode":"off",`+fmt.Sprintf(policy, 1)+`}}`)
+	e.waitStartable()
+	// Unattributed heavy workloads take slots too, so leave exactly one free.
+	st, _ := e.status()
+	e.writeConfig(`{` + baseConfig + `,"scheduler":{"mode":"enforce",` + fmt.Sprintf(policy, 1+len(st.heavy)) + `}}`)
+	e.mustThrot("reload")
+	e.waitFor("scheduler mode enforce", func() bool {
+		st, ok := e.status()
+		return ok && st.mode == "enforce"
+	})
+	e.waitStartable()
+
+	// Two `throt run` commands start together and race for the one slot.
+	type run struct {
+		cmd    *exec.Cmd
+		stderr *lockedBuffer
+	}
+	runs := make([]run, 2)
+	for i := range runs {
+		cmd := exec.Command(filepath.Join(binDir, "throt"), "run", "--timeout", "5m", "--", filepath.Join(binDir, "make"), "sleep")
+		cmd.Env = e.vars
+		runs[i] = run{cmd: cmd, stderr: &lockedBuffer{}}
+		cmd.Stderr = runs[i].stderr
+	}
+	for _, r := range runs {
+		startGroup(t, r.cmd)
+	}
+	// throt run execs in place, so a started command keeps its PID and its
+	// comm becomes make.
+	started := func() (pids []int) {
+		for _, r := range runs {
+			if comm(r.cmd.Process.Pid) == "make" {
+				pids = append(pids, r.cmd.Process.Pid)
+			}
+		}
+		return pids
+	}
+	e.waitFor("one throt run to start its command", func() bool { return len(started()) > 0 })
+	first := started()[0]
+	var winner, waiting run
+	for _, r := range runs {
+		if r.cmd.Process.Pid == first {
+			winner = r
+		} else {
+			waiting = r
+		}
+	}
+	// The winner's lease ends once its command is a running heavy workload,
+	// which then holds the slot itself.
+	if row := e.waitOwned(first, "-"); row.state != "running" {
+		t.Fatalf("first command state %s, want running", row.state)
+	}
+	e.waitFor("lease_released (became_workload)", func() bool {
+		for _, ev := range e.leaseEvents() {
+			if ev["kind"] == "lease_released" && ev["pid"] == strconv.Itoa(first) && ev["reason"] == "became_workload" {
+				return true
+			}
+		}
+		return false
+	})
+	// The other keeps waiting: it was never granted a slot.
+	e.waitFor("the other throt run to report waiting", func() bool {
+		return strings.Contains(waiting.stderr.String(), "waiting for a heavy slot")
+	})
+	time.Sleep(2 * time.Second) // several sample intervals
+	if got := started(); len(got) != 1 {
+		t.Fatalf("started commands %v, want exactly one; stderr:\n%s", got, waiting.stderr.String())
+	}
+	for _, ev := range e.leaseEvents() {
+		if ev["kind"] == "lease_granted" && ev["pid"] == strconv.Itoa(waiting.cmd.Process.Pid) {
+			t.Fatalf("waiting command was granted a lease: %v", ev)
+		}
+	}
+
+	// The winner finishes; the waiting command gets the slot and starts.
+	syscall.Kill(-first, syscall.SIGKILL)
+	winner.cmd.Wait() // reap it, or its zombie would keep the slot
+	e.waitFor("the waiting command to start", func() bool { return comm(waiting.cmd.Process.Pid) == "make" })
+	if out := waiting.stderr.String(); !strings.Contains(out, "capacity available after") {
+		t.Errorf("waiting command stderr:\n%s", out)
+	}
+}
+
 func TestMCP(t *testing.T) {
 	e := newEnv(t, `{`+baseConfig+`}`)
 	in := strings.Join([]string{

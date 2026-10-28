@@ -21,6 +21,10 @@ type SchedulerStatus struct {
 	PerAgentLimit int `json:"per_agent_limit"`
 	// Queued lists workloads the scheduler paused (queued or preempted).
 	Queued []domain.ProcessKey `json:"queued"`
+	// Leases lists the active admission leases: heavy slots reserved for
+	// `throt run` commands that are not heavy workloads yet. They count as
+	// running heavy work.
+	Leases []Lease `json:"leases"`
 }
 
 func newScheduler(c config.Scheduler) *scheduler.Scheduler {
@@ -46,7 +50,9 @@ const maxQueueMembers = 256
 // schedule runs one scheduler round on the sampling goroutine and, in
 // enforce mode, executes its decisions through the verified controller.
 // Every decision is an event, so nothing the scheduler does is hidden.
-func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.PressureLevel, heavy []process.WorkloadView) {
+// reserved holds the agent of each active admission lease, and admitted the
+// workloads that took over a lease this round.
+func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.PressureLevel, heavy []process.WorkloadView, reserved []string, admitted []domain.ProcessKey) {
 	// The controller records who paused what, so a manual hold is never
 	// mistaken for scheduler queueing, even across restarts.
 	inSnapshot := make(map[domain.ProcessKey]bool, len(heavy))
@@ -67,7 +73,7 @@ func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.Pr
 		}
 	}
 
-	decisions := d.sched.Decide(scheduler.Input{Now: now, Pressure: level, Heavy: heavy, Paused: ours, Held: held})
+	decisions := d.sched.Decide(scheduler.Input{Now: now, Pressure: level, Heavy: heavy, Paused: ours, Held: held, Reserved: reserved, Admitted: admitted})
 	for _, c := range d.sched.Changes() {
 		d.emit(domain.EventSchedulerLimit, fmt.Sprintf("heavy limit %d -> %d: %s", c.From, c.To, c.Reason),
 			map[string]string{"from": strconv.Itoa(c.From), "to": strconv.Itoa(c.To), "reason": c.Reason})
@@ -151,5 +157,5 @@ func (d *Daemon) schedulerStatus() SchedulerStatus {
 		}
 	}
 	p := d.sched.Policy()
-	return SchedulerStatus{Mode: p.Mode, HeavyLimit: d.sched.Limit(), PerAgentLimit: p.PerOwnerLimit, Queued: queued}
+	return SchedulerStatus{Mode: p.Mode, HeavyLimit: d.sched.Limit(), PerAgentLimit: p.PerOwnerLimit, Queued: queued, Leases: []Lease{}}
 }

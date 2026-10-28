@@ -6,6 +6,13 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Added
+- Admission leases: `throt run` is no longer advisory. It polls the new privileged `acquire` protocol method, and `throtd` grants a lease only when the `throt_capacity` verdict, counting active leases as running heavy work, says ok, so of two runs racing for the last slot exactly one starts. The scheduler counts leases as running, and a lease's own workload takes its slot without queueing. A lease ends when the command exits, becomes a heavy workload, or after 60s; at most 256 exist. `acquire` checks that the caller's kernel-reported PID (Linux `SO_PEERCRED`, macOS `LOCAL_PEERPID`) is the one it reserves for. Events `lease_granted` and `lease_released` (`exited`, `became_workload`, `expired`).
+- `status` reports `scheduler.leases`; `throt status` shows `N reserved` and each reserved PID; the capacity verdict has `reserved`, which the `throt_capacity` text mentions.
+
+### Changed
+- `throt run` against a `throtd` without `acquire` falls back to the previous advisory check; the other fail-open rules (daemon down runs at once, 5m default timeout, `--no-wait`) are unchanged.
+
 ## [0.6.0-rc.1] - 2026-10-28
 
 Cooperative admission, per-agent accounting, Linux PSI, a richer TUI, and real-binary end-to-end tests.

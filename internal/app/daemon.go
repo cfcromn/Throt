@@ -106,8 +106,12 @@ type Daemon struct {
 	failures     map[string]string
 	retryFailing bool // resume retries are failing
 
-	mu     sync.Mutex // guards status
+	// mu guards status and leases together, so an acquire checks and
+	// grants against one consistent view, and a tick replaces the heavy
+	// workloads and drops the leases they supersede in one step.
+	mu     sync.Mutex
 	status StatusResult
+	leases leaseTable
 
 	statsMu sync.Mutex // guards acct; held briefly
 	acct    *stats.Accountant
@@ -169,13 +173,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.emit(domain.EventDaemonStarted, "listening on "+d.cfg.SocketPath, nil)
 	d.recoverPaused(ctx)
 	srv := transport.NewServer(map[string]transport.Handler{
-		"ping":   d.ping,
-		"events": d.recentEvents,
-		"status": d.currentStatus,
-		"stats":  d.currentStats,
-		"pause":  d.pause,
-		"resume": d.resume,
-		"reload": d.reload,
+		"ping":    d.ping,
+		"events":  d.recentEvents,
+		"status":  d.currentStatus,
+		"stats":   d.currentStats,
+		"pause":   d.pause,
+		"resume":  d.resume,
+		"reload":  d.reload,
+		"acquire": d.acquire,
 	}, transport.WithPrivileged(privilegedMethods()...))
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -194,8 +199,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 // privilegedMethods may only be called by the user running the daemon: they
-// signal processes or change its configuration.
-func privilegedMethods() []string { return []string{"pause", "resume", "reload"} }
+// signal processes, change its configuration, or reserve heavy slots.
+func privilegedMethods() []string { return []string{"pause", "resume", "reload", "acquire"} }
 
 // allMissing marks every host metric unavailable. A failed host sample still
 // reaches the pressure engine this way, so stale readings age out of the
@@ -219,6 +224,9 @@ func (d *Daemon) tick(parent context.Context) {
 	if !latencyOK {
 		host.Missing = append(slices.Clone(host.Missing), domain.MetricLatency)
 	}
+	// A lease granted after this instant may belong to a process the
+	// sample below does not show yet.
+	sampled := time.Now()
 	procs, perr := d.procs.SampleProcesses(ctx)
 	if parent.Err() != nil {
 		return // shutting down; partial samples are meaningless
@@ -257,10 +265,16 @@ func (d *Daemon) tick(parent context.Context) {
 	if herr == nil {
 		d.status.Host = &host
 	}
+	var ended []leaseEnd
 	if perr == nil {
 		d.status.Agents, d.status.Heavy = snap.Agents, snap.Heavy
+		ended = d.leases.observe(sampled, now, procs, snap.Heavy)
+	} else {
+		ended = d.leases.expire(now)
 	}
+	reserved := d.leases.owners()
 	d.mu.Unlock()
+	d.emitLeaseEnds(ended)
 
 	if changed {
 		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
@@ -270,7 +284,7 @@ func (d *Daemon) tick(parent context.Context) {
 	if perr == nil {
 		// Only schedule on a fresh process snapshot: acting on stale data
 		// could queue a workload that already finished.
-		d.schedule(parent, now, level, snap.Heavy)
+		d.schedule(parent, now, level, snap.Heavy, reserved, admitted(ended))
 		d.account(now, snap)
 	}
 	sched := d.schedulerStatus()
@@ -320,6 +334,7 @@ func (d *Daemon) emitChange(c process.Change) {
 func (d *Daemon) currentStatus(context.Context, json.RawMessage) (any, error) {
 	d.mu.Lock()
 	st := d.status
+	st.Scheduler.Leases = d.leases.views()
 	d.mu.Unlock()
 	st.Paused = d.ctl.Paused()
 	return st, nil

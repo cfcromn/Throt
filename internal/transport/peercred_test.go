@@ -40,6 +40,9 @@ func TestPeerUID(t *testing.T) {
 	}
 	defer server.Close()
 	for name, c := range map[string]net.Conn{"server side": server, "client side": client} {
+		if pid, err := PeerPID(c); err != nil || pid != os.Getpid() {
+			t.Errorf("%s: pid = %d, %v; want %d", name, pid, err, os.Getpid())
+		}
 		uid, err := PeerUID(c)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -57,6 +60,9 @@ func TestPeerUIDNotUnix(t *testing.T) {
 	defer b.Close()
 	if _, err := PeerUID(a); err == nil {
 		t.Fatal("PeerUID(net.Pipe) succeeded")
+	}
+	if _, err := PeerPID(a); err == nil {
+		t.Fatal("PeerPID(net.Pipe) succeeded")
 	}
 }
 
@@ -110,5 +116,34 @@ func TestPrivilegedMethod(t *testing.T) {
 				t.Fatalf("status = %q, %v", got, err)
 			}
 		})
+	}
+}
+
+func TestPeerPIDInContext(t *testing.T) {
+	skipUnlessPeerCred(t)
+	seen := func(ctx context.Context, _ json.RawMessage) (any, error) {
+		pid, ok := PeerPIDFrom(ctx)
+		if !ok {
+			return -1, nil
+		}
+		return pid, nil
+	}
+	handlers := map[string]Handler{"acquire": seen, "status": seen}
+	sock := serve(t, NewServer(handlers, WithPrivileged("acquire")))
+	ctx := context.Background()
+	var got int
+	// The kernel reports this test process as the caller.
+	if err := Call(ctx, sock, "acquire", nil, &got); err != nil || got != os.Getpid() {
+		t.Fatalf("acquire saw peer pid %d, %v; want %d", got, err, os.Getpid())
+	}
+	// Non-privileged methods get no peer PID.
+	if err := Call(ctx, sock, "status", nil, &got); err != nil || got != -1 {
+		t.Fatalf("status saw peer pid %d, %v; want none", got, err)
+	}
+	// A PID the kernel cannot report (or 0: another PID namespace) is left out.
+	s := NewServer(handlers, WithPrivileged("acquire"))
+	s.peerPID = func(net.Conn) (int, error) { return 0, nil }
+	if err := Call(ctx, serve(t, s), "acquire", nil, &got); err != nil || got != -1 {
+		t.Fatalf("acquire saw peer pid %d, %v; want none", got, err)
 	}
 }

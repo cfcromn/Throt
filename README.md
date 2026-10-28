@@ -142,12 +142,14 @@ throt completion zsh          # shell completion script (bash, zsh, fish)
 
 ### Wait before starting: `throt run`
 
-`throt run [--timeout D] [--no-wait] -- CMD [ARGS...]` is the gentle alternative to being paused: it checks capacity *before* the command starts, using the same verdict as `throt_capacity`. It polls `throtd` once per second until a heavy job is OK to start (pressure below high, a free heavy slot, nothing queued, and the calling agent within its `per_agent_limit`), printing a notice to stderr at most every 10s. Then it execs the command in its own place, so the PID, signals, and exit status are the command's own. The agent is the nearest agent process among its ancestors. A missing command exits 127.
+`throt run [--timeout D] [--no-wait] -- CMD [ARGS...]` is the gentle alternative to being paused: it asks for a heavy slot *before* the command starts, using the same verdict as `throt_capacity`. It polls `throtd` once per second until a heavy job is OK to start (pressure below high, a free heavy slot, nothing queued, and the calling agent within its `per_agent_limit`), printing a notice to stderr at most every 10s. Then it execs the command in its own place, so the PID, signals, and exit status are the command's own. The agent is the nearest agent process among its ancestors. A missing command exits 127.
 
-- `--timeout D` stops waiting after `D` and runs the command anyway (the default, 0, waits forever).
-- `--no-wait` checks once, prints the verdict, and runs regardless.
+The slot is reserved: `throtd` grants it as a lease, so two `throt run` commands asking at the same moment cannot both take the last slot, and the scheduler does not hand that slot to another newcomer. The lease ends when the command shows up as a heavy workload (which then holds the slot itself), when it exits, or after 60s if it never becomes heavy. `throt status` shows reserved slots (`2 reserved`).
 
-It fails open: if `throtd` is unreachable, it prints one notice and runs immediately, so a stopped daemon never blocks your work. It never pauses anything. It is also advisory: nothing is reserved, so two `throt run` commands that check at the same moment can both start. With `scheduler.mode` set to `enforce`, `throtd` still queues the extra one.
+- `--timeout D` stops waiting after `D` and runs the command anyway (default 5m; 0 waits forever).
+- `--no-wait` asks once (taking the slot if one is free), prints the verdict, and runs regardless.
+
+It fails open: if `throtd` is unreachable, it prints one notice and runs immediately, so a stopped daemon never blocks your work. It never pauses anything. Against an older `throtd` without leases it falls back to advice only, where two commands checking at the same moment can both start.
 
 To have coding agents use it, add a line such as this to your `AGENTS.md` or `CLAUDE.md`:
 

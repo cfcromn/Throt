@@ -151,6 +151,16 @@ type Input struct {
 	// Held lists workloads paused manually. The scheduler never touches
 	// them and does not count them as running.
 	Held []domain.ProcessKey
+	// Reserved holds the owner ("" when unattributed) of each admission
+	// lease: a slot promised to a command that has not shown up as a heavy
+	// workload yet. Each counts as one running heavy workload of its owner,
+	// so a newcomer is never admitted into a promised slot. The daemon drops
+	// a lease once its workload appears, so nothing is counted twice.
+	Reserved []string
+	// Admitted lists workloads that took over an admission lease this
+	// round. They move into the slot the lease held, so they are never
+	// queued, not even behind workloads that queued meanwhile.
+	Admitted []domain.ProcessKey
 }
 
 // Decision is one action with the facts that justify it.
@@ -163,7 +173,8 @@ type Decision struct {
 	Reason   string               `json:"reason"`
 	Pressure domain.PressureLevel `json:"pressure"`
 	// RunningHeavy is the number of running heavy workloads when the
-	// decision was made, including any workload it resumes.
+	// decision was made, including any workload it resumes and every
+	// reserved slot (Input.Reserved).
 	RunningHeavy int `json:"running_heavy"`
 	// HeavyLimit is the effective limit, which Adaptive may lower below
 	// Policy.HeavyLimit.
@@ -328,13 +339,16 @@ func (s *Scheduler) Decide(in Input) []Decision {
 
 	paused := keySet(in.Paused)
 	held := keySet(in.Held)
-	cands := s.observe(in, paused, held)
+	cands := s.observe(in, paused, held, keySet(in.Admitted))
 
 	// Running heavy workloads, before admitting new ones. Unattributed
 	// workloads count: they consume resources even though they are never
-	// controlled.
-	running := 0
+	// controlled. So do reserved slots.
+	running := len(in.Reserved)
 	perOwner := map[string]int{}
+	for _, o := range in.Reserved {
+		perOwner[o]++
+	}
 	var queued, admissible []*cand
 	for _, c := range cands {
 		switch {
@@ -437,7 +451,7 @@ func (s *Scheduler) Decide(in Input) []Decision {
 
 // observe updates per-workload state from the snapshot and returns this
 // round's candidates in snapshot order.
-func (s *Scheduler) observe(in Input, paused, held map[domain.ProcessKey]struct{}) []*cand {
+func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessKey]struct{}) []*cand {
 	present := make(map[domain.ProcessKey]struct{}, len(in.Heavy))
 	cands := make([]*cand, 0, len(in.Heavy))
 	for _, v := range in.Heavy {
@@ -456,8 +470,9 @@ func (s *Scheduler) observe(in Input, paused, held map[domain.ProcessKey]struct{
 			e = &entry{firstSeen: in.Now}
 			s.seen[v.Key] = e
 			// Only workloads that appear after the baseline are new;
-			// held workloads are never queued.
-			c.isNew = s.baselined && !c.held
+			// held and admitted workloads are never queued.
+			_, ok := admitted[v.Key]
+			c.isNew = s.baselined && !c.held && !ok
 		}
 		c.e = e
 		switch {

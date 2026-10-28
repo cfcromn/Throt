@@ -228,6 +228,13 @@ func (c daemonClient) Status(ctx context.Context) (app.StatusResult, error) {
 	return st, err
 }
 
+// Acquire asks for an admission lease for the process p names.
+func (c daemonClient) Acquire(ctx context.Context, p app.AcquireParams) (app.AcquireResult, error) {
+	var r app.AcquireResult
+	err := transport.Call(ctx, c.socket, "acquire", p, &r)
+	return r, err
+}
+
 func (c daemonClient) Events(ctx context.Context, limit int) ([]domain.Event, error) {
 	var events []domain.Event
 	err := transport.Call(ctx, c.socket, "events", app.EventsParams{Limit: limit}, &events)
@@ -314,7 +321,19 @@ func printStatus(w io.Writer, st app.StatusResult) {
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%.0f%%\t%s\t%d\n", a.Agent, a.Key.PID, a.CPU*100, gib(a.RSS), a.Children)
 	}
-	fmt.Fprintf(w, "SCHEDULER %s (heavy limit %d, %d queued)\n", st.Scheduler.Mode, st.Scheduler.HeavyLimit, len(st.Scheduler.Queued))
+	fmt.Fprintf(w, "SCHEDULER %s (heavy limit %d, %d queued, %d reserved)\n", st.Scheduler.Mode, st.Scheduler.HeavyLimit, len(st.Scheduler.Queued), len(st.Scheduler.Leases))
+	const maxLeases = 5
+	for i, l := range st.Scheduler.Leases {
+		if i == maxLeases {
+			fmt.Fprintf(w, "RESERVED  ... and %d more\n", len(st.Scheduler.Leases)-maxLeases)
+			break
+		}
+		agent := l.Agent
+		if agent == "" {
+			agent = "-"
+		}
+		fmt.Fprintf(w, "RESERVED  pid %d (%s) since %s\n", l.Process.PID, agent, l.Granted.Format(time.TimeOnly))
+	}
 	paused := make(map[int]bool, len(st.Paused))
 	for _, p := range st.Paused {
 		paused[p.Key.PID] = true

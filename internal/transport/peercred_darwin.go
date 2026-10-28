@@ -21,3 +21,8 @@ func peerUIDFD(fd int) (uint32, error) {
 	}
 	return cred.Uid, nil
 }
+
+// peerPIDFD reads LOCAL_PEERPID, the PID of the process that connected.
+func peerPIDFD(fd int) (int, error) {
+	return unix.GetsockoptInt(fd, unix.SOL_LOCAL, unix.LOCAL_PEERPID)
+}

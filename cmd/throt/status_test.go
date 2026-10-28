@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/scheduler"
 )
 
 func TestPrintStatusPSI(t *testing.T) {
@@ -42,5 +44,24 @@ func TestPrintStatusPSI(t *testing.T) {
 				t.Errorf("output lacks %q:\n%s", tt.want, out)
 			}
 		})
+	}
+}
+
+func TestPrintStatusReserved(t *testing.T) {
+	at := time.Date(2026, 10, 28, 14, 3, 4, 0, time.Local)
+	st := app.StatusResult{Host: &domain.HostSample{MemTotal: 1 << 30}, Scheduler: app.SchedulerStatus{Mode: scheduler.ModeEnforce, HeavyLimit: 2, Leases: []app.Lease{
+		{ID: "1", Process: domain.ProcessKey{PID: 500}, Agent: "claude-1", Granted: at},
+		{ID: "2", Process: domain.ProcessKey{PID: 501}, Granted: at},
+	}}}
+	var buf bytes.Buffer
+	printStatus(&buf, st)
+	for _, want := range []string{
+		"SCHEDULER enforce (heavy limit 2, 0 queued, 2 reserved)",
+		"RESERVED  pid 500 (claude-1) since 14:03:04",
+		"RESERVED  pid 501 (-) since 14:03:04",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, buf.String())
+		}
 	}
 }

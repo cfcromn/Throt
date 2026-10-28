@@ -3,9 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,6 +19,7 @@ import (
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
+	"github.com/cfcromn/Throt/internal/transport"
 )
 
 // fakeRun drives a runner with scripted status replies and a fake clock.
@@ -144,6 +149,157 @@ func TestRunAdmission(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type acquireReply struct {
+	res app.AcquireResult
+	err error
+}
+
+func granted() acquireReply {
+	return acquireReply{res: app.AcquireResult{Granted: true, Reason: "pressure is normal; 1 of 2 heavy slots in use", LeaseID: "7"}}
+}
+
+func refused() acquireReply {
+	return acquireReply{res: app.AcquireResult{
+		Reason:  "all heavy slots are in use (1 running, 1 reserved, limit 2)",
+		Verdict: app.Verdict{Pressure: "normal", SchedulerMode: "enforce", RunningHeavy: 1, Reserved: 1, HeavyLimit: 2},
+	}}
+}
+
+func TestRunLease(t *testing.T) {
+	argv := []string{"make", "-j8"}
+	oldDaemon := acquireReply{err: errors.New("unknown method: acquire")}
+	tests := []struct {
+		name         string
+		acquires     []acquireReply // one per acquire call; the last one repeats
+		replies      []statusReply
+		opts         runOptions
+		wantAcquires int
+		wantStatus   int
+		wantSlept    time.Duration
+		stderr       []string
+		quiet        bool
+	}{
+		{name: "granted at once", acquires: []acquireReply{granted()}, wantAcquires: 1, quiet: true},
+		{
+			name: "waits for a lease", acquires: []acquireReply{refused(), refused(), granted()},
+			wantAcquires: 3, wantSlept: 2 * time.Second,
+			stderr: []string{"waiting for a heavy slot (1/2 running, 1 reserved, pressure normal)", "capacity available after 2s"},
+		},
+		{
+			name: "table full waits", acquires: []acquireReply{{res: app.AcquireResult{Reason: app.ReasonTooManyLeases}}, granted()},
+			wantAcquires: 2, wantSlept: time.Second, stderr: []string{"too_many_leases"},
+		},
+		{
+			name: "timeout runs anyway", acquires: []acquireReply{refused()}, opts: runOptions{timeout: 1500 * time.Millisecond},
+			wantAcquires: 3, wantSlept: 1500 * time.Millisecond, stderr: []string{"still no capacity after 1.5s", "running anyway"},
+		},
+		{
+			name: "daemon down runs immediately", acquires: []acquireReply{{err: errors.New("dial unix: no such file")}},
+			wantAcquires: 1, stderr: []string{"throtd is not reachable", "running without waiting"},
+		},
+		{
+			name: "daemon lost while waiting runs", acquires: []acquireReply{refused(), {err: errors.New("read response: EOF")}},
+			wantAcquires: 2, wantSlept: time.Second, stderr: []string{"lost throtd"},
+		},
+		{
+			name: "no-wait takes a free lease", acquires: []acquireReply{granted()}, opts: runOptions{noWait: true},
+			wantAcquires: 1, stderr: []string{"ok to start a heavy job: yes"},
+		},
+		{
+			name: "no-wait when refused", acquires: []acquireReply{refused()}, opts: runOptions{noWait: true},
+			wantAcquires: 1, stderr: []string{"ok to start a heavy job: no", "1 reserved", "--no-wait"},
+		},
+		{
+			name: "old daemon falls back to advice", acquires: []acquireReply{oldDaemon}, replies: []statusReply{busy(), free()},
+			wantAcquires: 1, wantStatus: 2, wantSlept: time.Second,
+			stderr: []string{"waiting for a heavy slot (2/2 running, pressure elevated)", "capacity available"},
+		},
+		{
+			name: "old daemon, no-wait", acquires: []acquireReply{oldDaemon}, replies: []statusReply{busy()}, opts: runOptions{noWait: true},
+			wantAcquires: 1, wantStatus: 1, stderr: []string{"ok to start a heavy job: no"},
+		},
+		{
+			name: "old daemon going down", acquires: []acquireReply{oldDaemon}, replies: []statusReply{down()},
+			wantAcquires: 1, wantStatus: 1, stderr: []string{"throtd is not reachable"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeRun{replies: tt.replies, now: time.Unix(1000, 0)}
+			if f.replies == nil {
+				f.replies = []statusReply{{err: errors.New("status must not be called")}}
+			}
+			r := f.runner()
+			acquires := 0
+			r.acquire = func(context.Context) (app.AcquireResult, error) {
+				a := tt.acquires[min(acquires, len(tt.acquires)-1)]
+				acquires++
+				return a.res, a.err
+			}
+			tt.opts.argv = argv
+			if err := r.run(context.Background(), tt.opts); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if f.execPath != "/usr/bin/make" || !reflect.DeepEqual(f.execArgv, argv) {
+				t.Errorf("exec %q %q", f.execPath, f.execArgv)
+			}
+			if acquires != tt.wantAcquires || f.calls != tt.wantStatus || f.slept != tt.wantSlept {
+				t.Errorf("acquire calls %d, status calls %d, slept %s; want %d, %d, %s",
+					acquires, f.calls, f.slept, tt.wantAcquires, tt.wantStatus, tt.wantSlept)
+			}
+			errText := f.stderr.String()
+			if tt.quiet && errText != "" {
+				t.Errorf("unexpected stderr: %q", errText)
+			}
+			for _, want := range tt.stderr {
+				if !strings.Contains(errText, want) {
+					t.Errorf("stderr missing %q:\n%s", want, errText)
+				}
+			}
+		})
+	}
+}
+
+func TestRunFallsBackAgainstOldDaemon(t *testing.T) {
+	// A throtd that predates leases answers acquire with its real
+	// "unknown method" error; run must recognize it and only ask status.
+	dir, err := os.MkdirTemp("/tmp", "throt") // short enough for sun_path
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	sock := filepath.Join(dir, "old.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusCalls := 0
+	srv := transport.NewServer(map[string]transport.Handler{
+		"status": func(context.Context, json.RawMessage) (any, error) { statusCalls++; return free().st, nil },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx, l) }()
+	defer func() { cancel(); <-done }()
+
+	c := daemonClient{socket: sock}
+	if _, err := c.Acquire(context.Background(), app.AcquireParams{PID: os.Getpid()}); err == nil || !isUnknownMethod(err) {
+		t.Fatalf("acquire against an old daemon: %v", err)
+	}
+	f := &fakeRun{}
+	r := f.runner()
+	r.status = c.Status
+	r.acquire = func(ctx context.Context) (app.AcquireResult, error) {
+		return c.Acquire(ctx, app.AcquireParams{PID: os.Getpid()})
+	}
+	if err := r.run(context.Background(), runOptions{argv: []string{"make"}}); err != nil {
+		t.Fatal(err)
+	}
+	if f.execPath != "/usr/bin/make" || statusCalls != 1 || f.stderr.Len() != 0 {
+		t.Fatalf("exec %q after %d status calls; stderr %q", f.execPath, statusCalls, f.stderr.String())
 	}
 }
 
