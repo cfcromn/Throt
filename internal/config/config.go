@@ -94,9 +94,11 @@ type Scheduler struct {
 // part of a profile: enabling automatic control is always an explicit
 // choice.
 //
-// Balanced is adaptive with a ceiling of every CPU and a modest start, so
-// the limit can grow while only the CPUs are busy (see
-// scheduler.Input.ThroughputOnly). Performance stays a fixed limit, since
+// Balanced is adaptive with a modest start and a ceiling of four workloads
+// per CPU, so the limit can grow while only the CPUs are busy (see
+// scheduler.Input.ThroughputOnly): on its own up to one per CPU, and
+// beyond that only as far as waiting work fits in free memory
+// (scheduler.Policy.BlindLimit). Performance stays a fixed limit, since
 // adaptive control would also halve it under memory pressure; its ceiling
 // is its fixed limit, so it keeps its old value rather than 2x CPUs, which
 // would hardly ever queue anything.
@@ -107,7 +109,7 @@ var profiles = map[string]func(c *Config, ncpu int){
 		c.Scheduler.Adaptive = false
 	},
 	"balanced": func(c *Config, ncpu int) {
-		c.Scheduler.HeavyLimit = min(64, max(2, ncpu))
+		c.Scheduler.HeavyLimit = min(64, max(2, 4*ncpu))
 		c.Scheduler.StartLimit = min(64, max(2, ncpu/4))
 		c.Scheduler.Adaptive = true
 	},

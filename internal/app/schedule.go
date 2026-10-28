@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -42,9 +43,12 @@ func newScheduler(c config.Scheduler) *scheduler.Scheduler {
 
 func schedulerPolicy(c config.Scheduler) scheduler.Policy {
 	return scheduler.Policy{
-		Mode:            scheduler.Mode(c.Mode),
-		HeavyLimit:      c.HeavyLimit,
-		StartLimit:      c.StartLimit,
+		Mode:       scheduler.Mode(c.Mode),
+		HeavyLimit: c.HeavyLimit,
+		StartLimit: c.StartLimit,
+		// Without memory evidence the limit grows no further than one
+		// workload per CPU; see scheduler.Policy.BlindLimit.
+		BlindLimit:      max(2, runtime.NumCPU()),
 		ResumeCooldown:  time.Duration(c.ResumeCooldown),
 		PauseOnCritical: c.PauseOnCritical,
 		MaxQueueWait:    time.Duration(c.MaxQueueWait),
