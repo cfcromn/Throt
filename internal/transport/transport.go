@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -114,6 +115,9 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 // (which may be nil).
 func Call(ctx context.Context, socket, method string, params, out any) error {
 	if err := CheckPrivateDir(filepath.Dir(socket)); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("connect to throtd at %s (is it running?): %w", socket, err)
+		}
 		return err
 	}
 	var d net.Dialer

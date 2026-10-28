@@ -1,4 +1,4 @@
-.PHONY: setup fmt lint vet test race build check ci run
+.PHONY: setup fmt lint vet test race build check ci snapshot run
 
 setup:
 	go mod download
@@ -31,3 +31,6 @@ ci:
 
 run:
 	go run ./cmd/throtd
+
+snapshot:
+	goreleaser release --snapshot --clean

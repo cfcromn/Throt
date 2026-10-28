@@ -16,7 +16,9 @@ import (
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/config"
+	"github.com/cfcromn/Throt/internal/doctor"
 	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/platform"
 	"github.com/cfcromn/Throt/internal/transport"
 	"github.com/cfcromn/Throt/internal/tui"
 )
@@ -28,6 +30,7 @@ Commands:
   status     show host resources and pressure
   ping       check that throtd is reachable
   events     print recent daemon events as JSON lines
+  doctor     print a sanitized diagnostic report (safe to share)
   version    print the client version
 
 Flags:
@@ -60,6 +63,10 @@ func run(args []string) error {
 	if cmd == "version" {
 		fmt.Println(app.Version)
 		return nil
+	}
+
+	if cmd == "doctor" {
+		return runDoctor(*cfgPath)
 	}
 
 	cfg, err := config.Load(*cfgPath)
@@ -175,4 +182,33 @@ func gib(b uint64) string {
 		return fmt.Sprintf("%d MiB", b>>20)
 	}
 	return fmt.Sprintf("%.1f GiB", float64(b)/(1<<30))
+}
+
+// runDoctor reports even when the config is invalid or the daemon is down.
+func runDoctor(cfgPath string) error {
+	cfg, cfgErr := config.Load(cfgPath)
+	if cfgErr != nil {
+		cfg = config.Default()
+	}
+	_, statErr := os.Stat(cfgPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := daemonClient{socket: cfg.SocketPath}
+	r := doctor.Collect(ctx, doctor.Inputs{
+		ConfigPath: cfgPath,
+		SocketPath: cfg.SocketPath,
+		ConfigErr:  cfgErr,
+		ConfigFile: statErr == nil,
+		Ping: func(ctx context.Context) (app.PingResult, error) {
+			var p app.PingResult
+			err := transport.Call(ctx, cfg.SocketPath, "ping", nil, &p)
+			return p, err
+		},
+		Status:    c.Status,
+		Host:      platform.NewHostSampler(),
+		Processes: platform.NewProcessSampler(),
+	})
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(r)
 }
