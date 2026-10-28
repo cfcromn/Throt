@@ -211,11 +211,14 @@ Before, the limit went 2 → 3 in the first calm round and 3 → 4 at 28 s; with
 
 The rest of the CPU-only cost was the ceiling: `balanced` stopped at one workload per CPU, so a burst of more jobs than CPUs queued and handed slots over one exit at a time, where the baseline just time-shares the cores. The ceiling is now four per CPU, but only the at-once growth, which needs evidence that the waiting work fits in memory, goes past one per CPU; the blind +1 per 30s and the unknown-pressure reset stop there. Measured in the same kind of container (`THROT_BENCH_DEFAULTS=1`, `--cpus 4 --cpuset-cpus 0-3`, medians of 3 runs):
 
-| Scenario | Baseline | Ceiling one per CPU | Four per CPU |
+| Scenario | Baseline | Ceiling one per CPU | Four per CPU (shipped) |
 |---|---|---|---|
-| 16 × 5 s at once | 19.5s | 22.2s | 20.0s |
-| 16 staggered 630ms | 20.8s | 23.3s | 21.2s |
-| 2 long + 16 short | 44.6s | – | 45.0s |
+| 16 × 5 s at once | 20.0s | 22.2s | 20.7s |
+| 16 staggered 630ms | 20.9s | 23.3s | 21.5s |
+| 2 long + 16 short | 45.5s | – | 43.8s |
+| 1 job alone | 5.1s | – | 5.0s |
+
+The baseline and shipped columns are from one run of the final code; the middle column is the earlier measurement above, whose baselines were within 0.5 s of these. Probe p95 was 3–4 ms in every mode.
 
 In the memory scenarios (`--cpus 2 --cpuset-cpus 0-1 --memory 3g --memory-swap 4g`) both ceilings behaved alike: the baseline lost 3 jobs to the OOM killer in each scenario, Throt 1 with either ceiling. That one kill is a limit of pausing in a container: a job queued a moment after it started keeps what it has allocated, and the kernel cannot swap it out past the container's swap limit. The memory-checked growth never fired there, since the queued jobs' working sets left less headroom than one job.
 
