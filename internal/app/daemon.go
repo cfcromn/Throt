@@ -186,16 +186,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.started = time.Now()
 	d.emit(domain.EventDaemonStarted, "listening on "+d.cfg.SocketPath, nil)
 	d.recoverPaused(ctx)
-	srv := transport.NewServer(map[string]transport.Handler{
-		"ping":    d.ping,
-		"events":  d.recentEvents,
-		"status":  d.currentStatus,
-		"stats":   d.currentStats,
-		"pause":   d.pause,
-		"resume":  d.resume,
-		"reload":  d.reload,
-		"acquire": d.acquire,
-	}, transport.WithPrivileged(privilegedMethods()...))
+	srv := transport.NewServer(d.handlers(), transport.WithPrivileged(privilegedMethods()...))
 
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
@@ -223,6 +214,20 @@ func (d *Daemon) workload(key domain.ProcessKey) (process.WorkloadTarget, bool) 
 	d.graphMu.Lock()
 	defer d.graphMu.Unlock()
 	return d.graph.Workload(key)
+}
+
+// handlers returns the methods of local protocol v1.
+func (d *Daemon) handlers() map[string]transport.Handler {
+	return map[string]transport.Handler{
+		"ping":    d.ping,
+		"events":  d.recentEvents,
+		"status":  d.currentStatus,
+		"stats":   d.currentStats,
+		"pause":   d.pause,
+		"resume":  d.resume,
+		"reload":  d.reload,
+		"acquire": d.acquire,
+	}
 }
 
 // privilegedMethods may only be called by the user running the daemon: they

@@ -3,6 +3,8 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -194,5 +196,48 @@ func TestValidate(t *testing.T) {
 		case tc.want != "" && (len(errs) == 0 || !strings.Contains(errs[0].Error(), tc.want)):
 			t.Errorf("%s: errors %v, want %q", tc.doc, errs, tc.want)
 		}
+	}
+}
+
+// TestDocumentedTools checks the MCP tools table in docs/ARCHITECTURE.md
+// against tools/list: every tool, in order, with its inputs.
+func TestDocumentedTools(t *testing.T) {
+	b, err := os.ReadFile("../../docs/ARCHITECTURE.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(b), "\n")
+	i := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "| MCP tool |") })
+	if i < 0 {
+		t.Fatal("docs/ARCHITECTURE.md has no MCP tools table")
+	}
+	ticked := func(cell string) []string {
+		var out []string
+		for j, part := range strings.Split(cell, "`") {
+			if j%2 == 1 {
+				out = append(out, part)
+			}
+		}
+		return out
+	}
+	var doc, code []string
+	for _, l := range lines[i+2:] {
+		if !strings.HasPrefix(l, "|") {
+			break
+		}
+		cells := strings.Split(l, "|")
+		inputs := ticked(cells[2])
+		slices.Sort(inputs)
+		doc = append(doc, fmt.Sprint(ticked(cells[1]), inputs))
+	}
+	for _, tl := range toolList() {
+		var s struct{ Properties map[string]any }
+		if err := json.Unmarshal(tl.InputSchema, &s); err != nil {
+			t.Fatal(err)
+		}
+		code = append(code, fmt.Sprint([]string{tl.Name}, slices.Sorted(maps.Keys(s.Properties))))
+	}
+	if !slices.Equal(doc, code) {
+		t.Errorf("docs/ARCHITECTURE.md lists tools %v, tools/list has %v", doc, code)
 	}
 }
