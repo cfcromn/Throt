@@ -29,6 +29,14 @@ func TestLoad(t *testing.T) {
 		{name: "unknown key", body: `{"sample_intervl":"5s"}`, wantErr: "unknown field"},
 		{name: "bad duration", body: `{"sample_interval":"soon"}`, wantErr: "invalid duration"},
 		{name: "interval too small", body: `{"sample_interval":"1ms"}`, wantErr: "at least 100ms"},
+		// Longer intervals leave the 30s pressure window a single sample:
+		// no swap growth rate, and medians of one noisy reading.
+		{name: "interval too large", body: `{"sample_interval":"31s"}`, wantErr: "at most 10s"},
+		{name: "largest interval", body: `{"sample_interval":"10s"}`, check: func(t *testing.T, c Config) {
+			if time.Duration(c.SampleInterval) != 10*time.Second {
+				t.Errorf("got %v", c.SampleInterval)
+			}
+		}},
 		{name: "history out of range", body: `{"event_history":0}`, wantErr: "event_history"},
 		{name: "scheduler override", body: `{"scheduler":{"mode":"enforce","heavy_limit":3}}`, check: func(t *testing.T, c Config) {
 			if c.Scheduler.Mode != "enforce" || c.Scheduler.HeavyLimit != 3 || c.Scheduler.MaxQueueWait != Default().Scheduler.MaxQueueWait {

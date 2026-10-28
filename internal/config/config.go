@@ -15,8 +15,14 @@ import (
 
 	"github.com/cfcromn/Throt/internal/agent"
 	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/pressure"
 	"time"
 )
+
+// MaxSampleInterval is the longest sample interval: the pressure window
+// must hold at least three samples, or its medians come from one noisy
+// reading and swap growth (a rate between samples) is never measured.
+const MaxSampleInterval = pressure.DefaultWindow / 3
 
 // Config is the user-facing configuration. Unknown keys are rejected.
 type Config struct {
@@ -237,6 +243,9 @@ func load(path string, ncpu int) (Config, error) {
 func (c Config) Validate() error {
 	if time.Duration(c.SampleInterval) < 100*time.Millisecond {
 		return errors.New("sample_interval must be at least 100ms")
+	}
+	if time.Duration(c.SampleInterval) > MaxSampleInterval {
+		return fmt.Errorf("sample_interval must be at most %v, so the %v pressure window holds several samples", MaxSampleInterval, pressure.DefaultWindow)
 	}
 	if c.EventHistory < 1 || c.EventHistory > 100_000 {
 		return errors.New("event_history must be between 1 and 100000")
