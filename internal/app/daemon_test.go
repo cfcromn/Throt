@@ -1,0 +1,136 @@
+package app
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/cfcromn/Throt/internal/config"
+	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/transport"
+)
+
+// shortTempDir keeps socket paths under the 104-byte sun_path limit on macOS.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "throt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+func startDaemon(t *testing.T, sock string) (cancel func() error) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.SocketPath = sock
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- NewDaemon(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(ctx) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for transport.Call(context.Background(), sock, "ping", nil, nil) != nil {
+		if time.Now().After(deadline) {
+			stop()
+			t.Fatalf("daemon did not start: %v", <-done)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return func() error { stop(); return <-done }
+}
+
+func TestDaemonLifecycle(t *testing.T) {
+	sock := filepath.Join(shortTempDir(t), "d", "throtd.sock")
+	stop := startDaemon(t, sock)
+
+	var ping PingResult
+	if err := transport.Call(context.Background(), sock, "ping", nil, &ping); err != nil {
+		t.Fatal(err)
+	}
+	if ping.Protocol != transport.ProtocolVersion || ping.PID != os.Getpid() {
+		t.Errorf("ping = %+v", ping)
+	}
+	fi, err := os.Stat(sock)
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("socket mode = %v, %v; want 0600", fi.Mode().Perm(), err)
+	}
+
+	var events []domain.Event
+	if err := transport.Call(context.Background(), sock, "events", EventsParams{Limit: 10}, &events); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Kind != domain.EventDaemonStarted {
+		t.Errorf("events = %+v", events)
+	}
+
+	if err := stop(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Errorf("socket not removed on shutdown: %v", err)
+	}
+}
+
+func TestDaemonRefusesSecondInstance(t *testing.T) {
+	sock := filepath.Join(shortTempDir(t), "throtd.sock")
+	stop := startDaemon(t, sock)
+	defer stop()
+
+	cfg := config.Default()
+	cfg.SocketPath = sock
+	err := NewDaemon(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDaemonReplacesStaleSocket(t *testing.T) {
+	sock := filepath.Join(shortTempDir(t), "throtd.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
+	l.Close() // leaves a stale socket file, as a crashed daemon would
+	stop := startDaemon(t, sock)
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDaemonKeepsNonSocketFile(t *testing.T) {
+	sock := filepath.Join(shortTempDir(t), "throtd.sock")
+	if err := os.WriteFile(sock, []byte("important"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.SocketPath = sock
+	err := NewDaemon(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "not a socket") {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(sock); string(b) != "important" {
+		t.Fatal("non-socket file was modified")
+	}
+}
+
+func TestDaemonRejectsSharedSocketDir(t *testing.T) {
+	dir := filepath.Join(shortTempDir(t), "shared")
+	if err := os.Mkdir(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(dir, 0o777) // bypass umask
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(dir, "throtd.sock")
+	err := NewDaemon(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "writable by other users") {
+		t.Fatalf("err = %v", err)
+	}
+}
