@@ -24,7 +24,11 @@ type SchedulerStatus struct {
 }
 
 func newScheduler(c config.Scheduler) *scheduler.Scheduler {
-	return scheduler.New(scheduler.Policy{
+	return scheduler.New(schedulerPolicy(c))
+}
+
+func schedulerPolicy(c config.Scheduler) scheduler.Policy {
+	return scheduler.Policy{
 		Mode:            scheduler.Mode(c.Mode),
 		HeavyLimit:      c.HeavyLimit,
 		ResumeCooldown:  time.Duration(c.ResumeCooldown),
@@ -32,7 +36,7 @@ func newScheduler(c config.Scheduler) *scheduler.Scheduler {
 		MaxQueueWait:    time.Duration(c.MaxQueueWait),
 		Adaptive:        c.Adaptive,
 		PerOwnerLimit:   c.PerAgentLimit,
-	})
+	}
 }
 
 // maxQueueMembers bounds the workloads the scheduler will queue, so one
