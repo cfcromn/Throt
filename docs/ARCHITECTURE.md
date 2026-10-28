@@ -151,6 +151,7 @@ A scheduler can make graphs calmer while making real work slower, so changes to 
 - **Throughput:** total wall-clock, heavy jobs/hour, build/test durations.
 - **Scenarios:** one build alone (Throt must stay out of the way); overlapping builds, at once and staggered; long jobs mixed with short ones (starvation); memory-heavy builds.
 - **Method:** fixed fixtures, warm-up, repetitions, same machine for baseline vs. Throt, report medians and tails.
+- **Daemon cost:** per 2 s sample on an Apple M5 Pro, Go benchmarks put the process graph over 1,500 processes at about 0.5 ms (`BenchmarkGraphUpdate`), the pressure engine at 2 µs, a scheduler round over 64 workloads at 9 µs (`BenchmarkDecide`), and a status-sized IPC round trip, which the TUI makes every second, at 0.4 ms (`BenchmarkCallStatusSized`). Reading the process table from the OS dominates (see Platforms), so nothing in Throt's own logic is worth optimizing yet.
 
 ### Results
 
