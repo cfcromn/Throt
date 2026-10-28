@@ -151,6 +151,9 @@ func (m Model) topLines() []string {
 		if h := m.status.Host; h != nil && h.Has(domain.MetricLatency) {
 			pressure += "  latency " + h.Latency.Round(time.Millisecond).String()
 		}
+		if h := m.status.Host; h != nil {
+			pressure += psiSummary(*h)
+		}
 		if sc := m.status.Scheduler; sc.Mode != "" && sc.Mode != "off" {
 			pressure += fmt.Sprintf("  scheduler %s %d", sc.Mode, sc.HeavyLimit)
 		}
@@ -162,6 +165,24 @@ func (m Model) topLines() []string {
 		lines = append(lines, splitLines(degradedStyle.Render(lipgloss.Wrap("DEGRADED  "+m.status.Degraded, w, "")))...)
 	}
 	return lines
+}
+
+// psiSummary renders the Linux PSI "some" shares the sample carries as
+// "  PSI mem 3% io 0% cpu 12%", or "" when it has none.
+func psiSummary(h domain.HostSample) string {
+	s := ""
+	for _, r := range [...]struct {
+		m     domain.Metric
+		label string
+	}{{domain.MetricMemoryStall, "mem"}, {domain.MetricIOStall, "io"}, {domain.MetricCPUStall, "cpu"}} {
+		if st, ok := h.StallFor(r.m); ok {
+			s += fmt.Sprintf(" %s %.0f%%", r.label, st.Some*100)
+		}
+	}
+	if s == "" {
+		return ""
+	}
+	return "  PSI" + s
 }
 
 // metricLines renders CPU, MEM, and SWAP bars. Metrics the host did not

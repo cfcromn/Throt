@@ -59,6 +59,11 @@ func (s *darwinSampler) SampleHost(ctx context.Context) (domain.HostSample, erro
 		out.MemoryPressure = p
 	}
 
+	// PSI is Linux-only.
+	fails.fail(domain.MetricMemoryStall, nil)
+	fails.fail(domain.MetricIOStall, nil)
+	fails.fail(domain.MetricCPUStall, nil)
+
 	return out, fails.finish(&out)
 }
 

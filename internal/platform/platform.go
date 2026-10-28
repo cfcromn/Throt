@@ -23,8 +23,9 @@ type HostSampler interface {
 }
 
 // metricCount is the number of sampled metrics a HostSample can carry (cpu,
-// load, memory, swap, memory pressure; latency is probed by the daemon).
-const metricCount = 5
+// load, memory, swap, memory pressure, and memory, io and cpu stall; latency
+// is probed by the daemon).
+const metricCount = 8
 
 // sampleErrors accumulates per-metric read failures for one sample.
 type sampleErrors struct {

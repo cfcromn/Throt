@@ -28,6 +28,15 @@ type LevelThresholds struct {
 	// It is ignored for the critical level: the kernel verdict alone never
 	// makes pressure critical.
 	KernelMemory domain.MemoryPressure
+	// MemoryStallSome and MemoryStallFull are the window medians of the
+	// Linux memory PSI some and full shares (see domain.MetricMemoryStall),
+	// 0..1.
+	MemoryStallSome float64
+	MemoryStallFull float64
+	// IOStallFull is the median I/O PSI full share, 0..1.
+	IOStallFull float64
+	// CPUStallSome is the median CPU PSI some share, 0..1.
+	CPUStallSome float64
 	// MemoryUsed is the median of 1 - MemAvailable/MemTotal, 0..1.
 	MemoryUsed float64
 	// SwapGrowth is swap-used growth across the window in bytes per second.
@@ -47,12 +56,14 @@ type Thresholds struct {
 	High     LevelThresholds
 	Critical LevelThresholds
 	// MemoryUsedWhenKernelSignal keeps evaluating MemoryUsed while a kernel
-	// memory-pressure verdict is present in the window. By default (false)
-	// the kernel verdict takes precedence and MemoryUsed is ignored then:
-	// macOS keeps memory deliberately full (compressor, file cache), so the
-	// used fraction sits at 80-90% on an idle machine and would hold
-	// pressure at elevated forever. Without a kernel verdict in the window
-	// (Linux, or a failed read) MemoryUsed applies as usual.
+	// memory signal is present in the window: the macOS memory-pressure
+	// verdict or Linux memory PSI. By default (false) the kernel signal
+	// takes precedence and MemoryUsed is ignored then: both kernels keep
+	// memory deliberately full (the macOS compressor, file and page cache),
+	// so the used fraction can sit at 80-90% on an idle machine and would
+	// hold pressure at elevated forever, while the kernel measures what
+	// actually hurts. Without a kernel signal in the window (an old kernel,
+	// psi=0, or a failed read) MemoryUsed applies as usual.
 	MemoryUsedWhenKernelSignal bool
 	// ExitMargin is subtracted from the MemoryUsed, CPU and Load enter
 	// thresholds to form exit thresholds, so a value hovering at a boundary
@@ -64,6 +75,10 @@ type Thresholds struct {
 	// LatencyExitRatio scales a Latency enter threshold to its exit
 	// threshold. Lateness is noisy and has no natural absolute margin.
 	LatencyExitRatio float64
+	// StallExitRatio scales a PSI enter threshold to its exit threshold.
+	// Stall thresholds are as small as 5%, where ExitMargin would leave no
+	// margin at all.
+	StallExitRatio float64
 	// EscalateSamples is how many consecutive samples the raw level must
 	// stay above the current level before escalating. Values < 1 mean 1.
 	EscalateSamples int
@@ -80,6 +95,16 @@ type Thresholds struct {
 //     threshold is half a step below the enter one: entering needs the
 //     window median at the verdict (a majority of samples), holding needs
 //     at least half the window there.
+//   - memory PSI (Linux, avg10 shares): some >= 0.10 → elevated, full >=
+//     0.05 → high, full >= 0.20 → critical. "Some" means at least one task
+//     waited on memory (reclaim, refaults); "full" means every non-idle
+//     task did at once, which is time the whole machine lost. Like the
+//     macOS verdict it replaces memory used while present, because page
+//     cache keeps Linux memory nearly full too.
+//   - I/O PSI full: elevated 0.20, high 0.50, never critical. I/O stalls
+//     slow work but, unlike memory thrashing, do not escalate on their own.
+//   - CPU PSI some: elevated 0.50 only, consistent with CPU capping at
+//     elevated.
 //   - memory used: elevated 0.80, high 0.90, critical 0.95. Memory is the
 //     signal that most directly predicts an unresponsive machine.
 //   - swap growth: elevated 1 MiB/s, high 8 MiB/s, critical 32 MiB/s.
@@ -92,20 +117,28 @@ type Thresholds struct {
 //     a direct measure of responsiveness, but like CPU it slows rather than
 //     freezes the machine.
 //   - exit margin 0.05, swap exit ratio 0.5, latency exit ratio 0.75,
-//     escalate after 3 consecutive samples, recover after 2x the window.
+//     stall exit ratio 0.5, escalate after 3 consecutive samples, recover
+//     after 2x the window.
 func DefaultThresholds() Thresholds {
 	const mib = 1 << 20
 	return Thresholds{
-		Elevated: LevelThresholds{KernelMemory: domain.MemoryPressureWarning, MemoryUsed: 0.80, SwapGrowth: 1 * mib, CPU: 0.85, Load: 1.0, Latency: 25 * time.Millisecond},
+		Elevated: LevelThresholds{
+			KernelMemory: domain.MemoryPressureWarning, MemoryStallSome: 0.10, IOStallFull: 0.20, CPUStallSome: 0.50,
+			MemoryUsed: 0.80, SwapGrowth: 1 * mib, CPU: 0.85, Load: 1.0, Latency: 25 * time.Millisecond,
+		},
 		// CPU and load stop at elevated: builds saturating every core is the
 		// throughput Throt exists to protect, not a problem by itself. Their
 		// effect on the person at the keyboard is measured directly by the
 		// latency probe, which (with memory and swap) drives high/critical.
-		High:             LevelThresholds{KernelMemory: domain.MemoryPressureCritical, MemoryUsed: 0.90, SwapGrowth: 8 * mib, Latency: 100 * time.Millisecond},
-		Critical:         LevelThresholds{MemoryUsed: 0.95, SwapGrowth: 32 * mib},
+		High: LevelThresholds{
+			KernelMemory: domain.MemoryPressureCritical, MemoryStallFull: 0.05, IOStallFull: 0.50,
+			MemoryUsed: 0.90, SwapGrowth: 8 * mib, Latency: 100 * time.Millisecond,
+		},
+		Critical:         LevelThresholds{MemoryStallFull: 0.20, MemoryUsed: 0.95, SwapGrowth: 32 * mib},
 		ExitMargin:       0.05,
 		SwapExitRatio:    0.5,
 		LatencyExitRatio: 0.75,
+		StallExitRatio:   0.5,
 		EscalateSamples:  3,
 	}
 }
@@ -118,16 +151,20 @@ type point struct {
 	latency                                      time.Duration
 	swap                                         uint64
 	kernel                                       domain.MemoryPressure
+	memStall, ioStall, cpuStall                  domain.Stall
 	hasCPU, hasLoad, hasMem, hasSwap, hasLatency bool
 	hasKernel                                    bool
+	hasMemStall, hasIOStall, hasCPUStall         bool
 }
 
 // stats are the window statistics evaluated against thresholds.
 type stats struct {
 	// latency is in nanoseconds; kernel is the median verdict ordinal.
 	mem, swap, cpu, load, latency, kernel        float64
+	memSome, memFull, ioFull, cpuSome            float64
 	hasMem, hasSwap, hasCPU, hasLoad, hasLatency bool
 	hasKernel                                    bool
+	hasMemStall, hasIOStall, hasCPUStall         bool
 	// has reports whether any signal is present in the window.
 	has bool
 }
@@ -258,6 +295,9 @@ func (e *Engine) add(s domain.HostSample) {
 	}
 	p.hasLatency = s.Has(domain.MetricLatency)
 	p.kernel, p.hasKernel = s.MemoryPressure, s.HasMemoryPressure()
+	p.memStall, p.hasMemStall = s.StallFor(domain.MetricMemoryStall)
+	p.ioStall, p.hasIOStall = s.StallFor(domain.MetricIOStall)
+	p.cpuStall, p.hasCPUStall = s.StallFor(domain.MetricCPUStall)
 
 	if p.hasMem {
 		avail := min(s.MemAvailable, s.MemTotal)
@@ -287,6 +327,10 @@ func (e *Engine) stats() stats {
 	st.load, st.hasLoad = e.median(func(p point) (float64, bool) { return p.load, p.hasLoad })
 	st.latency, st.hasLatency = e.median(func(p point) (float64, bool) { return float64(p.latency), p.hasLatency })
 	st.kernel, st.hasKernel = e.median(func(p point) (float64, bool) { return float64(p.kernel), p.hasKernel })
+	st.memSome, st.hasMemStall = e.median(func(p point) (float64, bool) { return p.memStall.Some, p.hasMemStall })
+	st.memFull, _ = e.median(func(p point) (float64, bool) { return p.memStall.Full, p.hasMemStall })
+	st.ioFull, st.hasIOStall = e.median(func(p point) (float64, bool) { return p.ioStall.Full, p.hasIOStall })
+	st.cpuSome, st.hasCPUStall = e.median(func(p point) (float64, bool) { return p.cpuStall.Some, p.hasCPUStall })
 
 	// Rates go in e.scratch, which median also uses; compute them last.
 	e.scratch = e.scratch[:0]
@@ -309,7 +353,8 @@ func (e *Engine) stats() stats {
 		prev = i
 	}
 	st.swap = medianOf(e.scratch)
-	st.has = st.hasMem || st.hasCPU || st.hasLoad || st.hasSwap || st.hasLatency || st.hasKernel
+	st.has = st.hasMem || st.hasCPU || st.hasLoad || st.hasSwap || st.hasLatency || st.hasKernel ||
+		st.hasMemStall || st.hasIOStall || st.hasCPUStall
 	return st
 }
 
@@ -342,11 +387,12 @@ func medianOf(vals []float64) float64 {
 // classify returns the highest level any present signal reaches, using enter
 // thresholds or, when exit is true, the lower exit thresholds.
 //
-// A kernel memory-pressure verdict in the window takes precedence over
-// memory used unless MemoryUsedWhenKernelSignal is set, and never reaches
-// critical on its own.
+// A kernel memory signal in the window (the macOS verdict or Linux memory
+// PSI) takes precedence over memory used unless MemoryUsedWhenKernelSignal
+// is set. The macOS verdict never reaches critical on its own.
 func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
-	useMem := st.hasMem && (!st.hasKernel || e.th.MemoryUsedWhenKernelSignal)
+	kernelMem := st.hasKernel || st.hasMemStall
+	useMem := st.hasMem && (!kernelMem || e.th.MemoryUsedWhenKernelSignal)
 	levels := [...]struct {
 		l  domain.PressureLevel
 		th LevelThresholds
@@ -363,11 +409,15 @@ func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
 			kind    sigKind
 		}{
 			{"kernel_memory_pressure", st.kernel, float64(lv.th.KernelMemory), st.hasKernel && lv.l != domain.PressureCritical, kindVerdict},
+			{"memory_stall_full", st.memFull, lv.th.MemoryStallFull, st.hasMemStall, kindStall},
+			{"memory_stall_some", st.memSome, lv.th.MemoryStallSome, st.hasMemStall, kindStall},
 			{"memory_used", st.mem, lv.th.MemoryUsed, useMem, kindFraction},
 			{"swap_growth", st.swap, lv.th.SwapGrowth, st.hasSwap, kindRate},
+			{"io_stall_full", st.ioFull, lv.th.IOStallFull, st.hasIOStall, kindStall},
 			{"load", st.load, lv.th.Load, st.hasLoad, kindFraction},
 			{"latency", st.latency, float64(lv.th.Latency), st.hasLatency, kindDuration},
 			{"cpu", st.cpu, lv.th.CPU, st.hasCPU, kindFraction},
+			{"cpu_stall_some", st.cpuSome, lv.th.CPUStallSome, st.hasCPUStall, kindStall},
 		}
 		for _, sg := range sigs {
 			if !sg.present || sg.t <= 0 {
@@ -407,6 +457,8 @@ const (
 	// below its enter threshold: ExitMargin is sized for fractions and
 	// would make a split window flap.
 	kindVerdict
+	// kindStall (PSI shares) uses StallExitRatio.
+	kindStall
 )
 
 // exitThreshold lowers an enter threshold by the configured hysteresis. A
@@ -421,6 +473,8 @@ func (e *Engine) exitThreshold(enter float64, kind sigKind) float64 {
 		t = enter * e.th.LatencyExitRatio
 	case kindVerdict:
 		t = enter - 0.5
+	case kindStall:
+		t = enter * e.th.StallExitRatio
 	default:
 		t = enter - e.th.ExitMargin
 	}

@@ -26,6 +26,10 @@ import (
 // sample; the limit files are re-read
 // on every sample because limits can change at runtime. Any cgroup read
 // error falls back to the host figure for that metric.
+//
+// Pressure stall information comes from /proc/pressure, or from the
+// limiting cgroup's memory.pressure and cpu.pressure (see applyStalls); it
+// is missing on kernels without PSI.
 func NewHostSampler() HostSampler { return &linuxSampler{} }
 
 // linuxSampler keeps the previous CPU counters to compute deltas, so it is
@@ -49,8 +53,8 @@ func (s *linuxSampler) SampleHost(ctx context.Context) (domain.HostSample, error
 	out := domain.HostSample{Time: time.Now()}
 	var fails sampleErrors
 
-	// Linux has no kernel memory-pressure verdict wired up yet (PSI would
-	// be the candidate), so the signal is always missing.
+	// The macOS-style kernel verdict does not exist on Linux; PSI (below)
+	// is the Linux kernel's pressure measurement.
 	fails.fail(domain.MetricMemoryPressure, nil)
 
 	ncpu := 0
@@ -120,6 +124,9 @@ func (s *linuxSampler) SampleHost(ctx context.Context) (domain.HostSample, error
 			fails.fail(domain.MetricSwap, errors.New("/proc/meminfo lacks swap fields"))
 		}
 	}
+
+	memDir, _, _ := tightestLimit(s.cgDirs, "memory.max", parseCgroupLimit)
+	applyStalls(&out, &fails, "/proc/pressure", memDir, dir)
 
 	return out, fails.finish(&out)
 }

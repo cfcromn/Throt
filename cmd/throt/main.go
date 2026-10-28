@@ -297,6 +297,9 @@ func printStatus(w io.Writer, st app.StatusResult) {
 	fmt.Fprintf(w, "MEM       %s\n", mem)
 	fmt.Fprintf(w, "LATENCY   %s\n", na(domain.MetricLatency, h.Latency.Round(time.Millisecond).String()))
 	fmt.Fprintf(w, "SWAP      %s\n", na(domain.MetricSwap, fmt.Sprintf("%s used of %s", gib(h.SwapUsed), gib(h.SwapTotal))))
+	if psi := psiDetail(*h); psi != "" {
+		fmt.Fprintf(w, "PSI       %s\n", psi)
+	}
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "\nAGENTS\nAGENT\tPID\tCPU\tMEM\tCHILDREN")
@@ -339,6 +342,25 @@ func printStatus(w io.Writer, st app.StatusResult) {
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.0f%%\t%s\t%s\n", owner, h.Key.PID, h.Name, h.Class, h.CPU*100, gib(h.RSS), state)
 	}
 	tw.Flush()
+}
+
+// psiDetail renders the Linux PSI readings the sample carries, as
+// "mem 3% (full 1%)  io 0% (full 0%)  cpu 12%", or "" when it has none.
+// The pressure policy uses some and full for memory, full for I/O and some
+// for CPU.
+func psiDetail(h domain.HostSample) string {
+	var parts []string
+	pct := func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) }
+	if st, ok := h.StallFor(domain.MetricMemoryStall); ok {
+		parts = append(parts, "mem "+pct(st.Some)+" (full "+pct(st.Full)+")")
+	}
+	if st, ok := h.StallFor(domain.MetricIOStall); ok {
+		parts = append(parts, "io "+pct(st.Some)+" (full "+pct(st.Full)+")")
+	}
+	if st, ok := h.StallFor(domain.MetricCPUStall); ok {
+		parts = append(parts, "cpu "+pct(st.Some))
+	}
+	return strings.Join(parts, "  ")
 }
 
 func gib(b uint64) string {

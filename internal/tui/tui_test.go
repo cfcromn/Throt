@@ -337,6 +337,28 @@ func TestKernelMemoryPressureShown(t *testing.T) {
 	}
 }
 
+func TestPSIShown(t *testing.T) {
+	st := sampleStatus(1, 0)
+	m := newModel(t, &fakeClient{status: st}, 120, 24)
+	if out := view(m); strings.Contains(out, "PSI") {
+		t.Errorf("PSI shown without readings:\n%s", out)
+	}
+
+	st.Host.MemoryStall = &domain.Stall{Some: 0.031, Full: 0.01}
+	st.Host.IOStall = &domain.Stall{Some: 0, Full: 0}
+	m = newModel(t, &fakeClient{status: st}, 120, 24)
+	if out := view(m); !regexp.MustCompile(`(?m)^SYSTEM .*pressure .*  PSI mem 3% io 0%$`).MatchString(out) {
+		t.Errorf("PSI not on the SYSTEM line:\n%s", out)
+	}
+
+	st.Host.CPUStall = &domain.Stall{Some: 0.6}
+	st.Host.Missing = []domain.Metric{domain.MetricIOStall}
+	m = newModel(t, &fakeClient{status: st}, 120, 24)
+	if out := view(m); !strings.Contains(out, "PSI mem 3% cpu 60%") {
+		t.Errorf("missing io stall rendered or cpu stall absent:\n%s", out)
+	}
+}
+
 func selectedLine(t *testing.T, out string) string {
 	t.Helper()
 	for _, l := range strings.Split(out, "\n") {
