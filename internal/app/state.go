@@ -37,6 +37,10 @@ func (d *Daemon) saveState(state []byte) error {
 	return nil
 }
 
+// syncFile flushes f to stable storage. On macOS it is F_FULLFSYNC, which
+// a loaded disk can hold for seconds; tests with fake processes replace it.
+var syncFile = (*os.File).Sync
+
 // writeFileAtomic replaces path with data so readers see either the old or
 // the new contents, and the new contents survive a crash once it returns.
 func writeFileAtomic(path string, data []byte) (err error) {
@@ -51,7 +55,7 @@ func writeFileAtomic(path string, data []byte) (err error) {
 		}
 	}()
 	if _, err = f.Write(data); err == nil {
-		err = f.Sync()
+		err = syncFile(f)
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
@@ -63,7 +67,7 @@ func writeFileAtomic(path string, data []byte) (err error) {
 		return err
 	}
 	if df, derr := os.Open(dir); derr == nil {
-		_ = df.Sync()
+		_ = syncFile(df)
 		df.Close()
 	}
 	return nil
