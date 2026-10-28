@@ -23,9 +23,13 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - CPU and load alone now cap pressure at elevated; high and critical come from memory, swap, and foreground latency. Saturated build cores no longer halve the adaptive limit.
 - On macOS, memory used no longer drives pressure while the kernel verdict is available; it sat at 80–90% on idle machines and held pressure at elevated.
 
+### Fixed
+- Parsers reject overflowing, negative, NaN, and control-character input found by fuzzing (ps, procfs, loadavg, meminfo); MCP matches JSON-RPC member names exactly and rejects non-scalar ids.
+
 ### Security
 - Built with Go 1.26.10, which fixes 20 standard-library vulnerabilities present in 1.26.4 (none reachable from Throt's code according to govulncheck).
 - GitHub Actions pinned to commit SHAs; `govulncheck` runs in CI.
+- Native fuzz tests for every parser and decoder of untrusted input (15 targets).
 
 ## [0.4.0-rc.2] - 2026-10-28
 
