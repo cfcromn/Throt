@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cfcromn/Throt/internal/domain"
+	"golang.org/x/sys/unix"
 )
 
 // psPath is invoked directly, never through a shell.
@@ -24,8 +25,11 @@ const psPath = "/bin/ps"
 const maxPSOutput = 32 << 20
 
 // NewProcessSampler returns a process sampler for the current OS. On macOS
-// it runs /bin/ps: libproc would need cgo. The caller's context deadline
-// bounds how long ps may run.
+// it runs /bin/ps for the process table: /bin/ps is setuid root, so it
+// reads the CPU time and RSS of other users' processes, which
+// proc_pidinfo refuses to an unprivileged caller and which the host CPU
+// estimate needs. Names are read in-process where possible (see
+// lookupPSNames). The caller's context deadline bounds how long ps may run.
 func NewProcessSampler() ProcessSampler { return &darwinProcessSampler{} }
 
 // darwinProcessSampler is not safe for concurrent use.
@@ -38,7 +42,7 @@ func (s *darwinProcessSampler) SampleProcesses(ctx context.Context) ([]domain.Pr
 		return nil, fmt.Errorf("sample processes: %w", err)
 	}
 	// The stats pass has no attacker-controlled text and defines the process
-	// set; names come from separate ps runs (see parsePSNames), and only for
+	// set; names are looked up separately (see lookupPSNames), and only for
 	// processes not named yet (see psNameCache).
 	stats, err := runPS(ctx, psStatColumns)
 	if err != nil {
@@ -66,17 +70,39 @@ func (s *darwinProcessSampler) SampleProcesses(ctx context.Context) ([]domain.Pr
 // 500 ms, so PIDs are never batched into one -p list.
 const maxPSNameQueries = 16
 
-// lookupPSNames returns names for pids, as parsePSNames maps them.
+// lookupPSNames returns names for pids, as parsePSNames maps them. Each
+// name is read in-process from kern.procargs2 (about 25 µs, no fork);
+// only processes it cannot read, those of other users, are asked of ps.
+// Measured on macOS 26 on a busy host with about 1,200 processes, new
+// PIDs made the ps name lookups cost 30 to 70 ms of CPU per sample, more
+// than the stats pass.
 func lookupPSNames(ctx context.Context, pids []int) (map[int]string, error) {
-	if len(pids) > maxPSNameQueries {
+	names := make(map[int]string, len(pids))
+	var rest []int
+	for _, pid := range pids {
+		if comm, err := procComm(pid); err == nil {
+			names[pid] = psName(comm)
+		} else {
+			rest = append(rest, pid)
+		}
+	}
+	if len(rest) > maxPSNameQueries {
 		out, err := runPS(ctx, psNameColumns)
 		if err != nil {
 			return nil, err
 		}
-		return parsePSNames(bytes.NewReader(out))
+		all, err := parsePSNames(bytes.NewReader(out))
+		if err != nil {
+			return nil, err
+		}
+		for pid, name := range all {
+			if _, ok := names[pid]; !ok {
+				names[pid] = name
+			}
+		}
+		return names, nil
 	}
-	names := make(map[int]string, len(pids))
-	for _, pid := range pids {
+	for _, pid := range rest {
 		out, err := execPS(ctx, "-o", psNameColumns, "-p", strconv.Itoa(pid))
 		// ps exits 1 with no output when the PID no longer exists; that
 		// process just stays unnamed. A context error has no exit status.
@@ -93,6 +119,21 @@ func lookupPSNames(ctx context.Context, pids []int) (map[int]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// procComm returns what ps prints as comm for pid, read from the
+// kern.procargs2 sysctl. It fails for processes of other users (EPERM:
+// /bin/ps is setuid root and can read them), for zombies and for PIDs that
+// do not exist; the caller then asks ps.
+func procComm(pid int) (string, error) {
+	if pid <= 0 {
+		return "", fmt.Errorf("procargs of pid %d: invalid pid", pid)
+	}
+	b, err := unix.SysctlRaw("kern.procargs2", pid)
+	if err != nil {
+		return "", fmt.Errorf("procargs of pid %d: %w", pid, err)
+	}
+	return procargsComm(b)
 }
 
 // NewProcessController returns a process controller for the current OS. On

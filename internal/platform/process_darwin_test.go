@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -25,10 +26,11 @@ func TestLookupPSNames(t *testing.T) {
 	if name, ok := got[1<<30]; ok {
 		t.Errorf("nonexistent pid named %q", name)
 	}
-	// Over maxPSNameQueries PIDs, one full pass names them all.
-	pids := make([]int, maxPSNameQueries+1)
-	for i := range pids {
-		pids[i] = self
+	// Over maxPSNameQueries PIDs that kern.procargs2 cannot read, one full
+	// ps pass names them, and every other process too.
+	pids := []int{self}
+	for i := range maxPSNameQueries + 1 {
+		pids = append(pids, 1<<30+i)
 	}
 	got, err = lookupPSNames(ctx, pids)
 	if err != nil {
@@ -36,6 +38,49 @@ func TestLookupPSNames(t *testing.T) {
 	}
 	if got[self] != want || len(got) < 2 {
 		t.Errorf("full pass: self = %q, %d names", got[self], len(got))
+	}
+}
+
+// TestProcCommMatchesPS checks that kern.procargs2 names every readable
+// process exactly as a ps names pass does.
+func TestProcCommMatchesPS(t *testing.T) {
+	ctx := context.Background()
+	if comm, err := procComm(os.Getpid()); err != nil || psName(comm) != filepath.Base(os.Args[0]) {
+		t.Fatalf("procComm(self) = %q, %v", comm, err)
+	}
+	if _, err := procComm(1 << 30); err == nil {
+		t.Error("procComm of a nonexistent pid succeeded")
+	}
+	psNames := func() map[int]string {
+		out, err := runPS(ctx, psNameColumns)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names, err := parsePSNames(bytes.NewReader(out))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return names
+	}
+	var read int
+	for pid, want := range psNames() {
+		comm, err := procComm(pid)
+		if err != nil {
+			continue // another user's process, or gone since the ps pass
+		}
+		read++
+		if psName(comm) == want {
+			continue
+		}
+		// The process may have exec'd or exited between the two reads;
+		// only a mismatch that a second ps pass confirms counts.
+		now := psNames()[pid]
+		if comm, err := procComm(pid); err == nil && now != "" && psName(comm) != now {
+			t.Errorf("pid %d: procargs name %q, ps name %q", pid, psName(comm), now)
+		}
+	}
+	if read == 0 {
+		t.Fatal("kern.procargs2 read no process")
 	}
 }
 
