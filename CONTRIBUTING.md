@@ -21,6 +21,7 @@ make race    # tests with the race detector
 make ci      # the unit-test part of CI (gofmt, vet, race tests, build)
 make bench   # real-kernel benchmark, in Docker only
 gh workflow run bench.yml   # the benchmark on Linux and macOS CI runners
+gh workflow run soak.yml    # the soak test on Linux and macOS CI runners
 ```
 
 **Never run an enforce-mode `throtd`, the e2e suite, or the benchmark on a machine with real agents.** It pauses their real builds. The e2e suite and the benchmark refuse to run outside CI or a container; on macOS, which has no container, they run only on CI. For real-machine numbers, use the `Bench` workflow (on demand and weekly, see Benchmarks in `docs/ARCHITECTURE.md`). Locally, run them in Docker, building the test binary first, because under `go test` the `go` process would own every job:
@@ -30,7 +31,7 @@ docker run --rm --init -v "$PWD":/src -w /src golang:1.26.10-alpine sh -c \
   'go test -c -o /tmp/e2e.test ./internal/e2e && THROT_E2E=1 /tmp/e2e.test -test.v'
 ```
 
-The soak test (`internal/e2e/soak_test.go`) churns an enforce-mode `throtd` for 10 minutes (`THROT_SOAK_DURATION` to change it) and checks for stranded work, leaks, latency and the heavy limit. It is too long for CI; run it the same way with `docker run --rm --init --cpus=2 …` and `THROT_SOAK=1 /tmp/e2e.test -test.run=TestSoak -test.v -test.timeout=30m`.
+The soak test (`internal/e2e/soak_test.go`) churns an enforce-mode `throtd` for 10 minutes (`THROT_SOAK_DURATION` to change it) and checks for stranded work, leaks, latency and the heavy limit. It is too long for every push, so the `Soak` workflow runs it on demand and weekly; locally, run it the same way with `docker run --rm --init --cpus=2 …` and `THROT_SOAK=1 /tmp/e2e.test -test.run=TestSoak -test.v -test.timeout=30m`.
 
 The memory-pressure scenarios (`TestBenchMemory`) deliberately drive the machine past its RAM, so they also need `THROT_BENCH_MEMORY=1`, and outside CI they run only in a container with a memory limit, which they size from: `docker run --rm --init --cpus=2 --memory=1g --memory-swap=2g -v "$PWD":/src -w /src golang:1.26.10-alpine sh -c 'go test -c -o /tmp/bench.test ./internal/bench && THROT_BENCH=1 THROT_BENCH_MEMORY=1 exec /tmp/bench.test -test.run=TestBenchMemory -test.v -test.timeout=90m'`. Never run them on the host.
 

@@ -132,13 +132,11 @@ var binDir string
 // gate is an opt-in switch for tests that run real enforce-mode daemons.
 type gate struct {
 	env, what, run string // variable, test description, example test flags
-	// linuxOnly gates tests that read /proc and container state directly.
-	linuxOnly bool
 }
 
 var (
-	e2eGate  = gate{"THROT_E2E", "the end-to-end tests", "-test.v", false}
-	soakGate = gate{"THROT_SOAK", "the soak test", "-test.run=TestSoak -test.v -test.timeout=30m", true}
+	e2eGate  = gate{"THROT_E2E", "the end-to-end tests", "-test.v"}
+	soakGate = gate{"THROT_SOAK", "the soak test", "-test.run=TestSoak -test.v -test.timeout=30m"}
 )
 
 func enabled() bool { return e2eGate.skipReason() == "" || soakGate.skipReason() == "" }
@@ -152,14 +150,12 @@ func (g gate) skipReason() string {
 	switch {
 	case os.Getenv(g.env) != "1":
 		return "set " + g.env + "=1 to run " + g.what + " (CI or a container only)"
-	case runtime.GOOS == "darwin" && !g.linuxOnly:
+	case runtime.GOOS == "darwin":
 		if os.Getenv("CI") != "true" {
 			return g.env + " is set, but this is not CI (CI=true). The test daemons pause real " +
 				"processes, so on macOS run " + g.what + " only on a disposable CI runner"
 		}
 		return ""
-	case g.linuxOnly && runtime.GOOS != "linux":
-		return g.what + " only runs on Linux"
 	case runtime.GOOS != "linux":
 		return g.what + " only run on Linux and macOS"
 	case os.Getenv("CI") != "true" && !inContainer():
@@ -355,7 +351,13 @@ func (e *env) writeConfig(config string) {
 	if err := os.MkdirAll(filepath.Dir(e.configPath()), 0o700); err != nil {
 		e.t.Fatal(err)
 	}
-	if err := os.WriteFile(e.configPath(), []byte(config), 0o600); err != nil {
+	// Write and rename, so a client or daemon reading it concurrently (the
+	// soak test reloads while it polls status) never sees a partial file.
+	tmp := e.configPath() + ".tmp"
+	if err := os.WriteFile(tmp, []byte(config), 0o600); err != nil {
+		e.t.Fatal(err)
+	}
+	if err := os.Rename(tmp, e.configPath()); err != nil {
 		e.t.Fatal(err)
 	}
 }

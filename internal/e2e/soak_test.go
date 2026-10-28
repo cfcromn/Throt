@@ -4,18 +4,25 @@ package e2e
 // churn and checks that it stays healthy: no stranded (stopped) work, flat
 // memory, goroutine, thread and file descriptor counts, a responsive status
 // method, an intact event log, and no more running heavy work than the limit
-// allows. It is too long for CI. Run it in a container, e.g.
+// allows. It is too long for every push; the Soak workflow (soak.yml) runs
+// it on hosted Linux and macOS runners, on demand and weekly. Locally, run
+// it in a Linux container only, e.g.
 //
-//	docker run --rm --cpus=2 -v "$PWD":/src -w /src golang:1.26.10-alpine sh -c \
+//	docker run --rm --init --cpus=2 -v "$PWD":/src -w /src golang:1.26.10-alpine sh -c \
 //	  'go test -c -o /tmp/e2e.test ./internal/e2e && THROT_SOAK=1 /tmp/e2e.test -test.run=TestSoak -test.v -test.timeout=30m'
+//
+// On macOS it runs only with CI=true (a disposable runner). The same checks
+// apply on both; the process data comes from /proc on Linux and from sysctl,
+// ps and lsof on macOS (see soak_linux_test.go and soak_darwin_test.go). If
+// lsof fails on macOS, the file descriptor check is skipped, and logged so.
 //
 // THROT_SOAK_DURATION (default 10m) sets the churn phase's length,
 // THROT_SOAK_NO_LULL=1 removes the agents' lulls, and
-// THROT_SOAK_LOGDIR, when set, keeps throtd's output there.
+// THROT_SOAK_LOGDIR, when set, keeps throtd's output there as throtd.log,
+// with a Markdown table of the results as summary.md.
 
 import (
 	"bufio"
-	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
@@ -24,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -166,25 +174,6 @@ func soakConfig(mode string) string {
 		soakInterval.String(), soakAgentExe, mode, soakHeavyLimit)
 }
 
-// procStat returns the state letter and start time (clock ticks since
-// boot) of pid, or ok false if it is gone.
-func procStat(pid int) (state byte, start uint64, ok bool) {
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, 0, false
-	}
-	i := bytes.LastIndexByte(b, ')')
-	if i < 0 {
-		return 0, 0, false
-	}
-	f := strings.Fields(string(b[i+1:]))
-	if len(f) < 20 {
-		return 0, 0, false
-	}
-	start, err = strconv.ParseUint(f[19], 10, 64) // field 22
-	return f[0][0], start, err == nil
-}
-
 // soakJob is one heavy job the test started, directly (throt run) or
 // through an agent.
 type soakJob struct {
@@ -209,7 +198,7 @@ type soakSample struct {
 	instance int
 	rss      int64 // KiB
 	threads  int
-	fds      int
+	fds      int // -1 when not measured
 }
 
 type soakLatency struct {
@@ -250,6 +239,13 @@ type soak struct {
 	runs        map[string]int
 	lite        string
 	spawned     int
+	// rows is the summary table, filled by check and report.
+	rows [][2]string
+}
+
+// row adds a line to the summary table.
+func (s *soak) row(what, format string, args ...any) {
+	s.rows = append(s.rows, [2]string{what, fmt.Sprintf(format, args...)})
 }
 
 func soakDuration(t *testing.T) time.Duration {
@@ -301,6 +297,9 @@ func TestSoak(t *testing.T) {
 	})
 	s.run()
 	s.report(logPath)
+	if dir := os.Getenv("THROT_SOAK_LOGDIR"); dir != "" {
+		s.writeSummary(filepath.Join(dir, "summary.md"))
+	}
 }
 
 func (s *soak) errorf(format string, args ...any) {
@@ -527,7 +526,7 @@ func (s *soak) checkHeavy() {
 			continue
 		}
 		j.stoppedAt = time.Time{}
-		if comm(j.pid) != "make" {
+		if soakComm(j.pid) != "make" {
 			continue // a throt run still waiting for its lease
 		}
 		if j.firstRun.IsZero() {
@@ -570,26 +569,11 @@ func (s *soak) sample() {
 	if pid == 0 {
 		return
 	}
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-	if err != nil {
+	rss, threads, fds, ok := daemonUsage(pid)
+	if !ok {
 		return
 	}
-	smp := soakSample{at: time.Since(s.begin), instance: instance}
-	for line := range strings.SplitSeq(string(b), "\n") {
-		k, v, _ := strings.Cut(line, ":")
-		f := strings.Fields(v)
-		if len(f) == 0 {
-			continue
-		}
-		switch k {
-		case "VmRSS":
-			smp.rss, _ = strconv.ParseInt(f[0], 10, 64)
-		case "Threads":
-			smp.threads, _ = strconv.Atoi(f[0])
-		}
-	}
-	fds, _ := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
-	smp.fds = len(fds)
+	smp := soakSample{at: time.Since(s.begin), instance: instance, rss: rss, threads: threads, fds: fds}
 	s.mu.Lock()
 	s.samples = append(s.samples, smp)
 	s.mu.Unlock()
@@ -798,23 +782,6 @@ func (s *soak) startAgent(args ...string) *soakAgent {
 	return a
 }
 
-// stoppedProcesses lists every process in state T, which in the test's
-// container are all processes the test started.
-func stoppedProcesses() []string {
-	ents, _ := os.ReadDir("/proc")
-	var out []string
-	for _, e := range ents {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		if st, _, ok := procStat(pid); ok && st == 'T' {
-			out = append(out, fmt.Sprintf("%d (%s)", pid, comm(pid)))
-		}
-	}
-	return out
-}
-
 // eventFollower runs throt events -f across the whole soak and checks the
 // sequence numbers it prints.
 type eventFollower struct {
@@ -915,6 +882,7 @@ func (f *eventFollower) check(s *soak) {
 		s.errorf("throt events -f did not report the restart:\n%s", f.stderr.String())
 	}
 	s.t.Logf("events: %d from %d instances; kinds %v", f.events, f.instances, f.kinds)
+	s.row("events", "%d from %d daemon instances, %d missed, %d out of order", f.events, f.instances, f.gaps, len(f.backwards))
 	s.t.Logf("scheduler actions: %v", f.decisions)
 }
 
@@ -968,13 +936,20 @@ func tail(path string, n int) string {
 // may exceed the first third's by ratio, or by slack for small counts.
 // The first sample of each daemon is start-up and is skipped.
 func (s *soak) plateau(what string, instance int, xs []int64, ratio float64, slack int64) {
+	if slices.ContainsFunc(xs, func(v int64) bool { return v < 0 }) {
+		s.t.Logf("%s of daemon %d: not measured on %s, not checked", what, instance, runtime.GOOS)
+		s.row(fmt.Sprintf("%s, daemon %d", what, instance), "not measured")
+		return
+	}
 	if len(xs) < 4 {
 		s.t.Logf("%s of daemon %d: only %d samples, not checked", what, instance, len(xs))
+		s.row(fmt.Sprintf("%s, daemon %d", what, instance), "%d samples, not checked", len(xs))
 		return
 	}
 	th := thirds(xs[1:])
 	first, mid, last := maxOf(th[0], id), maxOf(th[1], id), maxOf(th[2], id)
 	s.t.Logf("%s of daemon %d: max %d / %d / %d over thirds (%d samples)", what, instance, first, mid, last, len(xs))
+	s.row(fmt.Sprintf("%s, daemon %d", what, instance), "max %d / %d / %d over thirds (%d samples)", first, mid, last, len(xs))
 	if float64(last) > float64(first)*ratio && last > first+slack {
 		s.errorf("%s of daemon %d grows: last third max %d > %.1f x first third max %d", what, instance, last, ratio, first)
 	}
@@ -994,6 +969,10 @@ func (s *soak) report(logPath string) {
 	if s.pauses["pause ok"] == 0 {
 		s.t.Errorf("no manual pause succeeded: %v", s.pauses)
 	}
+	s.row("host", "%s/%s, %d CPUs, churn %s", runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), s.dur)
+	s.row("heavy jobs", "%d started, max running %d (limit %d; at most %d neither exempt nor new over %d checks), %d violations",
+		s.spawned, s.maxRunning, soakHeavyLimit, s.maxCounted, s.limitChecks, len(s.violations))
+	s.row("longest stopped", "%s (limit %s)", s.maxStopped.Round(100*time.Millisecond), soakStuck)
 
 	// Memory, threads and file descriptors, per daemon instance, since a
 	// restarted daemon starts small again.
@@ -1035,6 +1014,11 @@ func (s *soak) report(logPath string) {
 	if p99 := percentile(all, 0.99); p99 >= time.Second {
 		s.t.Errorf("throt status p99 latency %s, want < 1s", p99)
 	}
+	s.row("throt status", "%d calls, %d failed, p99 %s; by third %s", len(all), len(s.statusFails),
+		percentile(all, 0.99).Round(time.Millisecond), strings.Join(parts, " | "))
+	s.row("manual control", "%v", s.pauses)
+	s.row("throt run", "%v", s.runs)
+	s.row("light processes", "%s", s.lite)
 	s.t.Logf("jobs started %d, max running %d (limit %d; at most %d neither exempt nor new, over %d checks), longest stopped %s; pressure polls %v",
 		s.spawned, s.maxRunning, soakHeavyLimit, s.maxCounted, s.limitChecks, s.maxStopped.Round(100*time.Millisecond), s.pressures)
 	s.t.Logf("manual control %v; throt run %v; %s", s.pauses, s.runs, s.lite)
@@ -1044,4 +1028,20 @@ func (s *soak) report(logPath string) {
 	}
 	s.t.Logf("samples (time:daemon/RSS/threads/fds): %s", strings.Join(sm, " "))
 	s.t.Logf("goroutines per daemon: %v", goroutineSamples(logPath))
+}
+
+// writeSummary writes the summary table as Markdown to path.
+func (s *soak) writeSummary(path string) {
+	result := "pass"
+	if s.t.Failed() {
+		result = "FAIL"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "| Soak | %s |\n|---|---|\n", result)
+	for _, r := range s.rows {
+		fmt.Fprintf(&b, "| %s | %s |\n", r[0], strings.ReplaceAll(r[1], "|", "\\|"))
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		s.t.Errorf("summary: %v", err)
+	}
 }
