@@ -283,19 +283,29 @@ const (
 	memEvery      = time.Second
 	memJobCap     = 3 * time.Minute
 	memRunTimeout = 10 * time.Minute
+
+	// The mixed scenario's long jobs each take mixLong times a short
+	// job's CPU work.
+	mixLong = 6
 )
 
 // scenario is a set of job arrivals, as offsets from the first launch.
 type scenario struct {
 	name     string
 	arrivals []time.Duration
+	// lines, if set, holds each arrival's job arguments; otherwise every
+	// job gets the same ones.
+	lines []string
+	// quiet means Throt must not intervene at all: a single build leaves
+	// room for everything, so any queue or resume is a bug.
+	quiet bool
 }
 
 // sizing is the contention for one machine.
 type sizing struct {
 	cpus       int // CPUs the jobs compete for
 	burst      int // jobs launched at once
-	stagger    int // jobs in the staggered stream
+	stagger    int // jobs in the staggered stream (the short jobs of the mix)
 	every      time.Duration
 	heavyLimit int // Throt's scheduler.heavy_limit; 0 keeps the default profile
 	reps       int
@@ -355,9 +365,27 @@ func scenarios(z sizing) []scenario {
 		stagger[i] = time.Duration(i) * z.every
 	}
 	return []scenario{
-		{fmt.Sprintf("%d at once", z.burst), burst},
-		{fmt.Sprintf("%d staggered %s", z.stagger, z.every), stagger},
+		{name: fmt.Sprintf("%d at once", z.burst), arrivals: burst},
+		{name: fmt.Sprintf("%d staggered %s", z.stagger, z.every), arrivals: stagger},
+		{name: "1 job alone", arrivals: []time.Duration{0}, quiet: true},
 	}
+}
+
+// mixedScenario starts max(1, CPUs/2) long jobs at once and, from the same
+// moment, the staggered stream of short jobs. It returns the scenario and
+// how many leading arrivals are long.
+func mixedScenario(z sizing, short, long string) (scenario, int) {
+	longs := max(1, z.cpus/2)
+	sc := scenario{name: fmt.Sprintf("%d long + %d short staggered %s", longs, z.stagger, z.every)}
+	for range longs {
+		sc.arrivals = append(sc.arrivals, 0)
+		sc.lines = append(sc.lines, long)
+	}
+	for i := range z.stagger {
+		sc.arrivals = append(sc.arrivals, time.Duration(i)*z.every)
+		sc.lines = append(sc.lines, short)
+	}
+	return sc, longs
 }
 
 // result is one run's measurements.
@@ -372,9 +400,12 @@ type result struct {
 	swapKnown  bool
 	peakSwap   uint64
 	swapGrowth uint64
-	capped     int // jobs that hit their hard cap (memory jobs only)
-	killed     int // jobs killed by a signal, e.g. the OOM killer
+	capped     int    // jobs that hit their hard cap (memory jobs only)
+	killed     int    // jobs killed by a signal, e.g. the OOM killer
+	jobs       []span // each job's launch and exit, in arrival order
 }
+
+type span struct{ start, exit time.Time }
 
 // benchEnv skips unless the benchmark may run here, and reports whether
 // this is a Linux container. An enforce-mode daemon pauses builds of any
@@ -404,25 +435,11 @@ func TestBench(t *testing.T) {
 	iters := calibrate(t, bin)
 	t.Logf("calibration: %d iterations per CPU second; GOMAXPROCS %d, NumCPU %d", iters, runtime.GOMAXPROCS(0), runtime.NumCPU())
 	line := strconv.FormatUint(uint64(float64(iters)*jobCPU.Seconds()), 10)
-	tune := func(c *config.Config) {
-		if z.heavyLimit == 0 {
-			return // defaults, as shipped
-		}
-		c.SampleInterval = config.Duration(sampleInterval)
-		c.Scheduler.HeavyLimit = z.heavyLimit
-		c.Scheduler.StartLimit = min(c.Scheduler.StartLimit, z.heavyLimit)
-		c.Scheduler.ResumeCooldown = config.Duration(time.Second)
-	}
+	tune := tuneFor(z)
 
 	var table strings.Builder
-	limits := fmt.Sprintf("heavy_limit %d, 500ms sampling, 1s cooldown", z.heavyLimit)
-	if z.heavyLimit == 0 {
-		d := config.Default()
-		limits = fmt.Sprintf("default profile (%s: adaptive, start %d, ceiling %d, %s sampling)",
-			d.Profile, d.Scheduler.StartLimit, d.Scheduler.HeavyLimit, time.Duration(d.SampleInterval))
-	}
 	fmt.Fprintf(&table, "\n%s/%s, %s, %d CPUs, %s, %s of CPU per job, medians of %d runs\n\n",
-		runtime.GOOS, runtime.GOARCH, kernel(), z.cpus, limits, jobCPU, z.reps)
+		runtime.GOOS, runtime.GOARCH, kernel(), z.cpus, limitsFor(z), jobCPU, z.reps)
 	table.WriteString("| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Makespan range | Peak running | Interventions | Max pressure |\n")
 	table.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, sc := range scenarios(z) {
@@ -436,6 +453,13 @@ func TestBench(t *testing.T) {
 				}
 				if len(runs) != z.reps {
 					t.Fatalf("%d of %d runs finished", len(runs), z.reps)
+				}
+				if sc.quiet && mode == "enforce" {
+					for i, r := range runs {
+						if r.interventions != 0 {
+							t.Errorf("run %d: %d interventions for a single build, want none", i+1, r.interventions)
+						}
+					}
 				}
 				r := medianResult(runs)
 				label := "baseline"
@@ -452,6 +476,122 @@ func TestBench(t *testing.T) {
 	}
 	t.Log(table.String())
 	writeOut(t, table.String())
+}
+
+// tuneFor returns z's config change: none for the shipped defaults,
+// otherwise its fixed heavy_limit, 500ms sampling and a 1s cooldown.
+func tuneFor(z sizing) func(*config.Config) {
+	return func(c *config.Config) {
+		if z.heavyLimit == 0 {
+			return // defaults, as shipped
+		}
+		c.SampleInterval = config.Duration(sampleInterval)
+		c.Scheduler.HeavyLimit = z.heavyLimit
+		c.Scheduler.StartLimit = min(c.Scheduler.StartLimit, z.heavyLimit)
+		c.Scheduler.ResumeCooldown = config.Duration(time.Second)
+	}
+}
+
+// limitsFor describes tuneFor(z) for a results header.
+func limitsFor(z sizing) string {
+	if z.heavyLimit != 0 {
+		return fmt.Sprintf("heavy_limit %d, 500ms sampling, 1s cooldown", z.heavyLimit)
+	}
+	d := config.Default()
+	return fmt.Sprintf("default profile (%s: adaptive, start %d, ceiling %d, %s sampling)",
+		d.Profile, d.Scheduler.StartLimit, d.Scheduler.HeavyLimit, time.Duration(d.SampleInterval))
+}
+
+// TestBenchMixed checks starvation and fairness: a few long jobs hold
+// slots while a stream of short ones arrives (mixedScenario). A short
+// job's wait is its turnaround (launch to exit) minus jobCPU, the time it
+// takes alone, so it counts time queued and time sharing a CPU alike. The
+// long makespan runs from the long jobs' launch to the last one's exit.
+// Starved short jobs show as a wait near the long jobs' length, starved
+// long ones as a long makespan well above baseline.
+func TestBenchMixed(t *testing.T) {
+	container := benchEnv(t)
+	z, err := sizeFor(container)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := buildHelpers(t)
+	iters := calibrate(t, bin)
+	work := func(d time.Duration) string { return strconv.FormatUint(uint64(float64(iters)*d.Seconds()), 10) }
+	sc, longs := mixedScenario(z, work(jobCPU), work(mixLong*jobCPU))
+	tune := tuneFor(z)
+
+	var table strings.Builder
+	fmt.Fprintf(&table, "\n%s/%s, %s, %d CPUs, %s, long jobs %s and short jobs %s of CPU, medians of %d runs\n\n",
+		runtime.GOOS, runtime.GOARCH, kernel(), z.cpus, limitsFor(z), mixLong*jobCPU, jobCPU, z.reps)
+	table.WriteString("| Scenario | Mode | Probe p95 | p99 | Makespan | Long makespan | Short wait p50 | p95 | max | Peak running | Interventions | Max pressure |\n")
+	table.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	for _, mode := range []string{"off", "enforce"} {
+		t.Run(sc.name+"/"+mode, func(t *testing.T) {
+			var runs []result
+			var longSpan, p50, p95, worst []time.Duration
+			for i := range z.reps {
+				t.Run("run"+strconv.Itoa(i+1), func(t *testing.T) {
+					r := runScenario(t, bin, sc, mode, "", tune, runTimeout)
+					runs = append(runs, r)
+					first, last := r.jobs[0].start, r.jobs[0].exit
+					for _, j := range r.jobs[:longs] {
+						first, last = minTime(first, j.start), maxTime(last, j.exit)
+					}
+					var waits []time.Duration
+					for _, j := range r.jobs[longs:] {
+						waits = append(waits, max(j.exit.Sub(j.start)-jobCPU, 0))
+					}
+					slices.Sort(waits)
+					longSpan = append(longSpan, last.Sub(first))
+					p50 = append(p50, percentile(waits, 0.50))
+					p95 = append(p95, percentile(waits, 0.95))
+					worst = append(worst, waits[len(waits)-1])
+					t.Logf("long makespan %s, short wait p50 %s, p95 %s, max %s",
+						secs(last.Sub(first)), secs(p50[len(p50)-1]), secs(p95[len(p95)-1]), secs(waits[len(waits)-1]))
+				})
+			}
+			if len(runs) != z.reps {
+				t.Fatalf("%d of %d runs finished", len(runs), z.reps)
+			}
+			r := medianResult(runs)
+			label := "baseline"
+			if mode == "enforce" {
+				label = "Throt"
+			}
+			fmt.Fprintf(&table, "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %d | %d | %s |\n",
+				sc.name, label, ms(r.p95), ms(r.p99), secs(r.makespan), secs(median(longSpan)),
+				secs(median(p50)), secs(median(p95)), secs(median(worst)), r.peak, r.interventions, r.maxPressure)
+		})
+	}
+	t.Log(table.String())
+	writeOut(t, table.String())
+}
+
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+// percentile returns the p quantile of sorted, by the rule the probe
+// percentiles use.
+func percentile(sorted []time.Duration, p float64) time.Duration {
+	return sorted[min(len(sorted)-1, int(p*float64(len(sorted))))]
+}
+
+func median(v []time.Duration) time.Duration {
+	v = slices.Clone(v)
+	slices.Sort(v)
+	return v[len(v)/2]
 }
 
 // TestBenchMemory measures the case Throt exists for: builds that together
@@ -493,8 +633,8 @@ func TestBenchMemory(t *testing.T) {
 	table.WriteString("| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Makespan range | Peak running | Interventions | Max pressure | Peak swap | Swap growth | Capped / killed |\n")
 	table.WriteString("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, sc := range []scenario{
-		{fmt.Sprintf("memory burst, %d at once", memJobs), burst},
-		{fmt.Sprintf("memory staggered, %d one per %s", memJobs, memEvery), stagger},
+		{name: fmt.Sprintf("memory burst, %d at once", memJobs), arrivals: burst},
+		{name: fmt.Sprintf("memory staggered, %d one per %s", memJobs, memEvery), arrivals: stagger},
 	} {
 		for _, mode := range []string{"off", "enforce"} {
 			t.Run(sc.name+"/"+mode, func(t *testing.T) {
@@ -845,6 +985,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 type jobTracker struct {
 	mu          sync.Mutex
 	live        map[int]bool
+	order       []int // pids in launch order
+	spans       map[int]*span
 	started     int
 	exited      int
 	capped      int // exit status 3: the job's hard cap
@@ -867,12 +1009,17 @@ func (j *jobTracker) read(r io.Reader, want int) {
 		switch f[0] {
 		case "start":
 			j.live[pid] = true
+			j.order = append(j.order, pid)
+			j.spans[pid] = &span{start: at}
 			if j.started == 0 {
 				j.first = at
 			}
 			j.started++
 		case "exit":
 			delete(j.live, pid)
+			if s := j.spans[pid]; s != nil {
+				s.exit = at
+			}
 			j.exited++
 			if len(f) == 4 {
 				switch f[3] {
@@ -947,8 +1094,8 @@ func runningPS(pids []int) int {
 	return n
 }
 
-// runScenario launches sc's jobs, each with the arguments in line, under a
-// daemon in mode, and measures them. It fails if they take over timeout;
+// runScenario launches sc's jobs, each with the arguments in line (or its
+// own in sc.lines), under a daemon in mode, and measures them. It fails if they take over timeout;
 // cleanup kills the agent's whole process group, jobs included.
 func runScenario(t *testing.T, bin string, sc scenario, mode, line string, tune func(*config.Config), timeout time.Duration) result {
 	socket, swap := startDaemon(t, mode, tune)
@@ -981,7 +1128,7 @@ func runScenario(t *testing.T, bin string, sc scenario, mode, line string, tune 
 		st, err := status(socket)
 		return err == nil && len(st.Agents) > 0
 	})
-	jobs := &jobTracker{live: map[int]bool{}, done: make(chan struct{})}
+	jobs := &jobTracker{live: map[int]bool{}, spans: map[int]*span{}, done: make(chan struct{})}
 	go jobs.read(agentOut, len(sc.arrivals))
 
 	probeCmd := exec.Command(filepath.Join(bin, "probe"))
@@ -1012,10 +1159,13 @@ func runScenario(t *testing.T, bin string, sc scenario, mode, line string, tune 
 
 	swap.mark()
 	begin := time.Now()
-	line += "\n"
-	for _, at := range sc.arrivals {
+	for i, at := range sc.arrivals {
 		time.Sleep(time.Until(begin.Add(at)))
-		if _, err := io.WriteString(agentIn, line); err != nil {
+		args := line
+		if sc.lines != nil {
+			args = sc.lines[i]
+		}
+		if _, err := io.WriteString(agentIn, args+"\n"); err != nil {
 			t.Fatalf("launch job: %v", err)
 		}
 	}
@@ -1041,6 +1191,9 @@ func runScenario(t *testing.T, bin string, sc scenario, mode, line string, tune 
 	jobs.mu.Lock()
 	r.makespan = jobs.last.Sub(jobs.first)
 	r.capped, r.killed = jobs.capped, jobs.killed
+	for _, pid := range jobs.order {
+		r.jobs = append(r.jobs, *jobs.spans[pid])
+	}
 	jobs.mu.Unlock()
 	r.swapKnown, r.peakSwap, r.swapGrowth = swap.result()
 
@@ -1055,8 +1208,7 @@ func runScenario(t *testing.T, bin string, sc scenario, mode, line string, tune 
 		t.Fatal("probe recorded nothing")
 	}
 	slices.Sort(late)
-	pct := func(p float64) time.Duration { return late[min(len(late)-1, int(p*float64(len(late))))] }
-	r.p50, r.p95, r.p99 = pct(0.50), pct(0.95), pct(0.99)
+	r.p50, r.p95, r.p99 = percentile(late, 0.50), percentile(late, 0.95), percentile(late, 0.99)
 
 	var events []domain.Event
 	if err := transport.Call(context.Background(), socket, "events", app.EventsParams{Limit: app.MaxEventsPerCall}, &events); err != nil {
