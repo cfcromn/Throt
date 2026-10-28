@@ -19,6 +19,7 @@ Accurate pressure everywhere: cgroup-aware Linux, the macOS kernel verdict, and 
 - Events carry a `seq`, and the `events` method takes an optional `since` for incremental polling (protocol stays v1).
 - `throt events -f` follows new events, and notices when throtd restarts.
 - `throt explain PID`: why a heavy workload is running, paused, or queued, with its recent events.
+- `throt stats` (and `--json`), the `stats` protocol method, and the `throt_stats` MCP tool: per-agent CPU time, peak memory, heavy jobs started, and time queued by the scheduler since throtd started, with all-agent and unattributed totals. Kept in memory for at most 256 agent instances.
 - TUI: `p`/`r` pause or resume the selected heavy workload after a `y/n` confirmation. The timeline now fetches only new events.
 
 ### Changed

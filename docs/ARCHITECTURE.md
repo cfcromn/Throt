@@ -64,6 +64,19 @@ Records are written atomically to `paused.json` in the private socket directory 
 
 State is reconstructable. Only configuration, bounded history, and diagnostics data are persisted — never command output or repository contents.
 
+## State
+
+Besides `paused.json`, the daemon keeps per-agent resource accounting (`internal/stats`, shown by `throt stats`). It is updated on the sampling goroutine from every successful process snapshot:
+- CPU seconds: each agent's CPU rate (itself plus owned descendants) × the time since the previous snapshot, the same interval the rate was measured over;
+- peak memory: the largest RSS of the agent and its owned descendants in one sample;
+- heavy jobs: distinct heavy workloads (PID + start time) first seen with that owner, including ones already running when the daemon started;
+- time queued: a workload the scheduler holds paused after a round (queued or preempted, never manual pauses) is charged the interval until the next snapshot;
+- first and last seen.
+
+Rows are keyed by the agent process's identity, because labels such as `claude-1` are reused after an instance exits; `throt stats` shows the label and PID. At most 256 instances are retained: beyond that the one seen least recently is evicted (among equals, the one first seen most recently, so more than 256 live agents cannot churn rows with history). An *all agents* total, which still includes evicted instances, and an *unattributed* bucket for heavy workloads no agent owns are kept alongside.
+
+Accounting is in memory only and starts with the daemon: the window resets on restart. Persisting it would need a file format, versioning and recovery for a convenience figure, and it would outlive the processes it describes. It holds nothing beyond what `status` already shows (labels, PIDs, start times, and numbers).
+
 ## Concurrency
 
 Every long-lived goroutine has an owner, a cancellation path (`context.Context`), defined shutdown behavior, and a bounded channel or documented backpressure policy. No goroutine-per-event designs.
@@ -169,6 +182,7 @@ A request for any other protocol version is rejected with an error naming both v
 |---|---|---|---|
 | `ping` | – | `version`, `protocol`, `pid`, `uptime` | no |
 | `status` | – | `pressure`, `reason`, `host`, `agents`, `heavy`, `paused`, `scheduler`, `degraded` | no |
+| `stats` | – | `since` (window start: the first process sample since the daemon started), `agents` (per agent instance, most CPU first: `agent`, `process`, `cpu_seconds`, `peak_rss`, `heavy_started`, `queued_seconds`, `first_seen`, `last_seen`; at most 256), `total`, `unattributed` (same fields) | no |
 | `events` | `limit` (0 or > 1000 means 1000); optional `since` (a `seq`) | without `since`, the newest `limit` events, oldest first: `seq`, `instance`, `time`, `kind`, `message`, `attrs`. With `since`, up to `limit` events with a greater `seq`, oldest first; poll again with the last `seq` to get the rest. `seq` starts at 1 and grows by one per event; it restarts with the daemon, so a `since` beyond the newest event returns the newest events and the client sees `seq` go down. `instance` identifies the daemon run; a change means it restarted, even if the new run already passed the old `seq` | no |
 | `pause` | `pid`; optional `start` (RFC 3339), refused if the process now has a different start time | – | yes |
 | `resume` | `pid`; optional `start`, as for `pause` | – | yes |

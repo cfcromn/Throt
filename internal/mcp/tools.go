@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/scheduler"
+	"github.com/cfcromn/Throt/internal/stats"
 )
 
 const (
@@ -70,6 +72,16 @@ func toolList() []tool {
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":200,"default":20,` +
 				`"description":"How many of the newest events to return."}},"additionalProperties":false}`),
 			Annotations: readOnly("Throt events"),
+		},
+		{
+			Name:  "throt_stats",
+			Title: "Throt usage stats",
+			Description: "Read-only per-agent resource accounting since throtd started: for each coding agent instance " +
+				"(label and PID), CPU time used by it and its child processes, peak memory, heavy jobs started, and time its " +
+				"heavy jobs spent queued by the scheduler, most CPU time first, plus all-agent and unattributed totals. " +
+				"Answers which agent cost the machine the most.",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			Annotations: readOnly("Throt usage stats"),
 		},
 	}
 }
@@ -131,6 +143,12 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 			return errorResult(err.Error()), nil
 		}
 		return s.capacity(ctx, a.Agent), nil
+	case "throt_stats":
+		var a struct{}
+		if err := decodeArgs(p.Arguments, &a); err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return s.stats(ctx), nil
 	case "throt_events":
 		var a struct {
 			Limit *int `json:"limit"`
@@ -469,6 +487,84 @@ func (s *Server) events(ctx context.Context, limit int) toolResult {
 		lines = append(lines, line)
 	}
 	return textResult(strings.Join(lines, "\n"), map[string]any{"events": events})
+}
+
+// statsView is the structured content of throt_stats.
+type statsView struct {
+	Since        string         `json:"since,omitempty"`
+	Agents       []statsRowView `json:"agents"`
+	Total        statsRowView   `json:"total"`
+	Unattributed statsRowView   `json:"unattributed"`
+}
+
+type statsRowView struct {
+	Agent         string  `json:"agent"`
+	PID           int     `json:"pid,omitempty"`
+	CPUSeconds    float64 `json:"cpu_seconds"`
+	PeakMemory    string  `json:"peak_memory"`
+	HeavyJobs     int     `json:"heavy_jobs"`
+	QueuedSeconds float64 `json:"queued_seconds"`
+	ActiveSeconds float64 `json:"active_seconds"`
+}
+
+func newStatsRow(label string, pid int, r stats.Row) statsRowView {
+	round := func(s float64) float64 { return math.Round(s*10) / 10 }
+	return statsRowView{
+		Agent: label, PID: pid, CPUSeconds: round(r.CPUSeconds), PeakMemory: bytesHuman(r.PeakRSS),
+		HeavyJobs: r.HeavyStarted, QueuedSeconds: round(r.QueuedSeconds), ActiveSeconds: round(r.ActiveFor().Seconds()),
+	}
+}
+
+func newStatsView(r app.StatsResult) statsView {
+	v := statsView{
+		Agents:       make([]statsRowView, 0, len(r.Agents)),
+		Total:        newStatsRow("all agents", 0, r.Total),
+		Unattributed: newStatsRow("unattributed", 0, r.Unattributed),
+	}
+	if !r.Since.IsZero() {
+		v.Since = r.Since.Format(time.RFC3339)
+	}
+	for _, a := range r.Agents {
+		v.Agents = append(v.Agents, newStatsRow(a.Agent, a.Process.PID, a))
+	}
+	return v
+}
+
+func (s *Server) stats(ctx context.Context) toolResult {
+	r, err := s.client.Stats(ctx)
+	if err != nil {
+		return daemonDown(err)
+	}
+	v := newStatsView(r)
+	if v.Since == "" {
+		return textResult("no samples yet", v)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "since %s (in memory; resets when throtd restarts)\n", v.Since)
+	line := func(r statsRowView) {
+		name := r.Agent
+		if r.PID != 0 {
+			name += fmt.Sprintf(" pid %d", r.PID)
+		}
+		fmt.Fprintf(&b, "  %s: cpu %s, peak mem %s, %d heavy jobs, queued %s, active %s\n", name,
+			secs(r.CPUSeconds), r.PeakMemory, r.HeavyJobs, secs(r.QueuedSeconds), secs(r.ActiveSeconds))
+	}
+	fmt.Fprintf(&b, "agents (%d, most cpu first):\n", len(v.Agents))
+	for i, a := range v.Agents {
+		if i == maxTextRows {
+			fmt.Fprintf(&b, "  ... and %d more\n", len(v.Agents)-maxTextRows)
+			break
+		}
+		line(a)
+	}
+	b.WriteString("totals:\n")
+	line(v.Total)
+	line(v.Unattributed)
+	return textResult(strings.TrimSuffix(b.String(), "\n"), v)
+}
+
+func secs(s float64) string {
+	return time.Duration(s * float64(time.Second)).Round(time.Second).String()
 }
 
 func percent(cores float64) int { return int(cores*100 + 0.5) }

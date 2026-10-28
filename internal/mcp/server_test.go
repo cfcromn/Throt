@@ -17,16 +17,20 @@ import (
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
+	"github.com/cfcromn/Throt/internal/stats"
 )
 
 type fakeClient struct {
 	status    app.StatusResult
+	stats     app.StatsResult
 	events    []domain.Event
 	err       error
 	lastLimit int
 }
 
 func (f *fakeClient) Status(context.Context) (app.StatusResult, error) { return f.status, f.err }
+
+func (f *fakeClient) Stats(context.Context) (app.StatsResult, error) { return f.stats, f.err }
 
 func (f *fakeClient) Events(_ context.Context, limit int) ([]domain.Event, error) {
 	f.lastLimit = limit
@@ -178,7 +182,7 @@ func TestToolsList(t *testing.T) {
 			}
 		}
 	}
-	if len(r.Tools) != 3 || !names["throt_status"] || !names["throt_capacity"] || !names["throt_events"] {
+	if len(r.Tools) != 4 || !names["throt_status"] || !names["throt_capacity"] || !names["throt_events"] || !names["throt_stats"] {
 		t.Fatalf("tools = %v", names)
 	}
 }
@@ -580,6 +584,50 @@ func TestEventsTool(t *testing.T) {
 	}
 }
 
+func TestStatsTool(t *testing.T) {
+	since := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
+	row := func(label string, pid int, cpu float64, heavy int, queued float64) stats.Row {
+		return stats.Row{Agent: label, Process: key(pid), CPUSeconds: cpu, PeakRSS: 2 << 30, HeavyStarted: heavy,
+			QueuedSeconds: queued, FirstSeen: since, LastSeen: since.Add(time.Hour)}
+	}
+	c := &fakeClient{stats: app.StatsResult{
+		Since:        since,
+		Agents:       []stats.Row{row("codex-1", 200, 3725.44, 9, 190), row("claude-1", 100, 61, 2, 0)},
+		Total:        row("", 0, 3786.44, 11, 190),
+		Unattributed: row("", 0, 12, 1, 0),
+	}}
+	r, sc := call(t, c, "throt_stats", "")
+	if r.IsError {
+		t.Fatalf("isError: %s", r.Content[0].Text)
+	}
+	text := r.Content[0].Text
+	for _, want := range []string{
+		"since 2026-10-28T09:00:00Z", "agents (2, most cpu first)",
+		"codex-1 pid 200: cpu 1h2m5s, peak mem 2.0 GiB, 9 heavy jobs, queued 3m10s, active 1h0m0s",
+		"all agents: cpu 1h3m6s", "unattributed: cpu 12s, peak mem 2.0 GiB, 1 heavy jobs",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Index(text, "codex-1") > strings.Index(text, "claude-1") {
+		t.Errorf("rows reordered:\n%s", text)
+	}
+	var v statsView
+	if err := json.Unmarshal(sc, &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Agents) != 2 || v.Agents[0].CPUSeconds != 3725.4 || v.Agents[0].PID != 200 || v.Total.HeavyJobs != 11 ||
+		v.Unattributed.Agent != "unattributed" || v.Agents[1].ActiveSeconds != 3600 {
+		t.Fatalf("structured = %+v", v)
+	}
+
+	r, sc = call(t, &fakeClient{}, "throt_stats", "{}")
+	if r.IsError || r.Content[0].Text != "no samples yet" || !strings.Contains(string(sc), `"agents":[]`) {
+		t.Fatalf("empty: %s %s", r.Content[0].Text, sc)
+	}
+}
+
 func TestInvalidArguments(t *testing.T) {
 	tests := []struct{ tool, args, want string }{
 		{"throt_events", `{"limit":0}`, "between 1 and 200"},
@@ -588,6 +636,7 @@ func TestInvalidArguments(t *testing.T) {
 		{"throt_events", `{"count":5}`, "invalid arguments"},
 		{"throt_capacity", `{"agent":"a","pid":1}`, "invalid arguments"},
 		{"throt_status", `{"verbose":true}`, "invalid arguments"},
+		{"throt_stats", `{"agent":"claude-1"}`, "invalid arguments"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.tool+tt.args, func(t *testing.T) {
@@ -605,7 +654,7 @@ func TestInvalidArguments(t *testing.T) {
 
 func TestDaemonDown(t *testing.T) {
 	down := errors.New("connect to throtd at /tmp/x/throtd.sock (is it running?): no such file")
-	for _, name := range []string{"throt_status", "throt_capacity", "throt_events"} {
+	for _, name := range []string{"throt_status", "throt_capacity", "throt_events", "throt_stats"} {
 		t.Run(name, func(t *testing.T) {
 			r, sc := call(t, &fakeClient{err: down}, name, "")
 			if !r.IsError {

@@ -194,3 +194,51 @@ func TestSchedulerQueuesAndResumes(t *testing.T) {
 		})
 	}
 }
+
+func TestDaemonStats(t *testing.T) {
+	w := newWorld(
+		domain.ProcessSample{PID: 10, PPID: 1, Name: "claude", RSS: 1 << 20},
+		domain.ProcessSample{PID: 11, PPID: 10, Name: "go", RSS: 4 << 20},
+		domain.ProcessSample{PID: 50, PPID: 1, Name: "make"},
+	)
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(shortTempDir(t), "throtd.sock")
+	cfg.SampleInterval = config.Duration(50 * time.Millisecond)
+	cfg.Scheduler.Mode, cfg.Scheduler.HeavyLimit, cfg.Scheduler.ResumeCooldown = "enforce", 1, 0
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewDaemon(cfg, w, w, w, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(ctx)
+	}()
+	defer func() { stop(); <-done }()
+
+	get := func() StatsResult {
+		var r StatsResult
+		transport.Call(context.Background(), cfg.SocketPath, "stats", nil, &r)
+		return r
+	}
+	// The scheduler never queues while pressure is unknown (warm-up).
+	waitFor(t, "normal pressure", func() bool {
+		var st StatusResult
+		transport.Call(context.Background(), cfg.SocketPath, "status", nil, &st)
+		return len(st.Heavy) == 2 && st.Pressure == domain.PressureNormal && len(get().Agents) == 1
+	})
+	// The agent's build burns CPU time, and a second build arrives while
+	// every slot is taken, so it queues.
+	w.add(domain.ProcessSample{PID: 12, PPID: 10, Name: "go"})
+	var cpu time.Duration
+	waitFor(t, "cpu and queue time accounted", func() bool {
+		cpu += 100 * time.Millisecond
+		w.add(domain.ProcessSample{PID: 11, PPID: 10, Name: "go", RSS: 4 << 20, CPUTime: cpu})
+		r := get()
+		return len(r.Agents) == 1 && r.Agents[0].CPUSeconds > 0 && r.Agents[0].QueuedSeconds > 0
+	})
+	r := get()
+	a := r.Agents[0]
+	if a.Agent != "claude-1" || a.Process.PID != 10 || a.HeavyStarted != 2 || a.PeakRSS != 5<<20 || r.Since.IsZero() {
+		t.Fatalf("row = %+v, since %v", a, r.Since)
+	}
+	if r.Total.HeavyStarted != 2 || r.Total.QueuedSeconds != a.QueuedSeconds || r.Unattributed.HeavyStarted != 1 {
+		t.Fatalf("total = %+v, unattributed = %+v", r.Total, r.Unattributed)
+	}
+}

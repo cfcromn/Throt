@@ -117,6 +117,7 @@ throtd &        # start the daemon
 throt           # terminal UI (same as `throt top`)
 throt ping      # check that the client can reach it
 throt status    # pressure, host resources, agents, heavy workloads
+throt stats     # per-agent CPU time, peak memory, heavy jobs, time queued since throtd started (--json)
 throt events    # recent daemon events as JSON lines
 throt events -f # keep printing new events until interrupted
 throt explain PID # why a heavy workload is running, paused, or queued
@@ -128,10 +129,11 @@ throt reload    # re-read the config without restarting (or send throtd SIGHUP)
 
 ## Use with coding agents (MCP)
 
-`throt mcp` runs a read-only [MCP](https://modelcontextprotocol.io) server on stdio. Agents can check pressure and heavy-slot capacity before starting a big build instead of competing with the scheduler. It offers three tools:
+`throt mcp` runs a read-only [MCP](https://modelcontextprotocol.io) server on stdio. Agents can check pressure and heavy-slot capacity before starting a big build instead of competing with the scheduler. It offers four tools:
 - `throt_status`: pressure, resources, agents, and heavy workloads.
 - `throt_capacity`: an advisory `ok_to_start` with a reason and suggestion.
 - `throt_events`: recent daemon events.
+- `throt_stats`: per-agent CPU time, peak memory, heavy jobs, and time queued since throtd started.
 
 None of them pauses, resumes, or changes configuration; control stays with you through the CLI. `throtd` must be running. `throt_capacity` defaults to the agent that launched the server. Tool output, including process names and PIDs, goes into the agent's context, so it reaches your model provider.
 

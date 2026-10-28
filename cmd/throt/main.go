@@ -33,6 +33,7 @@ const usage = `Usage: throt [flags] [command]
 Commands:
   top        open the terminal UI (the default with no command)
   status     show host resources and pressure
+  stats      show per-agent resource usage since throtd started; --json for JSON
   ping       check that throtd is reachable
   events     print recent daemon events as JSON lines; -f keeps printing new ones
   explain PID
@@ -68,8 +69,18 @@ func run(args []string) error {
 		cmd = fs.Arg(0)
 	}
 	// 'events' takes its own flags after the command: throt events -f.
-	followEvents := false
-	if cmd == "events" {
+	followEvents, statsJSON := false, false
+	switch {
+	case cmd == "stats":
+		sfs := flag.NewFlagSet("throt stats", flag.ContinueOnError)
+		sfs.BoolVar(&statsJSON, "json", false, "print the stats as JSON")
+		if err := sfs.Parse(fs.Args()[1:]); err != nil {
+			return err
+		}
+		if sfs.NArg() > 0 {
+			return fmt.Errorf("usage: throt stats [--json]")
+		}
+	case cmd == "events":
 		efs := flag.NewFlagSet("throt events", flag.ContinueOnError)
 		efs.BoolVar(&followEvents, "f", false, "keep printing new events until interrupted")
 		efs.IntVar(limit, "n", *limit, "number of recent events to print first")
@@ -79,7 +90,7 @@ func run(args []string) error {
 		if efs.NArg() > 0 {
 			return fmt.Errorf("usage: throt events [-f] [-n N]")
 		}
-	} else if fs.NArg() > 2 {
+	case fs.NArg() > 2:
 		fs.Usage()
 		return fmt.Errorf("too many arguments")
 	}
@@ -135,6 +146,17 @@ func run(args []string) error {
 			return err
 		}
 		printStatus(os.Stdout, st)
+	case "stats":
+		var r app.StatsResult
+		if err := transport.Call(ctx, cfg.SocketPath, "stats", nil, &r); err != nil {
+			return err
+		}
+		if statsJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(r)
+		}
+		printStats(os.Stdout, r, time.Now())
 	case "pause", "resume":
 		pid, err := strconv.Atoi(fs.Arg(1))
 		if err != nil {
@@ -193,6 +215,12 @@ func (c daemonClient) Events(ctx context.Context, limit int) ([]domain.Event, er
 	var events []domain.Event
 	err := transport.Call(ctx, c.socket, "events", app.EventsParams{Limit: limit}, &events)
 	return events, err
+}
+
+func (c daemonClient) Stats(ctx context.Context) (app.StatsResult, error) {
+	var r app.StatsResult
+	err := transport.Call(ctx, c.socket, "stats", nil, &r)
+	return r, err
 }
 
 func printReload(w io.Writer, r app.ReloadResult) {
