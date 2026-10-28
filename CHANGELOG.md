@@ -10,6 +10,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - Run-at-login (launchd, systemd) and upgrade/rollback instructions.
 - `make bench`: containerized real-kernel benchmark (baseline vs enforce), with results in `docs/ARCHITECTURE.md`.
 - Hot config reload via `SIGHUP` or `throt reload` (privileged `reload` method): applies `scheduler.*`, `profile` and `agents` live, reports restart-only keys, and changes nothing on an invalid file.
+- Events carry a `seq`, and the `events` method takes an optional `since` for incremental polling (protocol stays v1).
+- `throt events -f` follows new events, and notices when throtd restarts.
+- `throt explain PID`: why a heavy workload is running, paused, or queued, with its recent events.
+- TUI: `p`/`r` pause or resume the selected heavy workload after a `y/n` confirmation. The timeline now fetches only new events.
 
 ### Changed
 - LICENSE copyright holder romanized.

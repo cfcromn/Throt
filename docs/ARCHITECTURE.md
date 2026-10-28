@@ -163,7 +163,7 @@ A request for any other protocol version is rejected with an error naming both v
 |---|---|---|---|
 | `ping` | – | `version`, `protocol`, `pid`, `uptime` | no |
 | `status` | – | `pressure`, `reason`, `host`, `agents`, `heavy`, `paused`, `scheduler`, `degraded` | no |
-| `events` | `limit` (0 or > 1000 means 1000) | recent events, oldest first: `time`, `kind`, `message`, `attrs` | no |
+| `events` | `limit` (0 or > 1000 means 1000); optional `since` (a `seq`) | without `since`, the newest `limit` events, oldest first: `seq`, `time`, `kind`, `message`, `attrs`. With `since`, up to `limit` events with a greater `seq`, oldest first; poll again with the last `seq` to get the rest. `seq` starts at 1 and grows by one per event; it restarts with the daemon, so a `since` beyond the newest event returns the newest events and the client sees `seq` go down | no |
 | `pause` | `pid` | – | yes |
 | `resume` | `pid` | – | yes |
 | `reload` | – | `changed`, `requires_restart` (each `"key old -> new"`) | yes |
