@@ -26,32 +26,73 @@ const maxPSOutput = 32 << 20
 // NewProcessSampler returns a process sampler for the current OS. On macOS
 // it runs /bin/ps: libproc would need cgo. The caller's context deadline
 // bounds how long ps may run.
-func NewProcessSampler() ProcessSampler { return darwinProcessSampler{} }
+func NewProcessSampler() ProcessSampler { return &darwinProcessSampler{} }
 
-type darwinProcessSampler struct{}
+// darwinProcessSampler is not safe for concurrent use.
+type darwinProcessSampler struct {
+	names psNameCache
+}
 
-func (darwinProcessSampler) SampleProcesses(ctx context.Context) ([]domain.ProcessSample, error) {
+func (s *darwinProcessSampler) SampleProcesses(ctx context.Context) ([]domain.ProcessSample, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)
 	}
-	// Two passes: the stats pass has no attacker-controlled text and defines
-	// the process set; names come from a separate pass (see parsePSNames).
+	// The stats pass has no attacker-controlled text and defines the process
+	// set; names come from separate ps runs (see parsePSNames), and only for
+	// processes not named yet (see psNameCache).
 	stats, err := runPS(ctx, psStatColumns)
 	if err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)
 	}
-	names, err := runPS(ctx, psNameColumns)
-	if err != nil {
-		return nil, fmt.Errorf("sample processes: %w", err)
-	}
-	procs, err := parsePS(bytes.NewReader(stats), bytes.NewReader(names), time.Local)
+	procs, err := parsePSStats(bytes.NewReader(stats), time.Local)
 	if err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)
 	}
 	if len(procs) == 0 {
 		return nil, errors.New("sample processes: ps listed no processes")
 	}
+	if err := s.names.name(procs, func(pids []int) (map[int]string, error) {
+		return lookupPSNames(ctx, pids)
+	}); err != nil {
+		return nil, fmt.Errorf("sample processes: %w", err)
+	}
 	return procs, nil
+}
+
+// maxPSNameQueries is how many PIDs lookupPSNames asks ps about one at a
+// time before it reads every name in one pass instead. Measured on macOS
+// 26 with about 1,200 processes: a one-PID ps costs about 2 ms of CPU, a
+// full names pass about 50 ms, and a ps given two or more PIDs about
+// 500 ms, so PIDs are never batched into one -p list.
+const maxPSNameQueries = 16
+
+// lookupPSNames returns names for pids, as parsePSNames maps them.
+func lookupPSNames(ctx context.Context, pids []int) (map[int]string, error) {
+	if len(pids) > maxPSNameQueries {
+		out, err := runPS(ctx, psNameColumns)
+		if err != nil {
+			return nil, err
+		}
+		return parsePSNames(bytes.NewReader(out))
+	}
+	names := make(map[int]string, len(pids))
+	for _, pid := range pids {
+		out, err := execPS(ctx, "-o", psNameColumns, "-p", strconv.Itoa(pid))
+		// ps exits 1 with no output when the PID no longer exists; that
+		// process just stays unnamed. A context error has no exit status.
+		var exitErr *exec.ExitError
+		if err != nil && (!errors.As(err, &exitErr) || len(bytes.TrimSpace(out)) != 0) {
+			return nil, err
+		}
+		got, err := parsePSNames(bytes.NewReader(out))
+		if err != nil {
+			return nil, err
+		}
+		if name, ok := got[pid]; ok {
+			names[pid] = name
+		}
+	}
+	return names, nil
 }
 
 // NewProcessController returns a process controller for the current OS. On

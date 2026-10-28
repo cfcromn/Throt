@@ -180,12 +180,16 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 	next := make(map[domain.ProcessKey]*proc, len(procs))
 	byPID := make(map[int]*proc, len(procs))
 	order := make([]*proc, 0, len(procs))
+	// One allocation for the whole table rather than one per process; the
+	// previous table's slab is dropped with g.procs below.
+	slab := make([]proc, len(procs))
 	var busy float64 // CPU seconds across all processes since the last Update
 	for _, s := range procs {
 		if _, dup := byPID[s.PID]; dup {
 			continue
 		}
-		p := &proc{s: s}
+		p := &slab[len(order)]
+		p.s = s
 		old, ok := g.procs[s.Key()]
 		if ok && rates && s.CPUTime >= old.s.CPUTime {
 			d := (s.CPUTime - old.s.CPUTime).Seconds()

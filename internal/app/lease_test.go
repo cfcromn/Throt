@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cfcromn/Throt/internal/config"
+	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
@@ -383,5 +384,39 @@ func TestDaemonLeaseHoldsSlot(t *testing.T) {
 	}
 	if n := len(events(domain.EventLeaseGranted)); n != 1 {
 		t.Fatalf("%d lease_granted events, want 1", n)
+	}
+}
+
+// deadlineIdent records the PIDs of Identify calls that had no deadline
+// within control.CallTimeout.
+type deadlineIdent struct {
+	fakeIdent
+	unbounded []int
+}
+
+func (f *deadlineIdent) Identify(ctx context.Context, pid int) (domain.ProcessSample, error) {
+	if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > control.CallTimeout {
+		f.mu.Lock()
+		f.unbounded = append(f.unbounded, pid)
+		f.mu.Unlock()
+	}
+	return f.fakeIdent.Identify(ctx, pid)
+}
+
+func TestAcquireBoundsIdentify(t *testing.T) {
+	// The request context has no deadline, so a hung ps would otherwise
+	// hold the handler and its connection slot forever. The caller's
+	// parent 50 is missing from the sample, so the OS is asked about it.
+	d, _ := leaseDaemon(t, oneSlot(2))
+	ident := &deadlineIdent{fakeIdent: fakeIdent{procs: map[int]domain.ProcessSample{100: child(50), 50: child(10)}}}
+	d.ident = ident
+	if _, err := acquireAs(t, d, context.Background(), AcquireParams{PID: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if ident.calls < 2 {
+		t.Fatalf("%d Identify calls, want the caller and its parent", ident.calls)
+	}
+	if len(ident.unbounded) > 0 {
+		t.Fatalf("Identify without a per-call deadline for pids %v", ident.unbounded)
 	}
 }

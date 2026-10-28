@@ -63,7 +63,11 @@ func WorkloadStates(st StatusResult) map[domain.ProcessKey]string {
 // label such as "claude-1", or "" for none). Admission leases in
 // st.Scheduler.Leases count as running heavy work, overall and for their
 // agent. It fails open: missing data never blocks work.
-func Assess(st StatusResult, agent string) Verdict {
+func Assess(st StatusResult, agent string) Verdict { return assess(st, agent, false) }
+
+// assess is Assess. With inLine, queued work does not refuse by itself:
+// the caller is a lease waiter, and Policy.FirstInLine decides its turn.
+func assess(st StatusResult, agent string, inLine bool) Verdict {
 	states := WorkloadStates(st)
 	running, agentRunning := 0, 0
 	for _, h := range st.Heavy {
@@ -112,7 +116,7 @@ func Assess(st StatusResult, agent string) Verdict {
 			c.Reason = fmt.Sprintf("%s already runs %d heavy jobs, %d of them reserved (per-agent limit %d)", agent, agentBusy, agentReserved, st.Scheduler.PerAgentLimit)
 		}
 		c.Suggestion = "wait for one of your heavy jobs to finish; a new one would wait for your budget"
-	case mode != scheduler.ModeOff && len(st.Scheduler.Queued) > 0:
+	case !inLine && mode != scheduler.ModeOff && len(st.Scheduler.Queued) > 0:
 		c.Reason = fmt.Sprintf("%d heavy jobs are already queued", len(st.Scheduler.Queued))
 		c.Suggestion = "new heavy jobs queue behind waiting ones; wait or run a lighter task"
 	case mode != scheduler.ModeOff && busy >= st.Scheduler.HeavyLimit:

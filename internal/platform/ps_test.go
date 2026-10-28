@@ -2,6 +2,8 @@ package platform
 
 import (
 	"errors"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -162,6 +164,139 @@ func TestParsePSIdentify(t *testing.T) {
 	}
 }
 
+// fakeNames is a psNameLookup over a fixed PID-to-name table that records
+// what it was asked.
+type fakeNames struct {
+	table map[int]string
+	asked [][]int
+}
+
+func (f *fakeNames) lookup(pids []int) (map[int]string, error) {
+	f.asked = append(f.asked, slices.Clone(pids))
+	return maps.Clone(f.table), nil
+}
+
+func proc(pid, start int) domain.ProcessSample {
+	return domain.ProcessSample{PID: pid, Start: time.Unix(int64(start), 0)}
+}
+
+func names(procs []domain.ProcessSample) []string {
+	var out []string
+	for _, p := range procs {
+		out = append(out, p.Name)
+	}
+	return out
+}
+
+func TestPSNameCache(t *testing.T) {
+	var c psNameCache
+	f := &fakeNames{table: map[int]string{1: "launchd", 500: "zsh", 501: "make"}}
+	sample := func(procs ...domain.ProcessSample) []string {
+		t.Helper()
+		if err := c.name(procs, f.lookup); err != nil {
+			t.Fatal(err)
+		}
+		return names(procs)
+	}
+
+	if got := sample(proc(1, 0), proc(500, 10)); !slices.Equal(got, []string{"launchd", "zsh"}) {
+		t.Fatalf("first sample names %q", got)
+	}
+	// Cached names are used even though ps would now say otherwise; only
+	// the new PID is asked about.
+	f.table = map[int]string{1: "changed", 500: "changed", 501: "make"}
+	f.asked = nil
+	if got := sample(proc(1, 0), proc(500, 10), proc(501, 11)); !slices.Equal(got, []string{"launchd", "zsh", "make"}) {
+		t.Fatalf("cached names %q", got)
+	}
+	if !slices.EqualFunc(f.asked, [][]int{{501}}, slices.Equal) {
+		t.Fatalf("asked %v, want [[501]]", f.asked)
+	}
+	// A reused PID (new start time) is a new process and gets a fresh name;
+	// the exited one is pruned.
+	f.table[500] = "cargo"
+	f.asked = nil
+	if got := sample(proc(1, 0), proc(500, 20), proc(501, 11)); !slices.Equal(got, []string{"launchd", "cargo", "make"}) {
+		t.Fatalf("reused pid names %q", got)
+	}
+	if !slices.EqualFunc(f.asked, [][]int{{500}}, slices.Equal) {
+		t.Fatalf("asked %v, want [[500]]", f.asked)
+	}
+	if _, ok := c.names[proc(500, 10).Key()]; ok || len(c.names) != 3 {
+		t.Fatalf("cache not pruned to live keys: %v", c.names)
+	}
+	// Nothing new: ps is not run at all.
+	f.asked = nil
+	sample(proc(1, 0), proc(501, 11))
+	if len(f.asked) != 0 || len(c.names) != 2 {
+		t.Fatalf("asked %v, cache %v", f.asked, c.names)
+	}
+}
+
+func TestPSNameCacheForgedAndMissing(t *testing.T) {
+	var c psNameCache
+	f := &fakeNames{table: map[int]string{1: "launchd"}}
+	if err := c.name([]domain.ProcessSample{proc(1, 0)}, f.lookup); err != nil {
+		t.Fatal(err)
+	}
+	// The lookup for the new PIDs also returns a line for PID 1 (a forged
+	// line, or a full pass listing every process): it must not replace PID
+	// 1's name. PID 601 had duplicate lines, so it is unnamed. PID 602
+	// exited before its lookup, so it stays unnamed and is asked again.
+	f.table = map[int]string{1: "claude", 600: "evil", 601: ""}
+	procs := []domain.ProcessSample{proc(1, 0), proc(600, 5), proc(601, 5), proc(602, 5)}
+	if err := c.name(procs, f.lookup); err != nil {
+		t.Fatal(err)
+	}
+	if got := names(procs); !slices.Equal(got, []string{"launchd", "evil", "", ""}) {
+		t.Fatalf("names %q", got)
+	}
+	f.asked = nil
+	f.table[601], f.table[602] = "later", "node"
+	procs = []domain.ProcessSample{proc(1, 0), proc(600, 5), proc(601, 5), proc(602, 5)}
+	if err := c.name(procs, f.lookup); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.EqualFunc(f.asked, [][]int{{602}}, slices.Equal) {
+		t.Fatalf("asked %v, want [[602]]", f.asked)
+	}
+	if got := names(procs); !slices.Equal(got, []string{"launchd", "evil", "", "node"}) {
+		t.Fatalf("names %q", got)
+	}
+}
+
+func TestPSNameCacheRefresh(t *testing.T) {
+	var c psNameCache
+	f := &fakeNames{table: map[int]string{1: "launchd", 500: "sh"}}
+	procs := func() []domain.ProcessSample { return []domain.ProcessSample{proc(1, 0), proc(500, 1)} }
+	for range psNamesRefresh {
+		if err := c.name(procs(), f.lookup); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.asked) != 1 {
+		t.Fatalf("asked %v in %d samples, want one full read", f.asked, psNamesRefresh)
+	}
+	// 500 exec'd make: the periodic full read picks up the new name.
+	f.table[500] = "make"
+	p := procs()
+	if err := c.name(p, f.lookup); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.asked) != 2 || !slices.Equal(f.asked[1], []int{1, 500}) || p[1].Name != "make" {
+		t.Fatalf("asked %v, names %q", f.asked, names(p))
+	}
+}
+
+func TestPSNameCacheLookupError(t *testing.T) {
+	var c psNameCache
+	boom := errors.New("boom")
+	err := c.name([]domain.ProcessSample{proc(1, 0)}, func([]int) (map[int]string, error) { return nil, boom })
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want boom", err)
+	}
+}
+
 func TestParsePSIdentity(t *testing.T) {
 	loc := time.FixedZone("test", 9*3600)
 	start, uid, err := parsePSIdentity([]byte("  501 Sun Oct  4 11:06:02 2026    \n"), loc)
@@ -203,5 +338,26 @@ func TestPSState(t *testing.T) {
 		if got, ok := psState(tok); ok {
 			t.Errorf("psState(%q) = %q, want rejection", tok, got)
 		}
+	}
+}
+
+func TestPSNameCacheRereadsExecingPrograms(t *testing.T) {
+	// `throt run -- npm run build` execs in place: same PID and start time.
+	var c psNameCache
+	f := &fakeNames{table: map[int]string{700: "throt"}}
+	procs := []domain.ProcessSample{proc(700, 5)}
+	if err := c.name(procs, f.lookup); err != nil || procs[0].Name != "throt" {
+		t.Fatalf("first sample: %q, %v", procs[0].Name, err)
+	}
+	f.table[700] = "npm"
+	procs = []domain.ProcessSample{proc(700, 5)}
+	if err := c.name(procs, f.lookup); err != nil || procs[0].Name != "npm" {
+		t.Fatalf("after exec the name is %q, want npm (%v)", procs[0].Name, err)
+	}
+	// Once it is npm, it is cached like any other name.
+	f.table[700] = "changed"
+	procs = []domain.ProcessSample{proc(700, 5)}
+	if err := c.name(procs, f.lookup); err != nil || procs[0].Name != "npm" {
+		t.Fatalf("npm not cached: %q, %v", procs[0].Name, err)
 	}
 }

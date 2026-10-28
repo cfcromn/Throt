@@ -30,20 +30,13 @@ const psNameColumns = "pid=,comm="
 // Fields are re-joined with single spaces, so a padded day still matches.
 const psLstartLayout = "Mon Jan 2 15:04:05 2006"
 
-// parsePS combines the stats and names passes. lstart is interpreted in loc.
-// Malformed lines are skipped; an error is returned only when a reader fails.
+// parsePS combines a stats pass and a full names pass. lstart is
+// interpreted in loc. Malformed lines are skipped; an error is returned only
+// when a reader fails.
 func parsePS(stats, names io.Reader, loc *time.Location) ([]domain.ProcessSample, error) {
-	var out []domain.ProcessSample
-	seen := make(map[int]bool)
-	sc := bufio.NewScanner(stats)
-	for sc.Scan() {
-		if p, ok := parsePSStatLine(sc.Text(), loc); ok && !seen[p.PID] {
-			seen[p.PID] = true
-			out = append(out, p)
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("read ps output: %w", err)
+	out, err := parsePSStats(stats, loc)
+	if err != nil {
+		return nil, err
 	}
 	nameOf, err := parsePSNames(names)
 	if err != nil {
@@ -55,11 +48,30 @@ func parsePS(stats, names io.Reader, loc *time.Location) ([]domain.ProcessSample
 	return out, nil
 }
 
+// parsePSStats parses a psStatColumns pass, keeping the first line of each
+// PID. lstart is interpreted in loc.
+func parsePSStats(r io.Reader, loc *time.Location) ([]domain.ProcessSample, error) {
+	var out []domain.ProcessSample
+	seen := make(map[int]bool)
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		if p, ok := parsePSStatLine(sc.Text(), loc); ok && !seen[p.PID] {
+			seen[p.PID] = true
+			out = append(out, p)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read ps output: %w", err)
+	}
+	return out, nil
+}
+
 // parsePSNames maps PID to executable base name. An executable path that
 // contains a newline can forge a "pid name" line, but only for a PID that
-// also has its own genuine line, so any PID seen twice gets no name at all:
-// an unnamed process is merely unattributed (observe-only), and a forged
-// line can neither hide a process nor invent one.
+// also has its own genuine line, so any PID seen twice maps to "": an
+// unnamed process is merely unattributed (observe-only), and a forged line
+// can neither hide a process nor invent one. A PID without any line is
+// absent from the map.
 func parsePSNames(r io.Reader) (map[int]string, error) {
 	names := make(map[int]string)
 	dup := make(map[int]bool)
@@ -81,9 +93,86 @@ func parsePSNames(r io.Reader) (map[int]string, error) {
 		return nil, fmt.Errorf("read ps names: %w", err)
 	}
 	for pid := range dup {
-		delete(names, pid)
+		names[pid] = ""
 	}
 	return names, nil
+}
+
+// psNamesRefresh is how many samples a cached name is trusted before every
+// name is read again. exec(2) changes a process's name but not its PID or
+// start time, so only a fresh read notices it.
+// ponytail: a periodic full refresh instead of exec detection; a process
+// that execs after its first sample (a wrapper script that ends in exec
+// make) keeps its old name for up to this many samples.
+const psNamesRefresh = 15
+
+// psNameCache remembers executable names by process identity, so a sample
+// only asks ps for processes it has not named yet. A reused PID has a new
+// start time and therefore a new key. It is not safe for concurrent use.
+type psNameCache struct {
+	names map[domain.ProcessKey]string
+	// sinceFull counts samples since every name was last read.
+	sinceFull int
+}
+
+// execsInPlace names programs that usually exec another program under the
+// same PID and start time, so a cached name would hide the real one (for
+// `throt run -- npm run build`, the build would read as "throt" until the
+// next full refresh). They are never cached and are re-read every sample.
+// ponytail: shells also exec, but are too numerous and long-lived to
+// re-read every sample; they rely on the periodic full refresh.
+var execsInPlace = map[string]bool{
+	"throt": true, "env": true, "nice": true, "nohup": true, "timeout": true, "caffeinate": true,
+}
+
+// psNameLookup returns names for pids, as parsePSNames maps them. It may
+// return names for other PIDs too; those are ignored.
+type psNameLookup func(pids []int) (map[int]string, error)
+
+// name sets Name on every process in procs, from the cache or from lookup
+// for processes without a cached name, and prunes the cache to procs. A
+// name from lookup counts only for a PID it was asked about, so a forged
+// line for another PID is ignored. A process that lookup does not name
+// (it exited between the passes) stays unnamed and is asked about again
+// next sample.
+func (c *psNameCache) name(procs []domain.ProcessSample, lookup psNameLookup) error {
+	full := c.names == nil || c.sinceFull+1 >= psNamesRefresh
+	asked := func(p domain.ProcessSample) bool {
+		_, cached := c.names[p.Key()]
+		return full || !cached
+	}
+	var ask []int
+	for _, p := range procs {
+		if asked(p) {
+			ask = append(ask, p.PID)
+		}
+	}
+	var got map[int]string
+	if len(ask) > 0 {
+		var err error
+		if got, err = lookup(ask); err != nil {
+			return err
+		}
+	}
+	next := make(map[domain.ProcessKey]string, len(procs))
+	for i := range procs {
+		p := &procs[i]
+		name, ok := c.names[p.Key()]
+		if asked(*p) {
+			name, ok = got[p.PID]
+		}
+		p.Name = name
+		if ok && !execsInPlace[name] {
+			next[p.Key()] = name
+		}
+	}
+	c.names = next
+	if full {
+		c.sinceFull = 0
+	} else {
+		c.sinceFull++
+	}
+	return nil
 }
 
 // psName reduces macOS ps comm, which is argv[0] and may hold a process

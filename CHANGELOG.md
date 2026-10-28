@@ -6,6 +6,36 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+## [0.8.0-rc.1] - 2026-10-28
+
+Claude Code integration, fair admission, a security review, reproducible releases, and macOS end-to-end tests: the 1.0 groundwork.
+
+### Added
+- `internal/e2e` soak test (`THROT_SOAK=1`, containers only, not run in CI): 10 minutes of agent job churn, PID reuse, manual pause/resume, `throt run`, mode reloads and a `throtd` crash and restart, checking for stranded stopped work, flat memory, goroutines, threads and file descriptors, `throt status` p99 under 1s, event `seq`/`instance` integrity, and the heavy limit.
+- One FIFO line for `throt run` lease waiters and scheduler-queued workloads, ordered by wait time, with `max_queue_wait` aging and per-agent budgets applying to both. Previously `acquire` refused every lease while anything was queued, so under steady agent load `throt run` waited for its timeout and then ran outside the limit. The scheduler no longer resumes a queued workload, or admits a newcomer, while an older waiter is in line. throtd remembers at most 256 waiters and forgets one after 2s without a poll or when it exits.
+- `throt hook claude-code [--max-wait D]`: a Claude Code `PreToolUse` hook on `Bash`. When the command's command word is a heavy tool (alone, or after `cd DIR &&`, variable assignments, or `time`), it polls `throtd`'s capacity verdict for the calling agent and returns once a heavy job is OK to start or after `--max-wait` (default 50s). It never changes, approves, or denies the command, so your permission rules apply to it unchanged. Advisory: it takes no lease. It fails open: light or unparsable commands, malformed input, or an unreachable `throtd` return at once. Shell parsing lives in the new `internal/shellwords`.
+- `throt setup claude-code` and `throt setup codex` print the hook, MCP server, and `AGENTS.md` snippets to paste; they write no files.
+- `throt config check [--config PATH]` validates the config file with the same loader as throtd, prints `ok` and what it changes from the defaults (each marked `file` or `profile`), and exits 1 on an invalid or missing file. It warns, without failing, about `enforce` with `heavy_limit` at least the CPU count, `pause_on_critical` with mode `off`, and custom agent executables that shadow a built-in adapter.
+- `throt config show [--json]` prints the effective config (defaults, then profile, then file), the profile applied, and the source of each value (`default`, `profile`, or `file`).
+- `throt version --json` prints the client version, protocol version, Go version, and throtd's ping result when it is reachable (`daemon` is null with a `daemon_error` otherwise).
+- `throtd -log-format text|json` (default `text`) and `-log-level debug|info|warn|error` (default `info`), documented in `throtd -h`.
+
+### Changed
+- Releases: reproducible builds (`-trimpath`, file times from the commit), `CHANGELOG.md` in every archive, release notes taken from this file's section for the tag (a release without one fails), and build provenance attestations for the archives and `checksums.txt` (`gh attestation verify`, published while the repository is public).
+- Builds without release ldflags (`go install`, `go build`) report the module version, or `dev-<revision>` with `-dirty` for uncommitted changes, instead of `dev`, in `throt version`, `throtd -version` and `ping`.
+- `throt hook claude-code` lets version, help and dry-run invocations, and read-only subcommands such as `go env`, `npm view` and `cargo metadata`, through without waiting.
+- The `internal/e2e` real-binary tests now run on macOS CI as well as Linux (on macOS only with `CI=true`), covering the `ps` sampler, peer credentials, verify-then-kill, orphans and Ctrl-Z jobs end to end. The soak test stays Linux-only.
+- macOS: programs that exec in place (`throt`, `env`, `nice`, `nohup`, `timeout`) are re-named every sample, so `throt run -- npm run build` is recognized as `npm` immediately.
+- throtd logs each event at a level that fits it, with its attributes: heavy workloads starting and exiting and admission leases are now `debug` (they come and go with every build), failures, refusals and processes left stopped are `warn`, and the rest stays `info`. The event log is unchanged.
+- macOS: throtd caches process names by PID and start time and asks `ps` only about newly seen processes, with a full names pass every 15th sample, roughly halving the CPU cost of a process sample (about 85 ms to 45 ms with 1,150 processes). The process graph allocates its table once per update instead of once per process.
+- Docs: a compatibility policy for 1.0 (stable surface, additive and breaking changes, deprecations, what is not covered) and supported versions after 1.0; the 1.0 goal is an opt-in scheduler turned on confidently under an explicit profile, not a default; the architecture no longer describes unimplemented classes, workload states and fairness inputs; `socket_path`, `event_history`, the socket path's `XDG_RUNTIME_DIR` fallback, the global `-config` and `-n` flags, `throtd -version`, and the unsigned macOS binaries (Gatekeeper quarantine) are documented. `throt -h` no longer calls `run` advisory.
+
+### Fixed
+- `-h` on `throt`, `throtd`, or a subcommand (`throt config check -h`, `throt run -h`, …) prints the usage to stdout and exits 0, instead of printing `flag: help requested` and exiting 1.
+- `SECURITY.md` records the 1.0 security review of IPC and process control: scope, method, a verdict per boundary, findings, and accepted residual risks.
+- Security: throtd creates its socket with group and other permissions masked, instead of relying on the process umask until the `chmod` to 0600. Under a lax umask (such as 002) in a socket directory others may traverse, another local user could connect in that window and read `status`, `events` and `stats`. Privileged methods were never reachable.
+- `acquire` gives each OS process lookup (one `ps` call on macOS) its own 2 s deadline. Before, a hung `ps` held the request, and one of the 16 connection slots, forever; repeated `throt run` polls could fill every slot and stop throtd from serving `status`, `pause` and `resume`.
+
 ## [0.7.0-rc.1] - 2026-10-28
 
 Admission leases make `throt run` race-free, and stopped processes Throt did not pause are reported.
@@ -101,3 +131,12 @@ First observe-only release candidate. Throt does not control any process.
 - Terminal UI (`throt` / `throt top`) built on Bubble Tea.
 - `throt doctor` sanitized diagnostics.
 - Release automation: macOS/Linux archives, checksums, and SBOMs via GoReleaser.
+
+[Unreleased]: https://github.com/cfcromn/Throt/compare/v0.8.0-rc.1...HEAD
+[0.8.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.7.0-rc.1...v0.8.0-rc.1
+[0.7.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.6.0-rc.1...v0.7.0-rc.1
+[0.6.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.5.0-rc.1...v0.6.0-rc.1
+[0.5.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.4.0-rc.2...v0.5.0-rc.1
+[0.4.0-rc.2]: https://github.com/cfcromn/Throt/compare/v0.2.0-rc.1...v0.4.0-rc.2
+[0.2.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.1.0-rc.1...v0.2.0-rc.1
+[0.1.0-rc.1]: https://github.com/cfcromn/Throt/releases/tag/v0.1.0-rc.1

@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,7 +34,40 @@ import (
 )
 
 // Version is the release version, set at build time with -ldflags "-X".
+// A build without it (go install) reports its build info instead.
 var Version = "dev"
+
+func init() {
+	bi, ok := debug.ReadBuildInfo()
+	Version = buildVersion(Version, bi, ok)
+}
+
+// buildVersion returns v unless it is "dev", the unstamped default. Then it
+// returns the module version from bi, e.g. v0.8.0 for go install
+// github.com/cfcromn/Throt/cmd/throtd@v0.8.0, or for a build from a
+// checkout, "dev-" and the short VCS revision, with "-dirty" when the tree
+// had uncommitted changes.
+func buildVersion(v string, bi *debug.BuildInfo, ok bool) string {
+	if v != "dev" || !ok || bi == nil {
+		return v
+	}
+	if bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	var rev, dirty string
+	for _, s := range bi.Settings {
+		switch {
+		case s.Key == "vcs.revision":
+			rev = s.Value[:min(len(s.Value), 7)]
+		case s.Key == "vcs.modified" && s.Value == "true":
+			dirty = "-dirty"
+		}
+	}
+	if rev == "" {
+		return v
+	}
+	return v + "-" + rev + dirty
+}
 
 // PingResult is returned by the "ping" method.
 type PingResult struct {
@@ -125,6 +160,12 @@ type Daemon struct {
 	mu     sync.Mutex
 	status StatusResult
 	leases leaseTable
+	// waiting holds the lease waiters; queuedLine and linePolicy are the
+	// scheduler's queue and policy as of its latest round, so acquire can
+	// place a waiter in the line it shares with queued workloads.
+	waiting    waitList
+	queuedLine []scheduler.Waiter
+	linePolicy scheduler.Policy
 	// stopped is the latest snapshot's stopped processes, for resuming an
 	// orphan beyond the MaxOrphans that status lists.
 	stopped []process.StoppedView
@@ -146,6 +187,11 @@ type Daemon struct {
 	reloadMu sync.Mutex
 	live     config.Config
 	policyCh chan scheduler.Policy
+
+	// writeFile and rename persist paused.json; tests replace them to
+	// inject filesystem failures.
+	writeFile func(path string, data []byte) error
+	rename    func(oldpath, newpath string) error
 }
 
 // NewDaemon returns a daemon for cfg using the given samplers and process
@@ -169,9 +215,13 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		reported: map[domain.ProcessKey]bool{},
 		live:     cfg,
 		policyCh: make(chan scheduler.Policy, 1),
+
+		writeFile: writeFileAtomic,
+		rename:    os.Rename,
 	}
 	d.ctl = control.New(sig, d.uid, time.Now, d.saveState)
 	d.ident, _ = sig.(ProcessIdentifier)
+	d.linePolicy = d.sched.Policy()
 	return d
 }
 
@@ -306,10 +356,13 @@ func (d *Daemon) tick(parent context.Context) {
 		d.status.Orphans, d.status.OrphanCount = orphans, orphanCount
 		d.stopped = snap.Stopped
 		ended = d.leases.observe(sampled, now, procs, snap.Heavy)
+		d.waiting.prune(now, sampled, procs)
 	} else {
 		ended = d.leases.expire(now)
+		d.waiting.prune(now, sampled, nil)
 	}
 	reserved := d.leases.owners()
+	waiters := d.waiting.line()
 	d.mu.Unlock()
 	d.emitLeaseEnds(ended)
 
@@ -321,12 +374,14 @@ func (d *Daemon) tick(parent context.Context) {
 	if perr == nil {
 		// Only schedule on a fresh process snapshot: acting on stale data
 		// could queue a workload that already finished.
-		d.schedule(parent, now, level, snap.Heavy, reserved, admitted(ended), stoppedOrphans)
+		d.schedule(parent, now, level, snap.Heavy, reserved, admitted(ended), waiters, stoppedOrphans)
 		d.account(now, snap)
 	}
 	sched := d.schedulerStatus()
+	line, linePolicy := d.sched.Queued(), d.sched.Policy()
 	d.mu.Lock()
 	d.status.Scheduler = sched
+	d.queuedLine, d.linePolicy = line, linePolicy
 	d.mu.Unlock()
 }
 
@@ -399,7 +454,30 @@ func (d *Daemon) currentStats(context.Context, json.RawMessage) (any, error) {
 
 func (d *Daemon) emit(kind domain.EventKind, msg string, attrs map[string]string) {
 	d.events.Append(domain.Event{Time: time.Now(), Kind: kind, Message: msg, Attrs: attrs})
-	d.log.Info(msg, "event", kind)
+	if !d.log.Enabled(context.Background(), eventLevel(kind)) {
+		return
+	}
+	args := make([]any, 0, 2+2*len(attrs))
+	args = append(args, "event", kind)
+	for _, k := range slices.Sorted(maps.Keys(attrs)) {
+		args = append(args, k, attrs[k])
+	}
+	d.log.Log(context.Background(), eventLevel(kind), msg, args...)
+}
+
+// eventLevel is the log level of an event. Every event is in the event log;
+// info stays quiet in steady state, so heavy workloads starting and exiting
+// and admission leases, which come and go with every build, are debug.
+func eventLevel(kind domain.EventKind) slog.Level {
+	switch kind {
+	case domain.EventProcessDiscovered, domain.EventProcessLost,
+		domain.EventLeaseGranted, domain.EventLeaseReleased:
+		return slog.LevelDebug
+	case domain.EventDegraded, domain.EventControlFailed, domain.EventControlRefused,
+		domain.EventConfigReloadFailed, domain.EventOrphanStopped:
+		return slog.LevelWarn
+	}
+	return slog.LevelInfo
 }
 
 func (d *Daemon) ping(context.Context, json.RawMessage) (any, error) {
@@ -457,6 +535,10 @@ func lockInstance(socket string) (unlock func(), err error) {
 	return func() { f.Close() }, nil
 }
 
+// listenUnix creates the socket; tests replace it to inspect the socket as
+// soon as it exists.
+var listenUnix = func(path string) (net.Listener, error) { return net.Listen("unix", path) }
+
 // listen creates an owner-only socket at path. The caller holds the instance
 // lock, so an existing socket is stale. Only an actual socket is removed;
 // any other file at path is an error rather than collateral damage.
@@ -469,7 +551,14 @@ func listen(path string) (net.Listener, error) {
 			return nil, fmt.Errorf("remove stale socket: %w", err)
 		}
 	}
-	l, err := net.Listen("unix", path)
+	// The socket is created with the process umask and only restricted by
+	// the Chmod below. The directory check allows group/other traversal,
+	// so under a lax umask (e.g. 002) another user could connect in
+	// between. Mask group and other while the socket is created: no other
+	// goroutine creates files yet, and the mask only removes permissions.
+	old := syscall.Umask(0o077)
+	l, err := listenUnix(path)
+	syscall.Umask(old)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", path, err)
 	}

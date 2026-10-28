@@ -47,20 +47,37 @@ Commands:
              agent; --force resumes any other such process of yours too,
              such as a shell job suspended with Ctrl-Z (prefer fg there)
   run [--timeout D] [--no-wait] -- CMD [ARGS...]
-             wait for heavy-job capacity, then exec CMD (advisory; runs
-             immediately if throtd is down)
+             wait until throtd grants a heavy slot, reserved for CMD, then
+             exec CMD (runs immediately if throtd is down)
   reload     make throtd re-read its config file
   doctor     print a sanitized diagnostic report (safe to share)
   mcp        run a read-only MCP server on stdio for coding agents
+  config check|show
+             'check' validates the config file as throtd would, lists what
+             it changes from the defaults, and warns about risky settings;
+             'show [--json]' prints the effective config and the source
+             (default, profile, or file) of each value. Both accept --config PATH.
+  hook claude-code [--max-wait D]
+             Claude Code PreToolUse hook: before a lone heavy Bash command,
+             wait up to D (default 50s) for heavy-job capacity; never
+             changes or blocks the command (advisory; fails open)
+  setup claude-code|codex
+             print the configuration to paste into a coding agent
   completion bash|zsh|fish
              print a shell completion script
-  version    print the client version
+  version [--json]
+             print the client version; --json adds the protocol and Go
+             versions, and throtd's version when it is reachable
 
 Flags:
 `
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		// -h printed the usage to stdout; asking for help is not a failure.
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
 		fmt.Fprintln(os.Stderr, "throt:", err)
 		var ee exitError
 		if errors.As(err, &ee) {
@@ -70,13 +87,69 @@ func main() {
 	}
 }
 
-func run(args []string) error {
-	fs := flag.NewFlagSet("throt", flag.ContinueOnError)
+// globalFlags returns the flag set for the flags before the command.
+func globalFlags() (fs *flag.FlagSet, cfgPath *string, limit *int) {
+	fs = flag.NewFlagSet("throt", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(fs.Output(), usage); fs.PrintDefaults() }
 	defPath, _ := config.DefaultPath()
-	cfgPath := fs.String("config", defPath, "path to config file")
-	limit := fs.Int("n", 50, "number of events for 'events'")
-	if err := fs.Parse(args); err != nil {
+	cfgPath = fs.String("config", defPath, "path to config file")
+	limit = fs.Int("n", 50, "number of events for 'events'")
+	return fs, cfgPath, limit
+}
+
+// parseFlags parses args with fs, whose Usage must write to fs.Output().
+// On -h or -help it prints the usage to stdout rather than fs's output and
+// returns flag.ErrHelp, which main treats as success. Any other error is
+// reported on fs's output, followed by the usage, as flag does.
+func parseFlags(fs *flag.FlagSet, args []string, stdout io.Writer) error {
+	usage := fs.Usage
+	fs.Usage = func() {}
+	err := fs.Parse(args)
+	fs.Usage = usage
+	switch {
+	case errors.Is(err, flag.ErrHelp):
+		out := fs.Output()
+		fs.SetOutput(stdout)
+		fs.Usage()
+		fs.SetOutput(out)
+	case err != nil:
+		fs.Usage()
+	}
+	return err
+}
+
+// parseStatsArgs parses the arguments after 'stats'.
+func parseStatsArgs(args []string, stdout io.Writer) (asJSON bool, err error) {
+	sfs := flag.NewFlagSet("throt stats", flag.ContinueOnError)
+	sfs.Usage = func() { fmt.Fprintln(sfs.Output(), "usage: throt stats [--json]"); sfs.PrintDefaults() }
+	sfs.BoolVar(&asJSON, "json", false, "print the stats as JSON")
+	if err := parseFlags(sfs, args, stdout); err != nil {
+		return false, err
+	}
+	if sfs.NArg() > 0 {
+		return false, fmt.Errorf("usage: throt stats [--json]")
+	}
+	return asJSON, nil
+}
+
+// parseEventsArgs parses the arguments after 'events'; -n overrides limit.
+func parseEventsArgs(args []string, limit *int, stdout io.Writer) (follow bool, err error) {
+	efs := flag.NewFlagSet("throt events", flag.ContinueOnError)
+	efs.Usage = func() { fmt.Fprintln(efs.Output(), "usage: throt events [-f] [-n N]"); efs.PrintDefaults() }
+	efs.BoolVar(&follow, "f", false, "keep printing new events until interrupted")
+	efs.IntVar(limit, "n", *limit, "number of recent events to print first")
+	if err := parseFlags(efs, args, stdout); err != nil {
+		return false, err
+	}
+	if efs.NArg() > 0 {
+		return false, fmt.Errorf("usage: throt events [-f] [-n N]")
+	}
+	return follow, nil
+}
+
+func run(args []string) error {
+	fs, cfgPath, limit := globalFlags()
+	if err := parseFlags(fs, args, os.Stdout); err != nil {
 		return err
 	}
 	cmd := "top"
@@ -86,6 +159,19 @@ func run(args []string) error {
 	// 'run' takes its own flags and passes everything else to the command.
 	if cmd == "run" {
 		return runCommand(fs.Args()[1:], *cfgPath)
+	}
+	if cmd == "config" {
+		return runConfig(fs.Args()[1:], *cfgPath, os.Stdout)
+	}
+	if cmd == "version" {
+		return runVersion(fs.Args()[1:], *cfgPath, os.Stdout)
+	}
+	// 'hook' fails open and touches config and daemon only for heavy commands.
+	if cmd == "hook" {
+		return runHook(fs.Args()[1:], *cfgPath, os.Stdin, os.Stdout, os.Stderr)
+	}
+	if cmd == "setup" {
+		return runSetup(fs.Args()[1:], os.Stdout)
 	}
 	// 'events' takes its own flags after the command: throt events -f.
 	followEvents, statsJSON, resumeForce := false, false, false
@@ -97,33 +183,19 @@ func run(args []string) error {
 			return err
 		}
 	case cmd == "stats":
-		sfs := flag.NewFlagSet("throt stats", flag.ContinueOnError)
-		sfs.BoolVar(&statsJSON, "json", false, "print the stats as JSON")
-		if err := sfs.Parse(fs.Args()[1:]); err != nil {
+		var err error
+		if statsJSON, err = parseStatsArgs(fs.Args()[1:], os.Stdout); err != nil {
 			return err
-		}
-		if sfs.NArg() > 0 {
-			return fmt.Errorf("usage: throt stats [--json]")
 		}
 	case cmd == "events":
-		efs := flag.NewFlagSet("throt events", flag.ContinueOnError)
-		efs.BoolVar(&followEvents, "f", false, "keep printing new events until interrupted")
-		efs.IntVar(limit, "n", *limit, "number of recent events to print first")
-		if err := efs.Parse(fs.Args()[1:]); err != nil {
+		var err error
+		if followEvents, err = parseEventsArgs(fs.Args()[1:], limit, os.Stdout); err != nil {
 			return err
-		}
-		if efs.NArg() > 0 {
-			return fmt.Errorf("usage: throt events [-f] [-n N]")
 		}
 	case fs.NArg() > 2:
 		fs.Usage()
 		return fmt.Errorf("too many arguments")
 	}
-	if cmd == "version" {
-		fmt.Println(app.Version)
-		return nil
-	}
-
 	if cmd == "doctor" {
 		return runDoctor(*cfgPath)
 	}

@@ -582,3 +582,94 @@ func TestReservedSlotsCountTowardOwnerBudget(t *testing.T) {
 	expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureNormal, Heavy: heavy, Reserved: []string{"a"}}),
 		brief{ActionQueue, 1, ReasonOwnerBudget})
 }
+
+func TestFirstInLine(t *testing.T) {
+	p := enforce(2)
+	p.MaxQueueWait = time.Minute
+	p.PerOwnerLimit = 1
+	now := at(100)
+	job := func(pid, since int, owner string) Waiter {
+		return Waiter{Key: key(pid), Owner: owner, Since: at(since)}
+	}
+	lease := func(pid, since int, owner string) Waiter {
+		w := job(pid, since, owner)
+		w.Lease = true
+		return w
+	}
+	tests := []struct {
+		name     string
+		me       Waiter
+		line     []Waiter
+		perOwner map[string]int
+		want     bool
+	}{
+		{name: "alone", me: lease(1, 90, "a"), want: true},
+		{name: "itself in line", me: lease(1, 90, "a"), line: []Waiter{lease(1, 90, "a")}, want: true},
+		{name: "older queued job", me: lease(1, 90, "a"), line: []Waiter{job(2, 80, "b")}},
+		{name: "younger queued job", me: lease(1, 80, "a"), line: []Waiter{job(2, 90, "b")}, want: true},
+		{name: "older waiter", me: lease(1, 90, "a"), line: []Waiter{lease(2, 85, "b")}},
+		{name: "tie goes to the queued job", me: lease(1, 90, "a"), line: []Waiter{job(2, 90, "b")}},
+		{name: "job ahead of a tied waiter", me: job(2, 90, "b"), line: []Waiter{lease(1, 90, "a")}, want: true},
+		{name: "older entry at its budget does not block", me: lease(1, 90, "a"), line: []Waiter{job(2, 80, "b")},
+			perOwner: map[string]int{"b": 1}, want: true},
+		{name: "aged entry goes first", me: lease(1, 50, "a"), line: []Waiter{job(2, 30, "b")}},
+		{name: "aged waiter beats a younger queued job", me: lease(1, 30, "a"), line: []Waiter{job(2, 50, "b")}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := p.FirstInLine(now, tt.me, tt.line, tt.perOwner); got != tt.want {
+				t.Fatalf("FirstInLine = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQueuedWorkloadYieldsToOlderWaiter(t *testing.T) {
+	p := enforce(1)
+	p.ResumeCooldown = 0
+	s := New(p)
+	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "a")}})
+	heavy := []process.WorkloadView{wv(1, "a"), wv(2, "b")}
+	expect(t, s.Decide(Input{Now: at(5), Pressure: domain.PressureNormal, Heavy: heavy}),
+		brief{ActionQueue, 2, ReasonSlotsExhausted})
+	if q := s.Queued(); len(q) != 1 || q[0].Key != key(2) || !q[0].Since.Equal(at(5)) || q[0].Owner != "b" {
+		t.Fatalf("Queued = %+v", q)
+	}
+	// 1 finishes. A waiter older than 2 holds it back, under every pressure
+	// at which the waiter could be granted; a younger one does not.
+	heavy = []process.WorkloadView{wv(2, "b")}
+	older := []Waiter{{Key: key(9), Owner: "c", Since: at(3), Lease: true}}
+	younger := []Waiter{{Key: key(9), Owner: "c", Since: at(7), Lease: true}}
+	for _, pressure := range []domain.PressureLevel{domain.PressureNormal, domain.PressureElevated, domain.PressureUnknown} {
+		expect(t, s.Decide(Input{Now: at(10), Pressure: pressure, Heavy: heavy, Paused: keys(2), Waiters: older}))
+	}
+	expect(t, s.Decide(Input{Now: at(11), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(2), Waiters: younger}),
+		brief{ActionResume, 2, ReasonSlotAvailable})
+}
+
+func TestQueuedWorkloadIgnoresWaiterAtBudget(t *testing.T) {
+	p := enforce(2)
+	p.ResumeCooldown, p.PerOwnerLimit = 0, 1
+	s := New(p)
+	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "c"), wv(3, "a")}})
+	heavy := []process.WorkloadView{wv(1, "c"), wv(3, "a"), wv(2, "b")}
+	expect(t, s.Decide(Input{Now: at(5), Pressure: domain.PressureNormal, Heavy: heavy}),
+		brief{ActionQueue, 2, ReasonSlotsExhausted})
+	// 3 finishes. c already runs its one budgeted job, so its older waiter
+	// cannot take the slot, and 2 must not wait for it.
+	heavy = []process.WorkloadView{wv(1, "c"), wv(2, "b")}
+	older := []Waiter{{Key: key(9), Owner: "c", Since: at(3), Lease: true}}
+	expect(t, s.Decide(Input{Now: at(10), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(2), Waiters: older}),
+		brief{ActionResume, 2, ReasonSlotAvailable})
+}
+
+func TestNewcomerQueuesBehindWaiter(t *testing.T) {
+	s := New(enforce(2))
+	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal})
+	// A slot is free, but a lease waiter is in line for it.
+	w := []Waiter{{Key: key(9), Owner: "c", Since: at(0), Lease: true}}
+	expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{wv(1, "a")}, Waiters: w}),
+		brief{ActionQueue, 1, ReasonQueueWaiting})
+	// Unknown pressure fails open, as for queued work.
+	expect(t, s.Decide(Input{Now: at(2), Pressure: domain.PressureUnknown, Heavy: []process.WorkloadView{wv(3, "a")}, Waiters: w}))
+}

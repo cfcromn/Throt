@@ -15,6 +15,9 @@ builds:
       - CGO_ENABLED=0
     goos: [darwin, linux]
     goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w -X github.com/cfcromn/Throt/internal/app.Version={{ .Version }}
   - id: throtd
@@ -24,6 +27,9 @@ builds:
       - CGO_ENABLED=0
     goos: [darwin, linux]
     goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w -X github.com/cfcromn/Throt/internal/app.Version={{ .Version }}
 
@@ -31,9 +37,19 @@ archives:
   - formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    # Fixed owners and commit-dated file times keep archives byte-identical
+    # across machines and checkouts.
+    builds_info: &file_info
+      owner: root
+      group: root
+      mtime: "{{ .CommitDate }}"
     files:
-      - LICENSE
-      - README.md
+      - src: LICENSE
+        info: *file_info
+      - src: README.md
+        info: *file_info
+      - src: CHANGELOG.md
+        info: *file_info
 
 checksum:
   name_template: checksums.txt
@@ -44,10 +60,7 @@ sboms:
 release:
   prerelease: auto
 
+# Release notes come from CHANGELOG.md (see .github/workflows/release.yml,
+# which passes the tag's section with --release-notes).
 changelog:
-  use: github
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
+  disable: true

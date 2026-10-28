@@ -10,8 +10,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
+	"github.com/cfcromn/Throt/internal/scheduler"
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
@@ -241,7 +243,7 @@ func (d *Daemon) ancestry(ctx context.Context, ppid int) []int {
 				break
 			}
 			lookups++
-			s, err := d.ident.Identify(ctx, next)
+			s, err := d.identify(ctx, next)
 			if err != nil {
 				break
 			}
@@ -250,6 +252,15 @@ func (d *Daemon) ancestry(ctx context.Context, ppid int) []int {
 		next = pp
 	}
 	return chain
+}
+
+// identify looks up one process with its own deadline. The request context
+// has none, so without it a hung ps would hold the acquire, and one of the
+// server's few connection slots, forever.
+func (d *Daemon) identify(ctx context.Context, pid int) (domain.ProcessSample, error) {
+	ctx, cancel := context.WithTimeout(ctx, control.CallTimeout)
+	defer cancel()
+	return d.ident.Identify(ctx, pid)
 }
 
 // nearestAgent returns the label of the first agent in chain.
@@ -297,7 +308,7 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 	if d.ident == nil {
 		return nil, d.refused("acquire", p.PID, "cannot identify processes on this platform")
 	}
-	self, err := d.ident.Identify(ctx, p.PID)
+	self, err := d.identify(ctx, p.PID)
 	switch {
 	case err != nil:
 		return nil, d.refused("acquire", p.PID, "cannot identify the caller: "+err.Error())
@@ -320,7 +331,7 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 	st.Paused = paused
 	st.Scheduler.Leases = d.leases.views()
 	agent := nearestAgent(chain, st.Agents)
-	v := Assess(st, agent)
+	v := assess(st, agent, true)
 	res := AcquireResult{Reason: v.Reason, Verdict: v}
 	var l Lease
 	switch {
@@ -328,9 +339,20 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 		res.Granted, res.Reason = true, ReasonNested
 	case len(d.leases.leases) >= maxLeases:
 		res.Reason = ReasonTooManyLeases
-	case v.OKToStart:
+	case !v.OKToStart:
+	case st.Scheduler.Mode != scheduler.ModeOff && !d.firstInLine(key, agent, st, now):
+		// A slot is free, but older work waits for it.
+		res.Reason = fmt.Sprintf("older heavy work is waiting for a slot (%d queued, %d other throt run callers waiting)",
+			len(st.Scheduler.Queued), max(len(d.waiting.w)-1, 0))
+		res.Verdict.OKToStart, res.Verdict.Reason = false, res.Reason
+	default:
 		l = d.leases.grant(key, agent, now)
 		res.Granted, res.LeaseID = true, l.ID
+	}
+	if res.Granted {
+		d.waiting.remove(key)
+	} else {
+		d.waiting.touch(key, agent, now)
 	}
 	d.mu.Unlock()
 
@@ -339,6 +361,17 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 			map[string]string{"lease_id": l.ID, "pid": strconv.Itoa(p.PID), "agent": agent})
 	}
 	return res, nil
+}
+
+// firstInLine reports whether caller key, a lease waiter of agent, comes
+// first in the line shared with scheduler-queued workloads. d.mu is held.
+func (d *Daemon) firstInLine(key domain.ProcessKey, agent string, st StatusResult, now time.Time) bool {
+	me := scheduler.Waiter{Key: key, Owner: agent, Since: d.waiting.since(key, now), Lease: true}
+	line := append(slices.Clone(d.queuedLine), d.waiting.line()...)
+	// The budget is the one Assess just checked, from the same status.
+	p := d.linePolicy
+	p.PerOwnerLimit = st.Scheduler.PerAgentLimit
+	return p.FirstInLine(now, me, line, busyByOwner(st))
 }
 
 func (d *Daemon) emitLeaseEnds(ended []leaseEnd) {

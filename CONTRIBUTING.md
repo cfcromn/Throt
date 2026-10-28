@@ -25,9 +25,11 @@ make bench   # real-kernel benchmark, in Docker only
 **Never run an enforce-mode `throtd`, the e2e suite, or the benchmark on a machine with real agents.** It pauses their real builds. The e2e suite and the benchmark refuse to run outside CI or a container. Run them in Docker, building the test binary first, because under `go test` the `go` process would own every job:
 
 ```bash
-docker run --rm -v "$PWD":/src -w /src golang:1.26.10-alpine sh -c \
+docker run --rm --init -v "$PWD":/src -w /src golang:1.26.10-alpine sh -c \
   'go test -c -o /tmp/e2e.test ./internal/e2e && THROT_E2E=1 /tmp/e2e.test -test.v'
 ```
+
+The soak test (`internal/e2e/soak_test.go`) churns an enforce-mode `throtd` for 10 minutes (`THROT_SOAK_DURATION` to change it) and checks for stranded work, leaks, latency and the heavy limit. It is too long for CI; run it the same way with `docker run --rm --init --cpus=2 …` and `THROT_SOAK=1 /tmp/e2e.test -test.run=TestSoak -test.v -test.timeout=30m`.
 
 Fuzz targets run their seeds in `go test`; to fuzz one, use `go test -run='^$' -fuzz='^FuzzParsePS$' -fuzztime=60s ./internal/platform`. Don't commit generated `testdata/fuzz` corpora: turn a crasher into a table test instead.
 
@@ -37,7 +39,8 @@ Layout:
 cmd/throt      client (CLI, TUI, MCP server, run, completion)
 cmd/throtd     daemon
 internal/      app, agent, capacity, config, control, doctor, domain, mcp, monitor,
-               platform, pressure, process, scheduler, stats, transport, tui;
+               platform, pressure, process, scheduler, shellwords, stats,
+               transport, tui;
                bench and e2e (Docker/CI only)
 docs/          ARCHITECTURE.md
 ```

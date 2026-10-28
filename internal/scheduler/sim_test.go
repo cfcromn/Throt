@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -360,4 +361,228 @@ func TestSimulation(t *testing.T) {
 		}
 	}
 	t.Log(tbl.String())
+}
+
+// lineItem is one arrival in a line simulation: an agent's heavy job, which
+// the scheduler may queue, or a `throt run` caller (lease), which polls for
+// an admission lease once per tick and starts its job a tick after the
+// grant. With loop set, the item arrives again the tick after it finishes,
+// until the horizon, as an agent working back to back would.
+type lineItem struct {
+	name   string
+	lease  bool
+	owner  string
+	arrive int
+	dur    int
+	loop   bool
+}
+
+type lineResult struct {
+	// order lists item names in the order they started running.
+	order []string
+	// maxWait is the longest wait per kind ("job" or "lease").
+	maxWait map[string]int
+	// served counts started arrivals per kind.
+	served map[string]int
+}
+
+// runLineSim drives the scheduler and an emulation of the daemon's acquire
+// with a 1s tick until every arrival before horizon has finished. It checks
+// that running work plus reserved slots never exceed the limit.
+func runLineSim(t *testing.T, policy Policy, items []lineItem, horizon int) lineResult {
+	t.Helper()
+	type inst struct {
+		it        lineItem
+		key       domain.ProcessKey
+		arrive    int
+		waitStart int
+		remaining int
+		present   bool // a workload in the snapshot
+		paused    bool
+		waiting   bool // a lease caller not granted yet
+		reserved  bool // granted; its job appears next tick
+		started   bool
+		done      bool
+	}
+	s := New(policy)
+	p := s.Policy()
+	res := lineResult{maxWait: map[string]int{}, served: map[string]int{}}
+	var all []*inst
+	nextPID := 1000
+	spawn := func(it lineItem, tick int) {
+		nextPID++
+		in := &inst{it: it, key: domain.ProcessKey{PID: nextPID, Start: t0}, arrive: tick, waitStart: tick, remaining: it.dur}
+		if it.lease {
+			in.waiting = true
+		} else {
+			in.present = true
+		}
+		all = append(all, in)
+	}
+	kind := func(in *inst) string {
+		if in.it.lease {
+			return "lease"
+		}
+		return "job"
+	}
+	start := func(in *inst, tick int) {
+		in.started = true
+		res.order = append(res.order, in.it.name)
+		res.served[kind(in)]++
+		res.maxWait[kind(in)] = max(res.maxWait[kind(in)], tick-in.waitStart)
+	}
+	pending := slices.Clone(items)
+	for tick := 0; ; tick++ {
+		if tick > 100000 {
+			t.Fatal("line simulation did not finish")
+		}
+		for i := 0; i < len(pending); {
+			if pending[i].arrive == tick {
+				spawn(pending[i], tick)
+				pending = slices.Delete(pending, i, i+1)
+				continue
+			}
+			i++
+		}
+		in := Input{Now: at(tick), Pressure: domain.PressureNormal}
+		for _, x := range all {
+			switch {
+			case x.done:
+			case x.reserved:
+				// The leased command shows up as its workload and takes
+				// over the lease.
+				x.reserved, x.present = false, true
+				in.Admitted = append(in.Admitted, x.key)
+				start(x, tick)
+			case x.waiting:
+				in.Waiters = append(in.Waiters, Waiter{Key: x.key, Owner: x.it.owner, Since: at(x.waitStart), Lease: true})
+			}
+			if x.present && !x.done {
+				in.Heavy = append(in.Heavy, process.WorkloadView{Key: x.key, Name: x.it.name, Class: domain.ClassBuild, Owner: x.it.owner})
+				if x.paused {
+					in.Paused = append(in.Paused, x.key)
+				}
+			}
+		}
+		byKey := map[domain.ProcessKey]*inst{}
+		for _, x := range all {
+			byKey[x.key] = x
+		}
+		for _, d := range s.Decide(in) {
+			x := byKey[d.Key]
+			switch d.Action {
+			case ActionQueue, ActionPreempt:
+				x.paused, x.waitStart = true, tick
+			case ActionResume:
+				x.paused = false
+				start(x, tick)
+			}
+		}
+		// New jobs the scheduler admitted at once start now.
+		for _, x := range all {
+			if x.present && !x.paused && !x.started && !x.done {
+				start(x, tick)
+			}
+		}
+		// Between ticks every waiting caller polls once, newest first, so
+		// the outcome cannot depend on polling order.
+		busy := func() (int, map[string]int) {
+			n, per := 0, map[string]int{}
+			for _, x := range all {
+				if !x.done && ((x.present && !x.paused) || x.reserved) {
+					n++
+					per[x.it.owner]++
+				}
+			}
+			return n, per
+		}
+		for i := len(all) - 1; i >= 0; i-- {
+			x := all[i]
+			if !x.waiting {
+				continue
+			}
+			n, per := busy()
+			if n >= p.HeavyLimit || (p.PerOwnerLimit > 0 && per[x.it.owner] >= p.PerOwnerLimit) {
+				continue
+			}
+			line := s.Queued()
+			for _, y := range all {
+				if y.waiting {
+					line = append(line, Waiter{Key: y.key, Owner: y.it.owner, Since: at(y.waitStart), Lease: true})
+				}
+			}
+			me := Waiter{Key: x.key, Owner: x.it.owner, Since: at(x.waitStart), Lease: true}
+			if p.FirstInLine(at(tick), me, line, per) {
+				x.waiting, x.reserved = false, true
+			}
+		}
+		if n, _ := busy(); n > p.HeavyLimit {
+			t.Fatalf("t=%d: %d running or reserved over limit %d", tick, n, p.HeavyLimit)
+		}
+		// Work progresses; looping items come back the next tick.
+		for _, x := range all {
+			if x.present && !x.paused && !x.done {
+				x.remaining--
+				if x.remaining == 0 {
+					x.done = true
+					if x.it.loop && tick+1 < horizon {
+						next := x.it
+						next.arrive = tick + 1
+						pending = append(pending, next)
+					}
+				}
+			}
+		}
+		if len(pending) == 0 && !slices.ContainsFunc(all, func(x *inst) bool { return !x.done }) {
+			return res
+		}
+	}
+}
+
+func TestLineFIFOAcrossKinds(t *testing.T) {
+	p := enforce(1)
+	p.ResumeCooldown = 0
+	// One slot, held by x until t=10. Queued jobs and lease callers arrive
+	// alternately behind it and must start in arrival order.
+	items := []lineItem{
+		{name: "x", owner: "a", arrive: 1, dur: 9},
+		{name: "job1", owner: "b", arrive: 2, dur: 3},
+		{name: "lease1", lease: true, owner: "c", arrive: 3, dur: 3},
+		{name: "job2", owner: "d", arrive: 4, dur: 3},
+		{name: "lease2", lease: true, owner: "e", arrive: 5, dur: 3},
+		{name: "job3", owner: "b", arrive: 6, dur: 3},
+	}
+	r := runLineSim(t, p, items, 0)
+	want := []string{"x", "job1", "lease1", "job2", "lease2", "job3"}
+	if !slices.Equal(r.order, want) {
+		t.Fatalf("start order %v, want %v", r.order, want)
+	}
+}
+
+func TestLineNoStarvation(t *testing.T) {
+	// Three agents work back to back on two slots, so the scheduler's queue
+	// is never empty; throt run callers arrive every 7s. Before the shared
+	// line, every caller was refused while anything was queued.
+	p := enforce(2)
+	p.ResumeCooldown = 2 * time.Second
+	p.MaxQueueWait = 60 * time.Second
+	const horizon = 900
+	var items []lineItem
+	for i := range 3 {
+		items = append(items, lineItem{name: fmt.Sprintf("agent-%d", i), owner: fmt.Sprintf("agent-%d", i), arrive: 1 + i, dur: 10, loop: true})
+	}
+	for i := range horizon / 7 {
+		items = append(items, lineItem{name: fmt.Sprintf("run-%d", i), lease: true, owner: fmt.Sprintf("agent-%d", i%3), arrive: 5 + 7*i, dur: 4})
+	}
+	r := runLineSim(t, p, items, horizon)
+	bound := int((p.MaxQueueWait + p.ResumeCooldown) / time.Second)
+	t.Logf("served %v, max wait %v (bound %ds)", r.served, r.maxWait, bound)
+	if r.served["lease"] != horizon/7 {
+		t.Errorf("%d of %d lease callers served", r.served["lease"], horizon/7)
+	}
+	for k, w := range r.maxWait {
+		if w > bound {
+			t.Errorf("%s waited up to %ds, bound %ds", k, w, bound)
+		}
+	}
 }
