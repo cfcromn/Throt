@@ -165,7 +165,7 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 | Command | What it does |
 |---|---|
 | `throt`, `throt top` | Terminal UI. Quitting it never affects `throtd`. |
-| `throt status` | Pressure and its reason, host resources, agents, heavy workloads, scheduler state, stopped processes. |
+| `throt status [--json]` | Pressure and its reason, host resources, agents, heavy workloads, scheduler state, stopped processes. |
 | `throt stats [--json]` | Per agent: CPU time, peak memory, heavy jobs and time queued since `throtd` started. |
 | `throt events [-f] [-n N]` | Recent daemon events as JSON lines (default 50); `-f` keeps printing new ones. |
 | `throt explain PID` | Why a heavy workload is running, paused or queued. |
@@ -185,6 +185,8 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 | `throt completion bash\|zsh\|fish` | Shell completion script. |
 
 Global flags go before the command: `-config PATH` uses another config file, and `-n N` sets how many events `throt events` prints. `throt -h` lists every command, and `-h` after any command prints that command's usage. `throtd -h` lists the daemon's flags, and `throtd -version` prints its version.
+
+Exit codes: 0 on success, 1 on an error, 2 on a usage error, 10 from `throt update --check` when an update is available; `throt run` exits with the command's status (126, 127 when it cannot run). `throt hook claude-code` always exits 0. The JSON outputs, event kinds, reason codes and exit codes are listed under [Compatibility](docs/ARCHITECTURE.md#compatibility).
 
 Shell completion: add `source <(throt completion zsh)` (or `bash`) to your shell's rc file, or run `throt completion fish | source`. It completes heavy-workload PIDs after `pause`, `resume` and `explain`.
 
@@ -232,7 +234,7 @@ When the scheduler is on, a `SCHEDULER` line shows its mode, the current adaptiv
 
 ### Coding agents: MCP, Claude Code hook, Codex
 
-**MCP.** `throt mcp` is a read-only [MCP](https://modelcontextprotocol.io) server on stdio, so agents can check pressure and capacity before starting a big build. Its tools: `throt_status` (pressure, resources, agents, heavy workloads), `throt_capacity` (an advisory `ok_to_start` with a reason and suggestion, for the agent that launched the server by default), `throt_events`, `throt_stats`, `throt_explain` (why a PID is running, paused or queued), and `throt_wait_for_capacity` (polls the capacity verdict once a second for up to `max_wait_seconds`, 1–600, default 60; cancellable). None of them pauses, resumes or changes configuration. `throtd` must be running. Tool output, process names and PIDs included, goes into the agent's context and so reaches your model provider. The server speaks MCP `2026-07-28` (per-request version in `_meta`, `server/discover`) as well as the `initialize` revisions `2025-11-25`, `2025-06-18` and `2024-11-05`; it has tools only.
+**MCP.** `throt mcp` is a read-only [MCP](https://modelcontextprotocol.io) server on stdio, so agents can check pressure and capacity before starting a big build. Its tools: `throt_status` (pressure, resources, agents, heavy workloads), `throt_capacity` (an advisory `ok_to_start` with a reason and suggestion, for the agent that launched the server by default), `throt_events`, `throt_stats`, `throt_explain` (why a PID is running, paused or queued), and `throt_wait_for_capacity` (polls the capacity verdict once a second for up to `max_wait_seconds`, 1–600, default 60; cancellable). None of them pauses, resumes or changes configuration. `throtd` must be running. Tool output, process names and PIDs included, goes into the agent's context and so reaches your model provider. The server speaks MCP `2026-07-28` (per-request version in `_meta`, `server/discover`) as well as the `initialize` revisions `2025-11-25`, `2025-06-18` and `2024-11-05`; it has tools only. Every tool returns text and structured content, described by its `outputSchema` ([fields](docs/ARCHITECTURE.md#compatibility)).
 
 ```bash
 claude mcp add --scope user throt -- throt mcp

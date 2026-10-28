@@ -84,7 +84,7 @@ Every long-lived goroutine has an owner, a cancellation path (`context.Context`)
 
 ## Events
 
-One structured event model feeds logs, diagnostics, and the TUI timeline: daemon started/stopped, agent and heavy workload discovered/lost, pressure changes, scheduler decisions and limit changes, control actions (paused, resumed, refused, failed), recovery, leases, stopped processes Throt did not pause, config reloads, and degraded mode.
+One structured event model feeds logs, diagnostics, and the TUI timeline: daemon started/stopped, agent and heavy workload discovered/lost, pressure changes, scheduler decisions and limit changes, control actions (paused, resumed, refused, failed), recovery, leases, stopped processes Throt did not pause, config reloads, and degraded mode. Every kind and its attrs are listed under [Compatibility](#compatibility).
 
 ## Scheduler
 
@@ -244,34 +244,126 @@ A request for any other protocol version is rejected with an error naming both v
 | Method | Params | Result | Privileged |
 |---|---|---|---|
 | `ping` | – | `version`, `protocol`, `pid`, `uptime` | no |
-| `status` | – | `pressure`, `reason`, `host`, `agents`, `heavy`, `paused`, `scheduler`, `degraded`, `orphans` and `orphan_count` (stopped processes throtd did not pause, at most 50 listed) | no |
+| `status` | – | `pressure`; `reason`; `host` (null until a sample succeeds: `time`, `cpu_usage`, `load1`, `mem_total`, `mem_available`, `swap_total`, `swap_used`, `latency` in ns, `memory_pressure`, `memory_stall`, `io_stall` and `cpu_stall` (each `some`, `full`), `missing`); `agents` (`process`, `agent`, `name`, `children`, `cpu` in cores, `rss` in bytes); `heavy` (`process`, `name`, `class`, `owner`, `owner_pid`, `cpu`, `rss`); `degraded`; `paused` (`process`, `name`, `owner`, `members`, `since`, `state`, `by`); `scheduler` (`mode`, `heavy_limit`, `adaptive`, `start_limit`, `max_limit`, `per_agent_limit`, `queued`, `would_queue`, `leases`: `id`, `process`, `agent`, `granted`); `orphans` and `orphan_count` (stopped processes throtd did not pause, at most 50 listed: `process`, `name`, `class`, `owner`, `kind`, `hint`, `since`). A `process` (also each of `members`, `queued`, `would_queue`) is `{pid, start}` | no |
 | `stats` | – | `since` (window start: the first process sample since the daemon started), `agents` (per agent instance, most CPU first: `agent`, `process`, `cpu_seconds`, `peak_rss`, `heavy_started`, `queued_seconds`, `first_seen`, `last_seen`; at most 256), `total`, `unattributed` (same fields) | no |
 | `events` | `limit` (0 or > 1000 means 1000); optional `since` (a `seq`) | without `since`, the newest `limit` events, oldest first: `seq`, `instance`, `time`, `kind`, `message`, `attrs`. With `since`, up to `limit` events with a greater `seq`, oldest first; poll again with the last `seq` to get the rest. `seq` starts at 1 and grows by one per event; it restarts with the daemon, so a `since` beyond the newest event returns the newest events and the client sees `seq` go down. `instance` identifies the daemon run; a change means it restarted, even if the new run already passed the old `seq` | no |
-| `pause` | `pid`; optional `start` (RFC 3339), refused if the process now has a different start time | – | yes |
-| `resume` | `pid`; optional `start`, as for `pause` | – | yes |
+| `pause` | `pid`; optional `start` (RFC 3339), refused if the process now has a different start time | `null` | yes |
+| `resume` | `pid`; optional `start`, as for `pause`; optional `force`, to continue a stopped process throtd did not pause that is not an attributed heavy workload | `null` | yes |
 | `reload` | – | `changed`, `requires_restart` (each `"key old -> new"`) | yes |
 | `acquire` | `pid`: the caller's own PID. throtd checks it against the peer PID and resolves the caller's start time and parent from the OS; `start` and `ppid`, sent by earlier clients, are ignored | `granted`, `reason` (`nested` for a caller below a heavy workload or a lease holder, granted without a lease; `too_many_leases` when 256 leases exist), `lease_id`, `verdict` (as `throt_capacity`). Granting records an admission lease, shown in `status` as `scheduler.leases` (`id`, `process`, `agent`, `granted`); a repeated call by a holder returns its lease. Refused when the caller cannot be identified, has no start time, or belongs to another user | yes |
 
-Privileged methods also require the caller's uid (from peer credentials) to match the daemon's. For them the server also reads the caller's PID from the kernel (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS) and `acquire` refuses a `pid` other than the caller's own, so a client cannot reserve a slot for another process. Where no PID is available (other platforms, or a peer in another PID namespace, which Linux reports as 0) that check is skipped and the client-sent `pid` is resolved instead, which must name a live process of the daemon's user; the uid check still applies. The Go types in `internal/app` are the reference definitions; `throt mcp` exposes the read-only methods to coding agents.
+Privileged methods also require the caller's uid (from peer credentials) to match the daemon's. For them the server also reads the caller's PID from the kernel (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS) and `acquire` refuses a `pid` other than the caller's own, so a client cannot reserve a slot for another process. Where no PID is available (other platforms, or a peer in another PID namespace, which Linux reports as 0) that check is skipped and the client-sent `pid` is resolved instead, which must name a live process of the daemon's user; the uid check still applies. Refused and failed calls return `error`, a sentence. The table lists every field; `internal/app/compat_test.go` pins them. `throt mcp` exposes the read-only methods to coding agents.
 
 ## Compatibility
 
 Before 1.0, the CLI, config and protocol may change between minor releases, always documented in the changelog; patch releases don't intentionally break documented behavior.
 
-From 1.0, the stable surface is:
-- `throt` and `throtd` commands, subcommands and flags;
-- config keys, their meaning and defaults (unknown keys stay errors);
-- local protocol v1: its methods, params and result fields;
-- `--json` output (`throt stats`, `throt config show`, `throt version`) and the JSON lines of `throt events`;
-- MCP tool names (`throt_status`, `throt_capacity`, `throt_events`, `throt_stats`, `throt_explain`, `throt_wait_for_capacity`) and their input and output schemas;
-- exit codes: 0 on success (including `-h`), 1 on an error, 10 from `throt update --check` when an update is available, and for `throt run` the command's own status, 126 when it cannot be executed (or is found only through `.` in `PATH`) and 127 when it is not found.
+From 1.0, the stable surface is everything below. The tests named in the last column pin it; a change that fails them is a compatibility decision.
+
+| Area | Stable | Pinned by |
+|---|---|---|
+| Commands | `throt` and `throtd` commands, subcommands and flags ([README](../README.md#commands)) | `cmd/throt`, `cmd/throtd` golden tests |
+| Config | keys, their meaning and defaults; unknown keys stay errors | `internal/config` tests |
+| Local protocol v1 | methods, which are privileged, params and result fields ([Local protocol](#local-protocol)) | `internal/app/compat_test.go` |
+| `--json` output and `throt events` | field names and types, below | golden tests |
+| Events | kinds and attrs, below | `internal/app/compat_test.go` (kinds) |
+| Reason codes | scheduler decision, limit and control refusal codes, below | `internal/app/compat_test.go` |
+| MCP | tool names, input schemas and output schemas, below | `internal/mcp/schema_test.go` |
+| Exit codes | below | golden tests |
+
+**Exit codes**
+
+| Code | `throt` | `throtd` |
+|---|---|---|
+| 0 | success, including `-h`; `throt hook claude-code` always, even on bad flags or an unreachable `throtd` (it fails open) | success, `-h`, `-version` |
+| 1 | an error, including a refused `pause` or `resume` and `throt hook` with an agent other than `claude-code` (not 2, which Claude Code treats as blocking) | any error, bad flags included |
+| 2 | usage error: unknown command or flag, missing or extra argument | – |
+| 10 | `throt update --check`: an update is available | – |
+| 126, 127 | `throt run`: the command cannot be executed (or is found only through `.` in `PATH`), or is not found; otherwise `throt run` exits with the command's own status | – |
+
+**JSON output.** Field names and types are stable; free text (`reason` and `degraded` of `status`, `hint`, `message`, `uptime`, error strings) is not.
+
+| Output | Fields |
+|---|---|
+| `throt status --json` | the `status` result |
+| `throt stats --json` | the `stats` result |
+| `throt events` (one per line) | an `events` result element: `seq`, `instance`, `time`, `kind`, `message`, `attrs` |
+| `throt version --json` | `version`, `protocol`, `go`, `daemon` (the `ping` result, or null), `daemon_error` (when `throtd` is unreachable) |
+| `throt config show --json` | `path`, `file` (whether it exists), `profile`, `config` (every config key), `settings` (`key`, `value`, `source`: `default`, `profile` or `file`) |
+
+**Events.** Every event has a kind and string attrs. An attr marked "if" is present only then. `pid` is a decimal PID, pressure values are `unknown`, `normal`, `elevated`, `high`, `critical`.
+
+| Event kind | Attrs |
+|---|---|
+| `daemon_started` | – |
+| `daemon_stopped` | `resumed` (count, if it resumed any) |
+| `degraded`, `recovered` | `sampler`: `host` or `processes` |
+| `config_reloaded` | `changed` (`key old -> new`, comma-separated), `requires_restart` (keys, comma-separated) |
+| `config_reload_failed` | `error` |
+| `pressure_changed` | `from`, `to`, `reason` (the signal, e.g. `memory_used>=0.9`) |
+| `process_discovered`, `process_lost` | `pid`, `name` (a heavy workload) |
+| `agent_discovered`, `agent_lost` | `pid`, `name`, `agent` |
+| `orphan_stopped` | `count`, `pids` (comma-separated) |
+| `control_paused` | `action` (`pause`), `pid`, `name`, `owner` |
+| `control_resumed` | `action` (`resume`), `pid`; for a process throtd did not pause also `name`, `orphan` (`true`), `processes`, `owner` (if owned), `force` (if set); none after a recovery or retry |
+| `control_refused` | `action` (`pause`, `resume`, `acquire`, or the scheduler's `queue`, `preempt`), `pid`, `reason` (a refusal reason) |
+| `control_failed` | `action`, `pid`; none for recovery and retries |
+| `scheduler_decision` | `decision` (`queue`, `resume`, `preempt`), `pid`, `name`, `owner`, `reason` (a decision reason), `observed` (`true` in observe mode), and from the scheduler `pressure`, `running`, `limit` |
+| `scheduler_limit` | `from`, `to`, `reason` (a limit reason) |
+| `lease_granted` | `lease_id`, `pid`, `agent` (empty when unattributed) |
+| `lease_released` | `lease_id`, `pid`, `agent`, `reason`: `exited`, `became_workload`, `expired` |
+
+**Reason codes.** The `acquire` result's `reason` is a sentence except `nested` and `too_many_leases`.
+
+| Decision reason | Meaning |
+|---|---|
+| `heavy_slots_exhausted` | queue: every heavy slot is taken |
+| `queue_waiting` | queue: a slot is free, but older work waits for it |
+| `owner_budget_exhausted` | queue: the agent is at `per_agent_limit` |
+| `pressure_high`, `pressure_critical` | queue at high or critical pressure; `pressure_critical` also preempts |
+| `slot_available`, `aged` | resume into a free slot; `aged` after waiting `max_queue_wait` |
+| `pressure_normal`, `pressure_elevated_throughput`, `workload_exited` | resume without waiting for `resume_cooldown` (see Scheduler) |
+| `enforce_disabled` | resume: the scheduler left `enforce` |
+| `top_exited` | resume: the workload's top process exited while queued |
+
+| Limit reason | Meaning |
+|---|---|
+| `pressure_normal`, `pressure_elevated_throughput` | adaptive increase |
+| `pressure_high`, `pressure_critical` | adaptive decrease |
+| `pressure_unknown` | reset to the ceiling |
+| `policy_changed` | a reload changed the scheduler policy |
+
+| Refusal reason | Meaning |
+|---|---|
+| `unattributed`, `not_heavy` | no agent owns it, or it is not a heavy workload |
+| `no_members`, `too_many_members`, `invalid_target` | the workload has no processes left, more than 4096 (256 for the scheduler), or an invalid process list |
+| `foreign_uid` | a process belongs to another user |
+| `already_paused`, `limit_reached` | already paused; or 64 workloads are paused, the most throtd holds |
+| `not_paused` | resume: neither paused nor stopped |
+| `start_mismatch` | the PID now has another start time than the client sent |
+| `gone` | the process exited |
+| `peer_mismatch`, `unidentified` | acquire: the PID is not the caller's, or its identity or start time cannot be read |
+| `paused_member` | resume: it is paused as part of another workload |
+| `needs_force`, `job_control` | resume: stopped by something else (`job_control`: a shell job); `--force` continues it |
+| `not_stopped` | resume: it is not stopped |
+
+**MCP tools.** All are read-only. Each declares an `outputSchema` for its `structuredContent`; error results (`isError`) have none.
+
+| MCP tool | Inputs | Structured output |
+|---|---|---|
+| `throt_status` | – | `pressure`, `pressure_reason`, `degraded`, `host` (`cpu`, `load`, `memory`, `swap`, `latency`, as text; or null), `agents` (`agent`, `pid`, `cpu_percent`, `memory`, `children`), `heavy` (`owner`, `pid`, `name`, `class`, `state`, `cpu_percent`, `memory`), `scheduler` (`mode`, `heavy_limit`, `queued`) |
+| `throt_capacity` | `agent` | the verdict: `ok_to_start`, `reason`, `pressure`, `pressure_reason`, `scheduler_mode`, `running_heavy`, `reserved`, `heavy_limit`, `agent`, `agent_running_heavy`, `suggestion` |
+| `throt_wait_for_capacity` | `agent`, `max_wait_seconds` | the verdict, `waited_seconds`, `checks`, `timed_out` |
+| `throt_explain` | `pid` (required) | `pid`, `name`, `class`, `state`, `owner`, `owner_pid`, `scheduler` (`mode`, `heavy_limit`, `per_agent_limit`, `running`), `pressure`, `events` (`time`, `kind`, `action`, `reason`, `pressure`, `slots`), `summary` |
+| `throt_events` | `limit` | `events`: `events` result elements |
+| `throt_stats` | – | `since`, `agents`, `total`, `unattributed` (each `agent`, `pid`, `cpu_seconds`, `peak_memory`, `heavy_jobs`, `queued_seconds`, `active_seconds`) |
 
 Rules:
-- Additive changes are allowed in minor releases: new commands, flags, config keys, protocol methods, optional params, result and JSON fields, MCP tools and optional tool inputs. Clients and scripts must ignore unknown fields.
+- Additive changes are allowed in minor releases: new commands, flags, config keys, protocol methods, optional params, result and JSON fields, event kinds and attrs, reason codes, MCP tools, optional tool inputs and output fields. Clients and scripts must ignore unknown fields and kinds, and treat an unknown reason code as opaque.
 - A breaking change (removing or renaming any of the above, changing a meaning, default or type, or making something optional required) needs a new major version. For the protocol it can instead be a protocol bump with negotiation: today a version mismatch is only reported with both versions, so a v2 must add negotiation and keep serving v1 clients.
 - A deprecation lasts at least one minor release, during which the old form keeps working and prints a warning (on stderr, in `throt config check`, or as an event), and the changelog names the replacement.
 
-Not covered: `internal/` packages (not a public API), log text, event message wording (event kinds and attrs are part of the protocol), and the TUI layout. `throt` and `throtd` must be the same release.
+Not covered: `internal/` packages (not a public API), log text, event messages and other free text, tool descriptions, and the TUI layout. `throt` and `throtd` must be the same release.
 
 ## Decisions
 
