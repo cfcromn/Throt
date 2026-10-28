@@ -11,7 +11,7 @@ Throt is a local-first Go daemon and terminal UI that observes coding-agent proc
 
 ## Status
 
-**Pre-alpha (v0.1 Observe).** Throt samples host resources, reports a stable pressure level, attributes processes and heavy workloads to coding agents, and shows it all in a TUI. Manual pause/resume of agent-owned heavy workloads is available; automatic scheduling is next. Expect breaking changes before 1.0.
+**Pre-alpha (v0.1 Observe).** Throt samples host resources, reports a stable pressure level, attributes processes and heavy workloads to coding agents, and shows it all in a TUI. Manual pause/resume and an opt-in heavy-slot scheduler (`observe` / `enforce`) are available. Expect breaking changes before 1.0.
 
 ## Problem
 
@@ -84,6 +84,25 @@ throt doctor    # sanitized diagnostics to paste into a bug report
 throt pause PID # pause a heavy workload owned by one of your agents
 throt resume PID
 ```
+
+## Configuration
+
+Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.json`). Unknown keys are errors.
+
+```json
+{
+  "sample_interval": "2s",
+  "scheduler": {
+    "mode": "observe",
+    "heavy_limit": 2,
+    "resume_cooldown": "10s",
+    "pause_on_critical": false,
+    "max_queue_wait": "5m"
+  }
+}
+```
+
+`scheduler.mode` is `off` (default), `observe` (log what it would do as `scheduler_decision` events), or `enforce` (queue new heavy workloads with SIGSTOP when `heavy_limit` attributed ones are already running, and resume them as slots free up). Try `observe` first and watch `throt events`.
 
 ## Roadmap
 

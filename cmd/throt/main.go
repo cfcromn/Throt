@@ -175,9 +175,14 @@ func printStatus(w io.Writer, st app.StatusResult) {
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%.0f%%\t%s\t%d\n", a.Agent, a.Key.PID, a.CPU*100, gib(a.RSS), a.Children)
 	}
+	fmt.Fprintf(w, "SCHEDULER %s (heavy limit %d, %d queued)\n", st.Scheduler.Mode, st.Scheduler.HeavyLimit, len(st.Scheduler.Queued))
 	paused := make(map[int]bool, len(st.Paused))
 	for _, p := range st.Paused {
 		paused[p.Key.PID] = true
+	}
+	queued := make(map[int]bool, len(st.Scheduler.Queued))
+	for _, k := range st.Scheduler.Queued {
+		queued[k.PID] = true
 	}
 	fmt.Fprintln(tw, "\nHEAVY WORKLOADS\nOWNER\tPID\tPROCESS\tCLASS\tCPU\tMEM\tSTATE")
 	if len(st.Heavy) == 0 {
@@ -189,7 +194,10 @@ func printStatus(w io.Writer, st app.StatusResult) {
 			owner = "-"
 		}
 		state := "running"
-		if paused[h.Key.PID] {
+		switch {
+		case queued[h.Key.PID]:
+			state = "QUEUED"
+		case paused[h.Key.PID]:
 			state = "PAUSED"
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.0f%%\t%s\t%s\n", owner, h.Key.PID, h.Name, h.Class, h.CPU*100, gib(h.RSS), state)

@@ -232,10 +232,17 @@ func (m Model) heavyPane(rows int) []string {
 	for _, p := range m.status.Paused {
 		paused[p.Key] = true
 	}
+	queued := make(map[domain.ProcessKey]bool, len(m.status.Scheduler.Queued))
+	for _, k := range m.status.Scheduler.Queued {
+		queued[k] = true
+	}
 	cells := make([][]string, len(m.status.Heavy))
 	for i, h := range m.status.Heavy {
 		state := ""
-		if paused[h.Key] {
+		switch {
+		case queued[h.Key]:
+			state = "QUEUED"
+		case paused[h.Key]:
 			state = "PAUSED"
 		}
 		cells[i] = []string{owner(h.Owner), fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), state}

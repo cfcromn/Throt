@@ -9,6 +9,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 ### Added
 - `throt pause PID` / `throt resume PID`: identity-verified SIGSTOP/SIGCONT of agent-owned heavy workloads, with audit events, peer-uid authorization, resume on shutdown, and crash recovery.
 - Paused state in `throt status` and the TUI.
+- Opt-in heavy-slot scheduler (`scheduler.mode`: `off` / `observe` / `enforce`) with pressure-aware queueing, owner fairness, aging, cooldowns, and a `scheduler_decision` event for every decision.
 
 ## [0.1.0-rc.1] - 2026-10-28
 

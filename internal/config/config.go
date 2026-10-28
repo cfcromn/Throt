@@ -21,6 +21,24 @@ type Config struct {
 	SampleInterval Duration `json:"sample_interval"`
 	// EventHistory is how many recent events the daemon retains in memory.
 	EventHistory int `json:"event_history"`
+	// Scheduler configures automatic heavy-workload scheduling.
+	Scheduler Scheduler `json:"scheduler"`
+}
+
+// Scheduler is the automatic scheduling policy. It is off by default.
+type Scheduler struct {
+	// Mode is "off", "observe" (log decisions, never act), or "enforce".
+	Mode string `json:"mode"`
+	// HeavyLimit is how many attributed heavy workloads may run at once.
+	HeavyLimit int `json:"heavy_limit"`
+	// ResumeCooldown is the minimum time between two scheduler actions.
+	ResumeCooldown Duration `json:"resume_cooldown"`
+	// PauseOnCritical lets the scheduler pause a running workload (never
+	// the last one) under critical pressure.
+	PauseOnCritical bool `json:"pause_on_critical"`
+	// MaxQueueWait is how long a queued workload waits before it outranks
+	// all others.
+	MaxQueueWait Duration `json:"max_queue_wait"`
 }
 
 // Duration is a time.Duration that reads and writes strings like "2s".
@@ -49,6 +67,12 @@ func Default() Config {
 		SocketPath:     DefaultSocketPath(),
 		SampleInterval: Duration(2 * time.Second),
 		EventHistory:   1000,
+		Scheduler: Scheduler{
+			Mode:           "off",
+			HeavyLimit:     2,
+			ResumeCooldown: Duration(10 * time.Second),
+			MaxQueueWait:   Duration(5 * time.Minute),
+		},
 	}
 }
 
@@ -106,6 +130,17 @@ func (c Config) Validate() error {
 	}
 	if c.EventHistory < 1 || c.EventHistory > 100_000 {
 		return errors.New("event_history must be between 1 and 100000")
+	}
+	switch c.Scheduler.Mode {
+	case "off", "observe", "enforce":
+	default:
+		return fmt.Errorf("scheduler.mode must be off, observe, or enforce, not %q", c.Scheduler.Mode)
+	}
+	if c.Scheduler.HeavyLimit < 1 || c.Scheduler.HeavyLimit > 64 {
+		return errors.New("scheduler.heavy_limit must be between 1 and 64")
+	}
+	if c.Scheduler.ResumeCooldown < 0 || c.Scheduler.MaxQueueWait < Duration(time.Second) {
+		return errors.New("scheduler.resume_cooldown must be >= 0 and scheduler.max_queue_wait >= 1s")
 	}
 	return nil
 }

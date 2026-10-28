@@ -92,6 +92,14 @@ One structured event model feeds logs, diagnostics, and the TUI timeline: proces
 6. Queued work ages to prevent starvation.
 7. Resumes use cooldowns to avoid oscillation.
 
+**As implemented** (`internal/scheduler`, opt-in via `scheduler.mode`):
+- `off` (default) makes no decisions. `observe` emits every decision as a `scheduler_decision` event marked observed and never acts. `enforce` executes decisions through the same verified controller as `throt pause`.
+- Throt can only act on processes that already exist, so *queue* means a heavy workload that appears while no slot is free is paused within one sample interval and resumed when a slot opens. Workloads already running when the daemon starts, or when the policy changes, are never queued.
+- High pressure blocks new starts. Critical pressure may *preempt* (pause) the youngest running workload when `pause_on_critical` is set, but never the last one. Resumes and preemptions are spaced by `resume_cooldown`.
+- Unknown pressure (degraded metrics) fails open: nothing new is queued, and work queued longer than `max_queue_wait` is resumed.
+- New arrivals queue behind already-waiting work, so short jobs can't starve a long queued one.
+- Unattributed workloads count toward the limit but are never controlled. Manual pauses are never touched.
+
 **Fairness:** priority combines user override, workload class, queue age, project fairness, and previous preemption count. No project may hold every heavy slot indefinitely.
 
 **Explainability:** every decision emits the decision, target, reason code, observed pressure, relevant policy, and timestamp:
