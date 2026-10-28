@@ -11,7 +11,7 @@ Throt is a local-first Go daemon and terminal UI that observes coding-agent proc
 
 ## Status
 
-**Pre-alpha (v0.1 Observe).** Throt samples host resources, reports a stable pressure level, attributes processes and heavy workloads to coding agents, and shows it all in a TUI. Manual pause/resume and an opt-in heavy-slot scheduler (`observe` / `enforce`) are available. Expect breaking changes before 1.0.
+**Pre-1.0 (v0.4).** Throt samples host resources and foreground latency, reports a stable pressure level, attributes processes and heavy workloads to coding agents, and shows it all in a TUI and over MCP. Manual pause/resume and an opt-in adaptive heavy-slot scheduler (`observe` / `enforce`) are available. Expect breaking changes before 1.0.
 
 ## Problem
 
@@ -71,6 +71,44 @@ Download a release archive for macOS or Linux (amd64/arm64) from [Releases](http
 go install github.com/cfcromn/Throt/cmd/throt@latest
 go install github.com/cfcromn/Throt/cmd/throtd@latest
 ```
+
+### Run at login
+
+On stop, `throtd` resumes anything it paused (SIGTERM and SIGINT both work), so service managers can stop it safely.
+
+macOS (launchd): save as `~/Library/LaunchAgents/dev.throt.throtd.plist`, adjust the path, then run `launchctl load ~/Library/LaunchAgents/dev.throt.throtd.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.throt.throtd</string>
+  <key>ProgramArguments</key><array><string>/usr/local/bin/throtd</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+```
+
+Linux (systemd user unit): save as `~/.config/systemd/user/throtd.service`, then run `systemctl --user enable --now throtd`:
+
+```ini
+[Unit]
+Description=Throt resource-aware scheduler for coding agents
+
+[Service]
+ExecStart=%h/.local/bin/throtd
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+### Upgrade and rollback
+
+Stop `throtd` (this resumes any paused work), replace both binaries, and start it again. To roll back, install the previous release the same way. Configuration is backward compatible within a minor series, and unknown keys are reported as errors rather than silently ignored. `throt` and `throtd` must be the same release, and a mismatch is reported with both protocol versions. Published versions are never rewritten; fixes ship as new patch releases.
 
 ## Usage
 
@@ -143,12 +181,13 @@ A profile never turns the scheduler on.
 
 Outcomes, not dates.
 
-| Version | Goal | Highlights |
-|---|---|---|
-| v0.1 Observe | "What is making my machine slow, and which agent owns it?" | host metrics, process graph, agent attribution, TUI, event timeline, `throt doctor`; no automatic control |
-| v0.2 Control | Reduce overlapping heavy workloads without losing work | manual pause/resume, workload classes, heavy-slot limit, opt-in adaptive scheduler, audit log |
-| v0.3 Adaptive | Keep the machine responsive automatically | feedback-based concurrency, hysteresis/cooldowns, per-project budgets, profiles |
-| v0.4 Ecosystem | Integrate everywhere | Linux, stable local API, MCP server, adapter SDK |
+| Version | Goal | Highlights | Status |
+|---|---|---|---|
+| v0.1 Observe | "What is making my machine slow, and which agent owns it?" | host metrics, process graph, agent attribution, TUI, event timeline, `throt doctor` | shipped |
+| v0.2 Control | Reduce overlapping heavy workloads without losing work | manual pause/resume, heavy-slot scheduler (opt-in), audit events, crash recovery | shipped |
+| v0.3 Adaptive | Keep the machine responsive automatically | latency signal, adaptive limit, per-agent budgets, profiles | shipped |
+| v0.4 Ecosystem | Integrate everywhere | Linux, documented local API, MCP server, custom agent adapters | shipped |
+| 1.0 | Safe to enable by default under a profile | real-machine benchmarks, package-manager distribution | next |
 
 **1.0** requires two supported OS families, a stable config/API policy, no known process-loss bug, reproducible benchmarks, and a security review of IPC and process-control boundaries.
 
