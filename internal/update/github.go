@@ -308,8 +308,8 @@ func checksumFor(data []byte, name string) ([]byte, error) {
 }
 
 // Token returns a GitHub token from GH_TOKEN or GITHUB_TOKEN, else from
-// `gh auth token` when gh is on PATH, else "" (anonymous). It says where the
-// token came from, never the token itself.
+// `gh auth token --hostname github.com` when gh is on PATH, else ""
+// (anonymous). It says where the token came from, never the token itself.
 func Token(ctx context.Context, getenv func(string) string, lookPath func(string) (string, error), run Runner) (token, source string) {
 	for _, k := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
 		if t := strings.TrimSpace(getenv(k)); validToken(t) {
@@ -325,7 +325,10 @@ func Token(ctx context.Context, getenv func(string) string, lookPath func(string
 	}
 	ctx, cancel := context.WithTimeout(ctx, ghTimeout)
 	defer cancel()
-	out, err := run(ctx, gh, "auth", "token")
+	// Without --hostname gh answers for its default host, which GH_HOST
+	// or its config may set to a GitHub Enterprise server; that token
+	// must not go to github.com.
+	out, err := run(ctx, gh, "auth", "token", "--hostname", "github.com")
 	if err != nil {
 		return "", ""
 	}

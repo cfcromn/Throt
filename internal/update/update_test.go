@@ -328,7 +328,7 @@ func TestToken(t *testing.T) {
 	hasGH := func(string) (string, error) { return "/usr/bin/gh", nil }
 	ghSays := func(out string, err error) Runner {
 		return func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			if name != "/usr/bin/gh" || strings.Join(args, " ") != "auth token" {
+			if name != "/usr/bin/gh" || strings.Join(args, " ") != "auth token --hostname github.com" {
 				t.Errorf("ran %s %v", name, args)
 			}
 			if _, ok := ctx.Deadline(); !ok {
