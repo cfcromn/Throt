@@ -211,6 +211,28 @@ These results are less favorable than the container run, and they matter more:
 
 This strengthens the default decision: the scheduler stays off, and CPU-only contention on a bare-metal kernel is not a reason to enable it.
 
+### Memory pressure
+
+The scenarios above are CPU-only. Throt's main target is memory: several agents' builds that together exceed RAM, so the machine swaps and the foreground freezes. `TestBenchMemory` measures that case. Its job (the same `make` helper, with `-mem`) allocates 22% of the memory limit, writes every word with incompressible pseudo-random data (so neither zswap nor the macOS compressor can shrink it), then writes one word per page in a loop for about 6 s of uncontended work, calibrated alone before the runs, and exits. A swapped-out or paused job does the same work, only later. Eight such jobs want 176% of the limit, launched at once ("memory burst") or one per second ("memory staggered"). Baseline is `scheduler.mode` off; Throt is enforce with the default `balanced` profile (`heavy_limit` max(2, CPUs/4), adaptive, `resume_cooldown` 10s), only the sample interval set to 500 ms as above. The columns are those above plus peak swap used and swap growth (peak minus the last sample before the first job), both from the daemon's own host sampler, which is cgroup-aware in a container, and the jobs that hit their cap or were killed by a signal (the OOM killer).
+
+These scenarios deliberately exhaust memory, so they are guarded more tightly than the CPU ones:
+- They need `THROT_BENCH_MEMORY=1` as well as `THROT_BENCH=1`, and run only on a CI runner (`CI=true`) or in a Linux container with a memory limit. They never run on a developer machine outside a container.
+- In a container they size from the cgroup limit (`memory.max`, or `memory.limit_in_bytes` on cgroup v1), never the host, and skip when there is none. On CI they size from `hw.memsize` (macOS) or `MemTotal` (Linux).
+- Every job exits by itself after 3 minutes of wall time (status 3, counted as capped), so a lost job cannot hold memory for long; a job paused past its cap exits as soon as it is resumed. A run fails after 7 minutes, which leaves room for `max_queue_wait`. Cleanup kills the agent stub's whole process group, jobs included, stopped or not.
+
+The `Bench` workflow runs them after the CPU scenarios. On a hosted runner they push the VM into swap and possibly the OOM killer; that is acceptable only because the runner is thrown away.
+
+**Container results**, not a real machine: two runs on the same Docker Desktop VM as above, with `docker run --memory=1g --memory-swap=2g --cpus=2 --init` (1 GiB of RAM and 1 GiB of swap for the container, 225 MiB per job). With two runs, each column shows the higher of the two:
+
+| Scenario | Mode | Probe p50 | p95 | p99 | Makespan | Makespan range | Peak running | Interventions | Max pressure | Peak swap | Swap growth | Capped / killed |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| memory burst, 8 at once | baseline | 1.7ms | 2.5ms | 22.2ms | 3m0.4s | 3m0.2s–3m0.4s | 8 | 0 | critical | 1023 MiB | 1023 MiB | 7 / 1 |
+| memory burst, 8 at once | Throt | 1.6ms | 3.6ms | 6.9ms | 2m53.3s | 1m7.9s–2m53.3s | 8 | 16 | high | 1 MiB | 0 MiB | 0 / 0 |
+| memory staggered, 8 one per 1s | baseline | 1.6ms | 7.4ms | 52.0ms | 1m2.1s | 44.3s–1m2.1s | 8 | 0 | critical | 867 MiB | 865 MiB | 0 / 0 |
+| memory staggered, 8 one per 1s | Throt | 1.8ms | 2.4ms | 3.9ms | 1m8.4s | 1m7.1s–1m8.4s | 3 | 12 | elevated | 788 MiB | 784 MiB | 0 / 0 |
+
+In the burst, the baseline fills the container's swap and thrashes: in both runs no job finished its work, seven hit the 3-minute cap and the OOM killer took the eighth, so its 3m0s makespan is the cap, not completion. With Throt every job finished, with almost no swap, but in 1m8s in one run and 2m53s in the other. Staggered, both modes finish; Throt cuts probe p99 from 52 ms to 4 ms for about 10% more makespan, but swap barely drops, because a paused job keeps its memory and the kernel swaps it out instead. Two runs in one container are not enough to settle the variance, and a container's memory limit is not a whole machine running out of RAM: the probe was never swapped out and stayed responsive at p50 in every mode. The CI runs are the real-machine test.
+
 ## Local protocol
 
 Clients reach `throtd` over its Unix socket (`throt doctor` prints the path). Each connection carries one request and one response, both newline-terminated JSON of at most 1 MiB:
