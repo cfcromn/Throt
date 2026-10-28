@@ -31,6 +31,9 @@ type LevelThresholds struct {
 	CPU float64
 	// Load is the median 1-minute load average per logical CPU.
 	Load float64
+	// Latency is the median foreground timer lateness (see
+	// domain.MetricLatency).
+	Latency time.Duration
 }
 
 // Thresholds configures the engine. All fields are policy; none are derived.
@@ -45,6 +48,9 @@ type Thresholds struct {
 	// SwapExitRatio scales a SwapGrowth enter threshold to its exit
 	// threshold (a rate has no natural absolute margin).
 	SwapExitRatio float64
+	// LatencyExitRatio scales a Latency enter threshold to its exit
+	// threshold. Lateness is noisy and has no natural absolute margin.
+	LatencyExitRatio float64
 	// EscalateSamples is how many consecutive samples the raw level must
 	// stay above the current level before escalating. Values < 1 mean 1.
 	EscalateSamples int
@@ -63,33 +69,39 @@ type Thresholds struct {
 //     build is normal and slows work rather than freezing the machine.
 //   - load per CPU: elevated 1.0, high 1.5, critical 3.0. A deep run queue
 //     is what makes the foreground feel sluggish.
-//   - exit margin 0.05, swap exit ratio 0.5, escalate after 3 consecutive
-//     samples, recover after 2x the window.
+//   - latency: elevated 25ms, high 100ms, never critical. Timer lateness is
+//     a direct measure of responsiveness, but like CPU it slows rather than
+//     freezes the machine.
+//   - exit margin 0.05, swap exit ratio 0.5, latency exit ratio 0.75,
+//     escalate after 3 consecutive samples, recover after 2x the window.
 func DefaultThresholds() Thresholds {
 	const mib = 1 << 20
 	return Thresholds{
-		Elevated:        LevelThresholds{MemoryUsed: 0.80, SwapGrowth: 1 * mib, CPU: 0.85, Load: 1.0},
-		High:            LevelThresholds{MemoryUsed: 0.90, SwapGrowth: 8 * mib, CPU: 0.95, Load: 1.5},
-		Critical:        LevelThresholds{MemoryUsed: 0.95, SwapGrowth: 32 * mib, Load: 3.0},
-		ExitMargin:      0.05,
-		SwapExitRatio:   0.5,
-		EscalateSamples: 3,
+		Elevated:         LevelThresholds{MemoryUsed: 0.80, SwapGrowth: 1 * mib, CPU: 0.85, Load: 1.0, Latency: 25 * time.Millisecond},
+		High:             LevelThresholds{MemoryUsed: 0.90, SwapGrowth: 8 * mib, CPU: 0.95, Load: 1.5, Latency: 100 * time.Millisecond},
+		Critical:         LevelThresholds{MemoryUsed: 0.95, SwapGrowth: 32 * mib, Load: 3.0},
+		ExitMargin:       0.05,
+		SwapExitRatio:    0.5,
+		LatencyExitRatio: 0.75,
+		EscalateSamples:  3,
 	}
 }
 
 // point is the part of a sample the engine retains. It copies values so the
 // engine never holds on to the caller's Missing slice.
 type point struct {
-	t                                time.Time
-	cpu, load, mem                   float64
-	swap                             uint64
-	hasCPU, hasLoad, hasMem, hasSwap bool
+	t                                            time.Time
+	cpu, load, mem                               float64
+	latency                                      time.Duration
+	swap                                         uint64
+	hasCPU, hasLoad, hasMem, hasSwap, hasLatency bool
 }
 
 // stats are the window statistics evaluated against thresholds.
 type stats struct {
-	mem, swap, cpu, load             float64
-	hasMem, hasSwap, hasCPU, hasLoad bool
+	// latency is in nanoseconds.
+	mem, swap, cpu, load, latency                float64
+	hasMem, hasSwap, hasCPU, hasLoad, hasLatency bool
 	// has reports whether any signal is present in the window.
 	has bool
 }
@@ -216,7 +228,9 @@ func (e *Engine) add(s domain.HostSample) {
 		cpu:     s.CPUUsage,
 		load:    s.Load1,
 		swap:    s.SwapUsed,
+		latency: s.Latency,
 	}
+	p.hasLatency = s.Has(domain.MetricLatency)
 
 	if p.hasMem {
 		avail := min(s.MemAvailable, s.MemTotal)
@@ -244,6 +258,7 @@ func (e *Engine) stats() stats {
 	st.mem, st.hasMem = e.median(func(p point) (float64, bool) { return p.mem, p.hasMem })
 	st.cpu, st.hasCPU = e.median(func(p point) (float64, bool) { return p.cpu, p.hasCPU })
 	st.load, st.hasLoad = e.median(func(p point) (float64, bool) { return p.load, p.hasLoad })
+	st.latency, st.hasLatency = e.median(func(p point) (float64, bool) { return float64(p.latency), p.hasLatency })
 
 	// Rates go in e.scratch, which median also uses; compute them last.
 	e.scratch = e.scratch[:0]
@@ -266,7 +281,7 @@ func (e *Engine) stats() stats {
 		prev = i
 	}
 	st.swap = medianOf(e.scratch)
-	st.has = st.hasMem || st.hasCPU || st.hasLoad || st.hasSwap
+	st.has = st.hasMem || st.hasCPU || st.hasLoad || st.hasSwap || st.hasLatency
 	return st
 }
 
@@ -312,12 +327,13 @@ func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
 			name    string
 			v, t    float64
 			present bool
-			rate    bool
+			kind    sigKind
 		}{
-			{"memory_used", st.mem, lv.th.MemoryUsed, st.hasMem, false},
-			{"swap_growth", st.swap, lv.th.SwapGrowth, st.hasSwap, true},
-			{"load", st.load, lv.th.Load, st.hasLoad, false},
-			{"cpu", st.cpu, lv.th.CPU, st.hasCPU, false},
+			{"memory_used", st.mem, lv.th.MemoryUsed, st.hasMem, kindFraction},
+			{"swap_growth", st.swap, lv.th.SwapGrowth, st.hasSwap, kindRate},
+			{"load", st.load, lv.th.Load, st.hasLoad, kindFraction},
+			{"latency", st.latency, float64(lv.th.Latency), st.hasLatency, kindDuration},
+			{"cpu", st.cpu, lv.th.CPU, st.hasCPU, kindFraction},
 		}
 		for _, sg := range sigs {
 			if !sg.present || sg.t <= 0 {
@@ -325,10 +341,10 @@ func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
 			}
 			t := sg.t
 			if exit {
-				t = e.exitThreshold(t, sg.rate)
+				t = e.exitThreshold(t, sg.kind)
 			}
 			if sg.v >= t {
-				return lv.l, sg.name + ">=" + formatThreshold(t)
+				return lv.l, sg.name + ">=" + formatThreshold(t, sg.kind)
 			}
 		}
 	}
@@ -338,13 +354,31 @@ func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
 	return domain.PressureNormal, "below_thresholds"
 }
 
+// sigKind selects how a signal's exit threshold is derived and how its
+// threshold is formatted in a reason.
+type sigKind int
+
+const (
+	// kindFraction uses the absolute ExitMargin.
+	kindFraction sigKind = iota
+	// kindRate (swap growth) uses SwapExitRatio.
+	kindRate
+	// kindDuration (latency, in nanoseconds) uses LatencyExitRatio.
+	kindDuration
+)
+
 // exitThreshold lowers an enter threshold by the configured hysteresis. A
 // degenerate configuration that would make the exit threshold non-positive
 // (and so impossible to clear) falls back to the enter threshold.
-func (e *Engine) exitThreshold(enter float64, rate bool) float64 {
-	t := enter - e.th.ExitMargin
-	if rate {
+func (e *Engine) exitThreshold(enter float64, kind sigKind) float64 {
+	var t float64
+	switch kind {
+	case kindRate:
 		t = enter * e.th.SwapExitRatio
+	case kindDuration:
+		t = enter * e.th.LatencyExitRatio
+	default:
+		t = enter - e.th.ExitMargin
 	}
 	if t <= 0 || t > enter {
 		return enter
@@ -352,6 +386,9 @@ func (e *Engine) exitThreshold(enter float64, rate bool) float64 {
 	return t
 }
 
-func formatThreshold(t float64) string {
+func formatThreshold(t float64, kind sigKind) string {
+	if kind == kindDuration {
+		return time.Duration(t).Round(time.Microsecond).String()
+	}
 	return strconv.FormatFloat(math.Round(t*1000)/1000, 'f', -1, 64)
 }
