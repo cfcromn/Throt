@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/doctor"
 	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/mcp"
 	"github.com/cfcromn/Throt/internal/platform"
 	"github.com/cfcromn/Throt/internal/transport"
 	"github.com/cfcromn/Throt/internal/tui"
@@ -34,6 +36,7 @@ Commands:
   pause PID  pause a heavy workload (SIGSTOP) shown in 'status'
   resume PID resume a paused workload (SIGCONT)
   doctor     print a sanitized diagnostic report (safe to share)
+  mcp        run a read-only MCP server on stdio for coding agents
   version    print the client version
 
 Flags:
@@ -81,6 +84,11 @@ func run(args []string) error {
 		_, err := tea.NewProgram(tui.New(daemonClient{socket: cfg.SocketPath}, cfg.SocketPath)).Run()
 		return err
 	}
+	if cmd == "mcp" {
+		// stdout carries MCP messages only; logs go to stderr.
+		log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		return mcp.New(daemonClient{socket: cfg.SocketPath}, app.Version, log).Serve(context.Background(), os.Stdin, os.Stdout)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -122,7 +130,7 @@ func run(args []string) error {
 	return nil
 }
 
-// daemonClient implements tui.Client over the local protocol.
+// daemonClient implements tui.Client and mcp.Client over the local protocol.
 type daemonClient struct{ socket string }
 
 func (c daemonClient) Status(ctx context.Context) (app.StatusResult, error) {
