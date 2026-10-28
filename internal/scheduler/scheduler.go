@@ -297,6 +297,10 @@ type Scheduler struct {
 	lastRound time.Time
 	// changes are limit changes not yet drained by Changes.
 	changes []LimitChange
+	// pressureKnown is set by the first round with a known pressure. Before
+	// it, unknown pressure is the pressure engine warming up, not degraded
+	// metrics, so it does not reset the adaptive limit.
+	pressureKnown bool
 }
 
 // New returns a scheduler with policy p.
@@ -362,7 +366,9 @@ func (s *Scheduler) Changes() []LimitChange {
 //     limit wherever it was when the build started;
 //   - elevated otherwise: hold;
 //   - high or critical: halve (floor 1), at most once per AdaptInterval;
-//   - unknown: reset to HeavyLimit at once (fail open).
+//   - unknown: reset to HeavyLimit at once (fail open), once pressure has
+//     been known; the unknown rounds before that are the pressure engine
+//     warming up and hold the limit, so a daemon start keeps StartLimit.
 func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel, throughputOnly bool) {
 	p := s.policy
 	if !p.Adaptive {
@@ -376,6 +382,9 @@ func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel, throughp
 	next, reason := s.limit, ""
 	switch pressure {
 	case domain.PressureUnknown:
+		if !s.pressureKnown {
+			return
+		}
 		// Degraded metrics must not keep work throttled. The reset is not
 		// rate limited and does not delay the next decrease.
 		s.lastAdapt = time.Time{}
@@ -433,6 +442,7 @@ func (s *Scheduler) Decide(in Input) []Decision {
 	}
 	s.lastRound = in.Now
 	s.adapt(in.Now, in.Pressure, in.ThroughputOnly)
+	s.pressureKnown = s.pressureKnown || in.Pressure != domain.PressureUnknown
 	limit := s.limit
 
 	paused := keySet(in.Paused)

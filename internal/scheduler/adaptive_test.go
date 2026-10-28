@@ -435,3 +435,31 @@ func TestStartLimitNormalize(t *testing.T) {
 		}
 	}
 }
+
+func TestAdaptiveStartLimitSurvivesWarmUp(t *testing.T) {
+	// The pressure engine reports unknown until it has escalated out of
+	// no_samples, so every daemon start begins with a few unknown rounds.
+	// They are not degraded metrics and must not throw the start limit away.
+	U, N := domain.PressureUnknown, domain.PressureNormal
+	p := adaptive(8)
+	p.StartLimit = 2
+	s := New(p)
+	for sec := range 3 {
+		s.Decide(Input{Now: at(sec), Pressure: U})
+	}
+	if s.Limit() != 2 {
+		t.Fatalf("limit %d after warm-up, want the start limit 2", s.Limit())
+	}
+	if got := s.Changes(); got != nil {
+		t.Fatalf("warm-up changed the limit: %+v", got)
+	}
+	s.Decide(Input{Now: at(3), Pressure: N})
+	if s.Limit() != 3 {
+		t.Fatalf("limit %d after the first normal round, want 3", s.Limit())
+	}
+	// Metrics lost after they were known still fail open.
+	s.Decide(Input{Now: at(4), Pressure: U})
+	if s.Limit() != 8 {
+		t.Fatalf("limit %d with degraded metrics, want the ceiling 8", s.Limit())
+	}
+}
