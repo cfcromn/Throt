@@ -29,26 +29,49 @@ import (
 
 // jobSource is the heavy job, named make so Throt classifies it as a build.
 // "make sleep" sleeps until killed; "make burn" burns one core until killed.
+// An optional duration ("make burn 2s") makes it exit after that much work:
+// CPU time for burn, 50ms sleep steps for sleep, so time spent stopped
+// (queued or paused) does not count.
 const jobSource = `package main
 
 import (
 	"os"
+	"syscall"
 	"time"
 )
 
 var sink uint64
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "burn" {
+	var d time.Duration
+	if len(os.Args) == 3 {
+		d, _ = time.ParseDuration(os.Args[2])
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "burn" {
 		x := sink
-		for {
+		for i := 1; ; i++ {
 			x = x*6364136223846793005 + 1442695040888963407
 			sink = x
+			if d > 0 && i%(1<<20) == 0 && cpuTime() >= d {
+				return
+			}
 		}
 	}
-	for {
-		time.Sleep(time.Hour)
+	if d <= 0 {
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
+	const step = 50 * time.Millisecond
+	for range max(d/step, 1) {
+		time.Sleep(step)
+	}
+}
+
+func cpuTime() time.Duration {
+	var ru syscall.Rusage
+	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 `
 
@@ -106,22 +129,32 @@ const (
 // binDir holds throt, throtd and the helpers, built once by TestMain.
 var binDir string
 
-func enabled() bool { return skipReason() == "" }
+// gate is an opt-in switch for tests that run real enforce-mode daemons.
+type gate struct {
+	env, what, run string // variable, test description, example test flags
+}
 
-// skipReason says why the suite must not run here, or "" when it may. The
-// test daemons control real processes, so outside a disposable environment
-// they could stop the builds of the developer's own agents.
-func skipReason() string {
+var (
+	e2eGate  = gate{"THROT_E2E", "the end-to-end tests", "-test.v"}
+	soakGate = gate{"THROT_SOAK", "the soak test", "-test.run=TestSoak -test.v -test.timeout=30m"}
+)
+
+func enabled() bool { return e2eGate.skipReason() == "" || soakGate.skipReason() == "" }
+
+// skipReason says why the tests must not run here, or "" when they may.
+// The test daemons control real processes, so outside a disposable
+// environment they could stop the builds of the developer's own agents.
+func (g gate) skipReason() string {
 	switch {
-	case os.Getenv("THROT_E2E") != "1":
-		return "set THROT_E2E=1 to run the end-to-end tests (CI or a container only)"
+	case os.Getenv(g.env) != "1":
+		return "set " + g.env + "=1 to run " + g.what + " (CI or a container only)"
 	case runtime.GOOS != "linux":
-		return "the end-to-end tests only run on Linux"
+		return g.what + " only run on Linux"
 	case os.Getenv("CI") != "true" && !inContainer():
-		return "THROT_E2E is set, but this is neither CI (CI=true) nor a container. The test daemons " +
-			"pause real processes, so run the suite only in a disposable environment, e.g. " +
+		return g.env + " is set, but this is neither CI (CI=true) nor a container. The test daemons " +
+			"pause real processes, so run " + g.what + " only in a disposable environment, e.g. " +
 			"docker run --rm -v \"$PWD\":/src -w /src golang:1.26.10-alpine sh -c " +
-			"'go test -c -o /tmp/e2e.test ./internal/e2e && THROT_E2E=1 /tmp/e2e.test -test.v' " +
+			"'go test -c -o /tmp/e2e.test ./internal/e2e && " + g.env + "=1 /tmp/e2e.test " + g.run + "' " +
 			"(run the binary directly: under go test, the go process would own every job)"
 	}
 	return ""
@@ -167,43 +200,52 @@ func build(dir string) error {
 	if err != nil {
 		return fmt.Errorf("go toolchain not found: %w", err)
 	}
-	run := func(srcDir string, args ...string) error {
-		cmd := exec.Command(goBin, args...)
-		cmd.Dir = srcDir
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("go %s: %w\n%s", strings.Join(args, " "), err, out)
-		}
-		return nil
-	}
 	for _, name := range []string{"throt", "throtd"} {
-		if err := run(".", "build", "-o", filepath.Join(binDir, name), "github.com/cfcromn/Throt/cmd/"+name); err != nil {
+		if err := goBuild(goBin, ".", "build", "-o", filepath.Join(binDir, name), "github.com/cfcromn/Throt/cmd/"+name); err != nil {
 			return err
 		}
 	}
 	for name, src := range map[string]string{"make": jobSource, agentExe: agentSource} {
-		srcDir := filepath.Join(dir, "src", name)
-		if err := os.MkdirAll(srcDir, 0o755); err != nil {
-			return err
-		}
-		for file, body := range map[string]string{"main.go": src, "go.mod": "module " + name + "\n\ngo 1.26\n"} {
-			if err := os.WriteFile(filepath.Join(srcDir, file), []byte(body), 0o644); err != nil {
-				return err
-			}
-		}
-		if err := run(srcDir, "build", "-o", filepath.Join(binDir, name), "."); err != nil {
+		if err := buildHelper(goBin, dir, name, src); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func requireE2E(t *testing.T) {
+func goBuild(goBin, srcDir string, args ...string) error {
+	cmd := exec.Command(goBin, args...)
+	cmd.Dir = srcDir
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("go %s: %w\n%s", strings.Join(args, " "), err, out)
+	}
+	return nil
+}
+
+// buildHelper compiles src, a main package, in its own throwaway module
+// under dir and installs it as binDir/name.
+func buildHelper(goBin, dir, name, src string) error {
+	srcDir := filepath.Join(dir, "src", name)
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		return err
+	}
+	for file, body := range map[string]string{"main.go": src, "go.mod": "module " + name + "\n\ngo 1.26\n"} {
+		if err := os.WriteFile(filepath.Join(srcDir, file), []byte(body), 0o644); err != nil {
+			return err
+		}
+	}
+	return goBuild(goBin, srcDir, "build", "-o", filepath.Join(binDir, name), ".")
+}
+
+func requireGate(t *testing.T, g gate) {
 	t.Helper()
-	if r := skipReason(); r != "" {
+	if r := g.skipReason(); r != "" {
 		t.Skip(r)
 	}
 }
+
+func requireE2E(t *testing.T) { t.Helper(); requireGate(t, e2eGate) }
 
 // lockedBuffer collects daemon output from its stderr goroutine.
 type lockedBuffer struct {
@@ -229,6 +271,8 @@ type env struct {
 	home string
 	vars []string
 	log  *lockedBuffer
+	// out, when set, receives the daemon's output instead of log.
+	out io.Writer
 
 	daemon  *exec.Cmd
 	exited  chan struct{} // closed when daemon has been waited for
@@ -240,6 +284,14 @@ type env struct {
 func newEnv(t *testing.T, config string) *env {
 	t.Helper()
 	requireE2E(t)
+	e := setupEnv(t, config)
+	e.startDaemon()
+	return e
+}
+
+// setupEnv is newEnv without starting throtd.
+func setupEnv(t *testing.T, config string) *env {
+	t.Helper()
 	home := filepath.Join(t.TempDir(), "home")
 	e := &env{t: t, home: home, log: &lockedBuffer{}}
 	runDir, cfgDir := filepath.Join(home, "run"), filepath.Join(home, "config")
@@ -265,7 +317,6 @@ func newEnv(t *testing.T, config string) *env {
 			t.Logf("throtd output:\n%s", e.log.String())
 		}
 	})
-	e.startDaemon()
 	return e
 }
 
@@ -288,6 +339,9 @@ func (e *env) startDaemon() {
 	cmd := exec.Command(filepath.Join(binDir, "throtd"))
 	cmd.Env = e.vars
 	cmd.Stdout, cmd.Stderr = e.log, e.log
+	if e.out != nil {
+		cmd.Stdout, cmd.Stderr = e.out, e.out
+	}
 	if err := cmd.Start(); err != nil {
 		e.t.Fatal(err)
 	}

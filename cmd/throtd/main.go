@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/config"
@@ -112,7 +114,16 @@ func run(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// THROT_DEBUG_GOROUTINES (hidden, for soak tests) logs the goroutine
+	// count at debug level, so it also forces the debug level.
+	every := goroutineLogInterval(os.Getenv("THROT_DEBUG_GOROUTINES"))
+	if every > 0 {
+		o.logLevel = slog.LevelDebug
+	}
 	log := newLogger(os.Stderr, o)
+	if every > 0 {
+		go logGoroutines(ctx, log, every)
+	}
 	procs, ctl := platform.NewProcessTools()
 	d := app.NewDaemon(cfg, platform.NewHostSampler(), procs, ctl, log)
 	d.SetConfigPath(o.configPath)
@@ -132,4 +143,35 @@ func run(args []string) error {
 		}
 	}()
 	return d.Run(ctx)
+}
+
+// goroutineLogInterval parses THROT_DEBUG_GOROUTINES, a hidden debugging
+// aid the soak test (internal/e2e) uses to watch for goroutine leaks: a Go
+// duration such as "30s", or any other non-empty value for one minute.
+// Empty or non-positive means off. It is deliberately documented only here:
+// it is not a supported interface.
+func goroutineLogInterval(v string) time.Duration {
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return time.Minute
+	}
+	return max(d, 0)
+}
+
+// logGoroutines logs runtime.NumGoroutine() at debug level every interval
+// until ctx is cancelled.
+func logGoroutines(ctx context.Context, log *slog.Logger, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		log.Debug("goroutines", "n", runtime.NumGoroutine())
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseFlagsDefaults(t *testing.T) {
@@ -83,5 +84,20 @@ func TestNewLogger(t *testing.T) {
 	newLogger(&b, options{logFormat: "text", logLevel: slog.LevelDebug}).Debug("shown")
 	if !strings.Contains(b.String(), "level=DEBUG msg=shown") {
 		t.Errorf("text = %q", b.String())
+	}
+}
+
+func TestGoroutineLogInterval(t *testing.T) {
+	for v, want := range map[string]time.Duration{
+		"":    0,
+		"30s": 30 * time.Second,
+		"1":   time.Minute,
+		"yes": time.Minute,
+		"-1s": 0,
+		"0s":  0,
+	} {
+		if got := goroutineLogInterval(v); got != want {
+			t.Errorf("goroutineLogInterval(%q) = %s, want %s", v, got, want)
+		}
 	}
 }

@@ -27,6 +27,7 @@ Admission leases make `throt run` race-free, and stopped processes Throt did not
 - `status` reports `scheduler.leases`; `throt status` shows `N reserved` and each reserved PID; the capacity verdict has `reserved`, which the `throt_capacity` text mentions.
 - Report stopped processes throtd did not pause (no paused record), such as work left stopped by a throtd killed before it wrote `paused.json`, or a Ctrl-Z shell job. They are reported, never resumed automatically: `throt status` prints a `STOPPED` line, `throt doctor` gains an `orphans` section (count, plus PID, base name, owner, time observed stopped and a hint for up to 50), and throtd logs one `orphan_stopped` event per newly found heavy workload of an agent (not for shell jobs). `throt resume PID` resumes such a workload after verifying identity; `throt resume --force PID` resumes any other stopped process of yours.
 - Process samples carry the process state (`ps state` on macOS, `/proc/<pid>/stat` on Linux).
+- `internal/e2e` soak test (`THROT_SOAK=1`, containers only, not run in CI): 10 minutes of agent job churn, PID reuse, manual pause/resume, `throt run`, mode reloads and a `throtd` crash and restart, checking for stranded stopped work, flat memory, goroutines, threads and file descriptors, `throt status` p99 under 1s, event `seq`/`instance` integrity, and the heavy limit.
 
 ### Changed
 - `throt run` against a `throtd` without `acquire` falls back to the previous advisory check; the other fail-open rules (daemon down runs at once, 5m default timeout, `--no-wait`) are unchanged.
