@@ -15,8 +15,15 @@ import (
 
 // SchedulerStatus is the scheduler part of StatusResult.
 type SchedulerStatus struct {
-	Mode       scheduler.Mode `json:"mode"`
-	HeavyLimit int            `json:"heavy_limit"`
+	Mode scheduler.Mode `json:"mode"`
+	// HeavyLimit is the effective limit; with Adaptive it moves between 1
+	// and MaxLimit.
+	HeavyLimit int `json:"heavy_limit"`
+	// Adaptive, StartLimit and MaxLimit (the configured heavy_limit) are set
+	// only for an adaptive scheduler.
+	Adaptive   bool `json:"adaptive,omitempty"`
+	StartLimit int  `json:"start_limit,omitempty"`
+	MaxLimit   int  `json:"max_limit,omitempty"`
 	// PerAgentLimit caps heavy workloads per agent; 0 means no cap.
 	PerAgentLimit int `json:"per_agent_limit"`
 	// Queued lists workloads the scheduler paused (queued or preempted).
@@ -35,6 +42,7 @@ func schedulerPolicy(c config.Scheduler) scheduler.Policy {
 	return scheduler.Policy{
 		Mode:            scheduler.Mode(c.Mode),
 		HeavyLimit:      c.HeavyLimit,
+		StartLimit:      c.StartLimit,
 		ResumeCooldown:  time.Duration(c.ResumeCooldown),
 		PauseOnCritical: c.PauseOnCritical,
 		MaxQueueWait:    time.Duration(c.MaxQueueWait),
@@ -161,5 +169,9 @@ func (d *Daemon) schedulerStatus() SchedulerStatus {
 		}
 	}
 	p := d.sched.Policy()
-	return SchedulerStatus{Mode: p.Mode, HeavyLimit: d.sched.Limit(), PerAgentLimit: p.PerOwnerLimit, Queued: queued, Leases: []Lease{}}
+	st := SchedulerStatus{Mode: p.Mode, HeavyLimit: d.sched.Limit(), PerAgentLimit: p.PerOwnerLimit, Queued: queued, Leases: []Lease{}}
+	if p.Adaptive {
+		st.Adaptive, st.StartLimit, st.MaxLimit = true, p.StartLimit, p.HeavyLimit
+	}
+	return st
 }

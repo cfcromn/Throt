@@ -32,6 +32,7 @@ func TestConfigCheckOK(t *testing.T) {
 		"  profile balanced -> cool (file)\n" +
 		"  scheduler.mode off -> observe (file)\n" +
 		fmt.Sprintf("  scheduler.heavy_limit %d -> 1 (profile)\n", def.HeavyLimit) +
+		fmt.Sprintf("  scheduler.start_limit %d -> 1 (profile)\n", def.StartLimit) +
 		"  scheduler.pause_on_critical false -> true (profile)\n"
 	if got := b.String(); got != want {
 		t.Errorf("output:\n%s\nwant:\n%s", got, want)
@@ -73,7 +74,7 @@ func TestConfigCheckWarnings(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, want string
 	}{
-		{"enforce with a limit of every CPU", `{"scheduler": {"mode": "enforce", "heavy_limit": 4}}`, "scheduler.heavy_limit 4 is at least the CPU count (4)"},
+		{"enforce with a fixed limit of every CPU", `{"scheduler": {"mode": "enforce", "heavy_limit": 4, "adaptive": false}}`, "scheduler.heavy_limit 4 is at least the CPU count (4) and adaptive is off"},
 		{"pause_on_critical while off", `{"scheduler": {"pause_on_critical": true}}`, "scheduler.pause_on_critical has no effect"},
 		{"shadowed built-in", `{"agents": [{"name": "mine", "executables": ["claude"]}]}`, `agents.mine: executable "claude" shadows the built-in "claude" adapter`},
 	} {
@@ -86,6 +87,20 @@ func TestConfigCheckWarnings(t *testing.T) {
 				t.Errorf("output %q lacks warning %q", b.String(), tc.want)
 			}
 		})
+	}
+	// An adaptive ceiling of every CPU is the balanced default, not a
+	// mistake.
+	for _, body := range []string{
+		`{"scheduler": {"mode": "enforce"}}`,
+		`{"profile": "balanced", "scheduler": {"mode": "enforce", "heavy_limit": 4}}`,
+	} {
+		var b bytes.Buffer
+		if err := configCheck(&b, writeConfigFile(t, body), 4); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(b.String(), "at least the CPU count") {
+			t.Errorf("%s: unexpected warning: %q", body, b.String())
+		}
 	}
 	// None of them fire for a careful config.
 	var b bytes.Buffer

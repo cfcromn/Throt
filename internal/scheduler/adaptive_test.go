@@ -371,3 +371,67 @@ func TestAdaptiveThroughputOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestAdaptiveStartLimit(t *testing.T) {
+	// The balanced profile on 5 CPUs: start 2, ceiling 5.
+	p := adaptive(5)
+	p.StartLimit = 2
+	s := New(p)
+	if s.Limit() != 2 || s.Policy().StartLimit != 2 {
+		t.Fatalf("initial limit %d, start %d; want 2", s.Limit(), s.Policy().StartLimit)
+	}
+	// CPU-saturated elevated pressure grows it to the ceiling and no further.
+	for sec := 0; sec <= 150; sec += 30 {
+		s.Decide(Input{Now: at(sec), Pressure: domain.PressureElevated, ThroughputOnly: true})
+	}
+	if s.Limit() != 5 {
+		t.Fatalf("limit %d after growth, want the ceiling 5", s.Limit())
+	}
+	if got := len(s.Changes()); got != 3 {
+		t.Fatalf("%d changes, want 3 (2 -> 5)", got)
+	}
+
+	// Off resets to the start; so does turning Adaptive on.
+	s.SetPolicy(Policy{Mode: ModeOff, HeavyLimit: 5, StartLimit: 2, Adaptive: true})
+	s.Decide(Input{Now: at(200)})
+	if s.Limit() != 2 {
+		t.Fatalf("limit %d after off, want 2", s.Limit())
+	}
+	s.SetPolicy(enforce(5))
+	if s.Limit() != 5 {
+		t.Fatalf("non-adaptive limit %d, want the fixed 5", s.Limit())
+	}
+	p.StartLimit = 3
+	s.SetPolicy(p)
+	if s.Limit() != 3 {
+		t.Fatalf("limit %d after turning adaptive on, want start 3", s.Limit())
+	}
+	// Staying adaptive keeps the current limit, capped at the new ceiling.
+	p.HeavyLimit, p.StartLimit = 8, 1
+	s.SetPolicy(p)
+	if s.Limit() != 3 {
+		t.Fatalf("limit %d after a reload that stays adaptive, want 3 kept", s.Limit())
+	}
+}
+
+func TestStartLimitNormalize(t *testing.T) {
+	for _, tc := range []struct {
+		start, want int
+		adaptive    bool
+		limit       int
+	}{
+		{0, 6, true, 6},  // unset: the ceiling
+		{-1, 6, true, 6}, // invalid: the ceiling
+		{9, 6, true, 6},  // above the ceiling: the ceiling
+		{2, 2, true, 2},
+		{2, 2, false, 6}, // ignored without Adaptive
+	} {
+		p := enforce(6)
+		p.Adaptive, p.StartLimit = tc.adaptive, tc.start
+		s := New(p)
+		if s.Policy().StartLimit != tc.want || s.Limit() != tc.limit {
+			t.Errorf("start %d adaptive %v: normalized start %d limit %d, want %d %d",
+				tc.start, tc.adaptive, s.Policy().StartLimit, s.Limit(), tc.want, tc.limit)
+		}
+	}
+}

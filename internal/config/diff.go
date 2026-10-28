@@ -41,6 +41,7 @@ func flatten(c Config) []keyValue {
 		{"profile", c.Profile},
 		{"scheduler.mode", s.Mode},
 		{"scheduler.heavy_limit", strconv.Itoa(s.HeavyLimit)},
+		{"scheduler.start_limit", strconv.Itoa(s.StartLimit)},
 		{"scheduler.resume_cooldown", dur(s.ResumeCooldown)},
 		{"scheduler.pause_on_critical", strconv.FormatBool(s.PauseOnCritical)},
 		{"scheduler.max_queue_wait", dur(s.MaxQueueWait)},

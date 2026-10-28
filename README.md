@@ -225,7 +225,8 @@ Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.js
   "profile": "balanced",
   "scheduler": {
     "mode": "observe",
-    "heavy_limit": 3,
+    "heavy_limit": 8,
+    "start_limit": 2,
     "adaptive": true,
     "per_agent_limit": 0,
     "resume_cooldown": "10s",
@@ -243,17 +244,19 @@ Three keys apply only when `throtd` starts; `throt reload` reports a change to t
 Custom agents can be added with `"agents": [{"name": "myagent", "executables": ["my-agent"]}]`. Generic runtimes such as `node` and build tools such as `go` are refused, because they would match unrelated processes. On Linux, executable names are truncated to 15 characters.
 
 `profile` presets the scheduler; explicit keys override it.
-- `performance`: limit = CPUs/2 (at least 2), not adaptive.
-- `balanced` (default): limit = CPUs/4 (at least 2), adaptive.
+- `performance`: a fixed limit of CPUs/2 (at least 2), not adaptive.
+- `balanced` (default): adaptive, starting at CPUs/4 (at least 2) and growing up to one per CPU (`heavy_limit` = CPUs, 2 to 64).
 - `cool`: limit 1, adaptive, may pause one workload under critical pressure.
 
+`heavy_limit` is the fixed limit, or with `adaptive` the ceiling. `start_limit` is where the adaptive limit starts (0 to `heavy_limit`, ignored without `adaptive`). Left out or 0, it comes from the profile, capped at `heavy_limit`, so a file that sets only `heavy_limit` keeps working.
+
 A profile never turns the scheduler on.
-- `adaptive` halves the running limit under high pressure and raises it by one per 30s, up to `heavy_limit`, while the machine copes: at normal pressure, or at elevated pressure caused only by busy CPUs (CPU, load, CPU PSI) with memory, swap and latency calm. Elevated pressure from memory, swap or latency holds it.
+- `adaptive` starts the running limit at `start_limit`, halves it under high pressure and raises it by one per 30s, up to `heavy_limit`, while the machine copes: at normal pressure, or at elevated pressure caused only by busy CPUs (CPU, load, CPU PSI) with memory, swap and latency calm. Elevated pressure from memory, swap or latency holds it.
 - `per_agent_limit` caps heavy workloads per agent, so one agent can't take every slot.
 
 `scheduler.mode` is `off` (default), `observe` (log what it would do as `scheduler_decision` events), or `enforce` (queue new agent-owned heavy workloads with SIGSTOP when `heavy_limit` heavy workloads are already running, and resume them as slots free up). Try `observe` first and watch `throt events`.
 
-Check a file before `throt reload` or a restart with `throt config check [--config PATH]`. It loads the file exactly as throtd does, prints `ok` and each value that differs from the defaults (marked `file` or `profile`), and exits 1 with the error for an invalid or missing file. It also warns, without failing, about `enforce` with a `heavy_limit` of at least the CPU count, `pause_on_critical` with mode `off` (no effect), and a custom agent executable that shadows a built-in adapter. `throt config show [--json]` prints the effective config (defaults, then the profile, then the file), the profile applied, and the source of every value: `default`, `profile`, or `file`.
+Check a file before `throt reload` or a restart with `throt config check [--config PATH]`. It loads the file exactly as throtd does, prints `ok` and each value that differs from the defaults (marked `file` or `profile`), and exits 1 with the error for an invalid or missing file. It also warns, without failing, about `enforce` with a fixed (not adaptive) `heavy_limit` of at least the CPU count, `pause_on_critical` with mode `off` (no effect), and a custom agent executable that shadows a built-in adapter. `throt config show [--json]` prints the effective config (defaults, then the profile, then the file), the profile applied, and the source of every value: `default`, `profile`, or `file`.
 
 throtd logs to stderr. Its flags are `-config PATH`, `-version`, `-log-format text|json` (default `text`) and `-log-level debug|info|warn|error` (default `info`). `info` stays quiet in steady state: daemon lifecycle, agents appearing and leaving, pressure changes, scheduler decisions and control actions. `debug` adds each heavy workload start and exit and each admission lease; failures and processes left stopped are `warn`. The event log (`throt events`) records everything regardless of the log level.
 

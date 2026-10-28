@@ -83,17 +83,18 @@ func profileKeys(name string) map[string]bool {
 	if !ok {
 		return keys
 	}
+	const ncpu = 8 // any count; only which keys change matters
 	other := Config{
 		SocketPath: "-", SampleInterval: -1, EventHistory: -1, Profile: "-",
 		Scheduler: Scheduler{
-			Mode: "-", HeavyLimit: -1, ResumeCooldown: -1, PauseOnCritical: true,
+			Mode: "-", HeavyLimit: -1, StartLimit: -1, ResumeCooldown: -1, PauseOnCritical: true,
 			MaxQueueWait: -1, Adaptive: true, PerAgentLimit: -1,
 		},
 		Agents: []Agent{{Name: "-"}},
 	}
 	for _, before := range []Config{{}, other} {
 		after := before
-		apply(&after)
+		apply(&after, ncpu)
 		for _, c := range Diff(before, after) {
 			keys[c.Key] = true
 		}

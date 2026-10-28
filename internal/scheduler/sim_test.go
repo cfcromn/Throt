@@ -79,7 +79,7 @@ func runSim(t *testing.T, sc simScenario) simResult {
 	cooldown := int(s.Policy().ResumeCooldown / time.Second)
 	maxQueueWait := int(s.Policy().MaxQueueWait / time.Second)
 	lastSwitch, preemptedNow := -1, false
-	res := simResult{limitMin: limit, limitMax: limit, ownerMaxWait: map[string]int{}, ownerFinish: map[string]int{}}
+	res := simResult{limitMin: s.Limit(), limitMax: s.Limit(), ownerMaxWait: map[string]int{}, ownerFinish: map[string]int{}}
 	done := 0
 	// counts returns the running controlled jobs and the running jobs per
 	// owner at tick.
@@ -295,23 +295,19 @@ func TestSimulation(t *testing.T) {
 	flood = append(flood, simJob{owner: "agent-b", arrive: 15, dur: 30}, simJob{owner: "agent-b", arrive: 16, dur: 30})
 
 	// CPU-only oversubscription, as on the first real-machine benchmark: a
-	// burst of 4x CPUs one-core builds (2 minutes each) on 8 CPUs, with the ceiling at the
-	// CPU count. A memory spike before the burst has halved the limit to 2.
-	// From then on only the CPU is saturated, which holds pressure at
-	// elevated; memory, swap and latency stay calm.
+	// burst of 4x CPUs one-core builds (2 minutes each) on 8 CPUs, under the
+	// balanced profile: start 2 (CPUs/4), ceiling 8 (the CPU count). Only
+	// the CPU is saturated, which holds pressure at elevated; memory, swap
+	// and latency stay calm.
 	oversubPolicy := base
-	oversubPolicy.HeavyLimit, oversubPolicy.Adaptive, oversubPolicy.ResumeCooldown = 8, true, time.Second
+	oversubPolicy.HeavyLimit, oversubPolicy.StartLimit, oversubPolicy.Adaptive = 8, 2, true
+	oversubPolicy.ResumeCooldown = time.Second
 	var oversub []simJob
 	for i := range 32 {
-		oversub = append(oversub, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 40, dur: 120})
+		oversub = append(oversub, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 1, dur: 120})
 	}
-	oversubPressure := func(t int) domain.PressureLevel {
-		if t < 31 {
-			return domain.PressureHigh
-		}
-		return domain.PressureElevated
-	}
-	cpuOnly := func(t int) bool { return t >= 31 }
+	oversubPressure := func(int) domain.PressureLevel { return domain.PressureElevated }
+	cpuOnly := func(int) bool { return true }
 	memoryElevated := func(int) bool { return false }
 	// ideal is the makespan with every build running at once on 8 CPUs.
 	const oversubIdeal = 32 * 120 / 8
@@ -353,8 +349,8 @@ func TestSimulation(t *testing.T) {
 			name: "same, elevated by memory", policy: oversubPolicy, jobs: oversub,
 			pressure: oversubPressure, throughputOnly: memoryElevated, noBound: true,
 			check: func(t *testing.T, r simResult) {
-				// Memory pressure holds the limit where high left it.
-				if r.limitEnd != 2 {
+				// Memory pressure holds the limit at its start.
+				if r.limitEnd != 2 || r.limitMax != 2 {
 					t.Errorf("limit ended at %d, want it held at 2", r.limitEnd)
 				}
 				if r.makespan < 3*oversubIdeal {

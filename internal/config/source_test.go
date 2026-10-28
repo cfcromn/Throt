@@ -56,7 +56,7 @@ func TestEffectiveMissingFile(t *testing.T) {
 	for _, s := range settings {
 		// The default profile, balanced, still accounts for the keys it sets.
 		want := SourceDefault
-		if s.Key == "scheduler.heavy_limit" || s.Key == "scheduler.adaptive" {
+		if s.Key == "scheduler.heavy_limit" || s.Key == "scheduler.start_limit" || s.Key == "scheduler.adaptive" {
 			want = SourceProfile
 		}
 		if s.Source != want {

@@ -84,8 +84,10 @@ func configCheck(w io.Writer, path string, ncpu int) error {
 func configWarnings(cfg config.Config, ncpu int) []string {
 	var out []string
 	s := cfg.Scheduler
-	if s.Mode == "enforce" && s.HeavyLimit >= ncpu {
-		out = append(out, fmt.Sprintf("scheduler.heavy_limit %d is at least the CPU count (%d), so enforce mode will rarely queue anything", s.HeavyLimit, ncpu))
+	// With adaptive the heavy limit is only a ceiling, which the balanced
+	// profile sets to the CPU count on purpose.
+	if s.Mode == "enforce" && !s.Adaptive && s.HeavyLimit >= ncpu {
+		out = append(out, fmt.Sprintf("scheduler.heavy_limit %d is at least the CPU count (%d) and adaptive is off, so enforce mode will rarely queue anything", s.HeavyLimit, ncpu))
 	}
 	if s.Mode == "off" && s.PauseOnCritical {
 		out = append(out, "scheduler.pause_on_critical has no effect while scheduler.mode is off")

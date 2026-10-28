@@ -270,7 +270,8 @@ func TestReloadRestartOnlyKeys(t *testing.T) {
 	e := startReloadEnv(t, w, file{})
 	other := filepath.Join(filepath.Dir(e.sock), "other.sock")
 	e.write(file{
-		Scheduler: map[string]any{"heavy_limit": 3},
+		// start_limit stays 1, so the change does not depend on the CPU count.
+		Scheduler: map[string]any{"heavy_limit": 3, "start_limit": 1},
 		Extra:     map[string]any{"socket_path": other, "sample_interval": "1s", "event_history": 50},
 	})
 	r := e.mustReload()
@@ -284,6 +285,10 @@ func TestReloadRestartOnlyKeys(t *testing.T) {
 	}
 	// The daemon keeps its socket, and reports the keys again next time.
 	waitFor(t, "limit applied", func() bool { return e.status().Scheduler.HeavyLimit == 3 })
+	// performance is not adaptive: start_limit is ignored and not shown.
+	if sc := e.status().Scheduler; sc.Adaptive || sc.StartLimit != 0 || sc.MaxLimit != 0 {
+		t.Fatalf("scheduler status = %+v, want no adaptive fields", sc)
+	}
 	if _, err := os.Stat(other); err == nil {
 		t.Fatal("daemon listened on the new socket")
 	}

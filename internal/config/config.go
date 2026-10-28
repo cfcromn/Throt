@@ -57,8 +57,13 @@ type Scheduler struct {
 	// Mode is "off", "observe" (log decisions, never act), or "enforce".
 	Mode string `json:"mode"`
 	// HeavyLimit is how many heavy workloads may run at once. Unattributed
-	// ones count toward it but are never queued.
+	// ones count toward it but are never queued. With Adaptive it is the
+	// ceiling the effective limit grows to.
 	HeavyLimit int `json:"heavy_limit"`
+	// StartLimit is where the adaptive limit starts, between 1 and
+	// HeavyLimit. 0 derives it from the profile, capped at HeavyLimit.
+	// Without Adaptive it is ignored and HeavyLimit is the fixed limit.
+	StartLimit int `json:"start_limit"`
 	// ResumeCooldown is the minimum time between two scheduler actions.
 	ResumeCooldown Duration `json:"resume_cooldown"`
 	// PauseOnCritical lets the scheduler pause a running workload (never
@@ -67,29 +72,52 @@ type Scheduler struct {
 	// MaxQueueWait is how long a queued workload waits before it outranks
 	// all others.
 	MaxQueueWait Duration `json:"max_queue_wait"`
-	// Adaptive lowers the running limit under pressure and raises it back
-	// (up to HeavyLimit) when the machine is calm.
+	// Adaptive starts the running limit at StartLimit, lowers it under
+	// pressure and raises it (up to HeavyLimit) while the machine copes.
 	Adaptive bool `json:"adaptive"`
 	// PerAgentLimit caps heavy workloads per agent instance; 0 is no cap.
 	PerAgentLimit int `json:"per_agent_limit"`
 }
 
-// Profile presets. The scheduler mode is never part of a profile: enabling
-// automatic control is always an explicit choice.
-var profiles = map[string]func(*Config){
-	"performance": func(c *Config) {
-		c.Scheduler.HeavyLimit = min(64, max(2, runtime.NumCPU()/2))
+// Profile presets for a machine with ncpu CPUs. The scheduler mode is never
+// part of a profile: enabling automatic control is always an explicit
+// choice.
+//
+// Balanced is adaptive with a ceiling of every CPU and a modest start, so
+// the limit can grow while only the CPUs are busy (see
+// scheduler.Input.ThroughputOnly). Performance stays a fixed limit, since
+// adaptive control would also halve it under memory pressure; its ceiling
+// is its fixed limit, so it keeps its old value rather than 2x CPUs, which
+// would hardly ever queue anything.
+var profiles = map[string]func(c *Config, ncpu int){
+	"performance": func(c *Config, ncpu int) {
+		c.Scheduler.HeavyLimit = min(64, max(2, ncpu/2))
+		c.Scheduler.StartLimit = c.Scheduler.HeavyLimit
 		c.Scheduler.Adaptive = false
 	},
-	"balanced": func(c *Config) {
-		c.Scheduler.HeavyLimit = min(64, max(2, runtime.NumCPU()/4))
+	"balanced": func(c *Config, ncpu int) {
+		c.Scheduler.HeavyLimit = min(64, max(2, ncpu))
+		c.Scheduler.StartLimit = min(64, max(2, ncpu/4))
 		c.Scheduler.Adaptive = true
 	},
-	"cool": func(c *Config) {
+	"cool": func(c *Config, ncpu int) {
 		c.Scheduler.HeavyLimit = 1
+		c.Scheduler.StartLimit = 1
 		c.Scheduler.Adaptive = true
 		c.Scheduler.PauseOnCritical = true
 	},
+}
+
+// derivedStart is the start limit for profile on ncpu CPUs, capped at
+// heavyLimit. An unknown or empty profile derives as balanced.
+func derivedStart(profile string, ncpu, heavyLimit int) int {
+	apply, ok := profiles[profile]
+	if !ok {
+		apply = profiles["balanced"]
+	}
+	var c Config
+	apply(&c, ncpu)
+	return min(c.Scheduler.StartLimit, heavyLimit)
 }
 
 // Duration is a time.Duration that reads and writes strings like "2s".
@@ -126,7 +154,7 @@ func Default() Config {
 		},
 		Profile: "balanced",
 	}
-	profiles[c.Profile](&c)
+	profiles[c.Profile](&c, runtime.NumCPU())
 	return c
 }
 
@@ -155,7 +183,12 @@ func DefaultSocketPath() string {
 // Load reads path, applying defaults for omitted fields. A missing file yields
 // Default(); unknown keys and invalid values are errors.
 func Load(path string) (Config, error) {
+	return load(path, runtime.NumCPU())
+}
+
+func load(path string, ncpu int) (Config, error) {
 	cfg := Default()
+	profiles[cfg.Profile](&cfg, ncpu)
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return cfg, nil
@@ -166,7 +199,10 @@ func Load(path string) (Config, error) {
 	// Apply the profile's presets first, then decode the file again over
 	// them so explicit settings win.
 	var head struct {
-		Profile string `json:"profile"`
+		Profile   string `json:"profile"`
+		Scheduler struct {
+			StartLimit *int `json:"start_limit"`
+		} `json:"scheduler"`
 	}
 	if err := json.Unmarshal(b, &head); err != nil {
 		return cfg, fmt.Errorf("parse config %s: %w", path, err)
@@ -176,7 +212,7 @@ func Load(path string) (Config, error) {
 		if !ok {
 			return cfg, fmt.Errorf("config %s: profile must be performance, balanced, or cool, not %q", path, head.Profile)
 		}
-		apply(&cfg)
+		apply(&cfg, ncpu)
 	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
@@ -185,6 +221,11 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.SocketPath == "" {
 		cfg.SocketPath = DefaultSocketPath()
+	}
+	if head.Scheduler.StartLimit == nil || *head.Scheduler.StartLimit == 0 {
+		// An explicit heavy_limit below the profile's start caps it, so a
+		// file written before start_limit existed stays valid.
+		cfg.Scheduler.StartLimit = derivedStart(cfg.Profile, ncpu, cfg.Scheduler.HeavyLimit)
 	}
 	if err := cfg.Validate(); err != nil {
 		return cfg, fmt.Errorf("config %s: %w", path, err)
@@ -233,6 +274,9 @@ func (c Config) Validate() error {
 	}
 	if c.Scheduler.HeavyLimit < 1 || c.Scheduler.HeavyLimit > 64 {
 		return errors.New("scheduler.heavy_limit must be between 1 and 64")
+	}
+	if c.Scheduler.StartLimit < 0 || c.Scheduler.StartLimit > c.Scheduler.HeavyLimit {
+		return fmt.Errorf("scheduler.start_limit must be between 0 and scheduler.heavy_limit (%d)", c.Scheduler.HeavyLimit)
 	}
 	if c.Scheduler.ResumeCooldown < 0 || c.Scheduler.MaxQueueWait < Duration(time.Second) {
 		return errors.New("scheduler.resume_cooldown must be >= 0 and scheduler.max_queue_wait >= 1s")

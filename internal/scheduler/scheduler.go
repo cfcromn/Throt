@@ -7,7 +7,7 @@
 // workloads are paused.
 //
 // With Policy.Adaptive the number of heavy slots follows pressure (AIMD):
-// HeavyLimit is the ceiling, and the effective limit grows by one per
+// HeavyLimit is the ceiling, the effective limit starts at StartLimit and grows by one per
 // AdaptInterval under normal pressure, or elevated pressure caused by
 // throughput signals only, and halves under high or critical pressure. Limit changes are not decisions; the daemon drains them with
 // Changes and reports them as events.
@@ -99,10 +99,14 @@ type Policy struct {
 	// long outranks every other queued workload. Values <= 0 use the
 	// default.
 	MaxQueueWait time.Duration
-	// Adaptive makes HeavyLimit a ceiling: the effective limit starts there
-	// and follows pressure between 1 and HeavyLimit. Lowering it never
-	// preempts; new starts and resumes just wait.
+	// Adaptive makes HeavyLimit a ceiling: the effective limit starts at
+	// StartLimit and follows pressure between 1 and HeavyLimit. Lowering it
+	// never preempts; new starts and resumes just wait.
 	Adaptive bool
+	// StartLimit is the adaptive limit after New, a policy change that
+	// turns Adaptive on, or ModeOff. Values < 1 or above HeavyLimit mean
+	// HeavyLimit. It is ignored without Adaptive.
+	StartLimit int
 	// AdaptInterval is the minimum time between two adaptive limit changes
 	// driven by normal, elevated (throughput only), high or critical
 	// pressure. Values <= 0 use the
@@ -132,6 +136,9 @@ func (p Policy) normalized() Policy {
 		p.Mode = ModeOff
 	}
 	p.HeavyLimit = max(p.HeavyLimit, 1)
+	if p.StartLimit < 1 || p.StartLimit > p.HeavyLimit {
+		p.StartLimit = p.HeavyLimit
+	}
 	p.ResumeCooldown = max(p.ResumeCooldown, 0)
 	if p.MaxQueueWait <= 0 {
 		p.MaxQueueWait = DefaultMaxQueueWait
@@ -141,6 +148,15 @@ func (p Policy) normalized() Policy {
 	}
 	p.PerOwnerLimit = max(p.PerOwnerLimit, 0)
 	return p
+}
+
+// start is the effective limit to begin with: StartLimit when adaptive,
+// otherwise the fixed HeavyLimit. p must be normalized.
+func (p Policy) start() int {
+	if p.Adaptive {
+		return p.StartLimit
+	}
+	return p.HeavyLimit
 }
 
 // Input is one decision round's view of the host.
@@ -286,7 +302,7 @@ type Scheduler struct {
 // New returns a scheduler with policy p.
 func New(p Policy) *Scheduler {
 	p = p.normalized()
-	return &Scheduler{policy: p, seen: map[domain.ProcessKey]*entry{}, limit: p.HeavyLimit}
+	return &Scheduler{policy: p, seen: map[domain.ProcessKey]*entry{}, limit: p.start()}
 }
 
 // Policy returns the effective (normalized) policy.
@@ -297,10 +313,11 @@ func (s *Scheduler) Policy() Policy { return s.policy }
 // are already paused is kept so they are still resumed.
 //
 // If the scheduler was and stays adaptive, the effective limit is kept,
-// clamped to the new ceiling; otherwise it becomes the new HeavyLimit.
+// clamped to the new ceiling; otherwise it becomes the new StartLimit when
+// adaptive, or the new HeavyLimit.
 func (s *Scheduler) SetPolicy(p Policy) {
 	p = p.normalized()
-	limit := p.HeavyLimit
+	limit := p.start()
 	if p.Adaptive && s.policy.Adaptive {
 		limit = min(s.limit, p.HeavyLimit)
 	}
@@ -310,8 +327,8 @@ func (s *Scheduler) SetPolicy(p Policy) {
 	s.setLimit(limit, ReasonPolicyChanged, s.lastRound)
 }
 
-// Limit returns the effective heavy limit: Policy().HeavyLimit unless
-// Adaptive lowered it.
+// Limit returns the effective heavy limit: Policy().HeavyLimit, or with
+// Adaptive the limit that started at StartLimit and follows pressure.
 func (s *Scheduler) Limit() int { return s.limit }
 
 // Queued returns the workloads waiting in line (queued or preempted) as of
@@ -665,7 +682,7 @@ func (s *Scheduler) reset() {
 	s.baselined = false
 	s.lastSwitch = time.Time{}
 	clear(s.seen)
-	s.limit = s.policy.HeavyLimit
+	s.limit = s.policy.start()
 	s.lastAdapt = time.Time{}
 	s.changes = nil
 }
