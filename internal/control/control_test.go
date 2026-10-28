@@ -40,6 +40,9 @@ type fakeSig struct {
 	stopErr map[int]error
 	contErr map[int]error
 	goneErr map[int]error
+	// identErr scripts Identify failures; idents counts Identify calls.
+	identErr map[int]error
+	idents   int
 	// onCall runs before each Stop or Continue, to script races.
 	onCall func(op string, pid int)
 	// calls records every Stop and Continue, e.g. "stop 10" or "cont 11",
@@ -50,7 +53,7 @@ type fakeSig struct {
 // newSig returns a fake where each pid is alive, owned by me, and started
 // at key(pid).Start.
 func newSig(pids ...int) *fakeSig {
-	f := &fakeSig{procs: map[int]ident{}, stopErr: map[int]error{}, contErr: map[int]error{}, goneErr: map[int]error{}}
+	f := &fakeSig{procs: map[int]ident{}, stopErr: map[int]error{}, contErr: map[int]error{}, goneErr: map[int]error{}, identErr: map[int]error{}}
 	for _, p := range pids {
 		f.procs[p] = ident{key(p).Start, me}
 	}
@@ -90,6 +93,34 @@ func (f *fakeSig) Gone(_ context.Context, k domain.ProcessKey) (bool, error) {
 	}
 	p, ok := f.procs[k.PID]
 	return !ok || !p.start.Equal(k.Start), nil
+}
+
+// Identify reports pid's live start and uid, like the platform, without
+// recording a call: it is not a signal. identErr scripts a lookup failure.
+func (f *fakeSig) Identify(_ context.Context, pid int) (domain.ProcessSample, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.idents++
+	if err := f.identErr[pid]; err != nil {
+		return domain.ProcessSample{}, err
+	}
+	p, ok := f.procs[pid]
+	if !ok {
+		return domain.ProcessSample{}, fmt.Errorf("pid %d: %w", pid, domain.ErrProcessGone)
+	}
+	return domain.ProcessSample{PID: pid, Start: p.start, UID: p.uid}, nil
+}
+
+// chownAtFirstSignal gives pid to uid just before the first Stop or
+// Continue, after Pause's upfront identity check: a setuid race.
+func (f *fakeSig) chownAtFirstSignal(pid int, uid uint32) {
+	f.onCall = func(string, int) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if len(f.calls) == 0 {
+			f.procs[pid] = ident{f.procs[pid].start, uid}
+		}
+	}
 }
 
 func (f *fakeSig) note(s string) {
@@ -210,6 +241,57 @@ func TestPauseRefusals(t *testing.T) {
 	}
 }
 
+// A sample's uid can be stale (the Linux sampler re-reads uids in a
+// rolling window). Eligibility uses the live uid of every member, so a
+// member that changed owner refuses the pause before any signal, instead of
+// stopping the top and rolling it back every round.
+func TestPauseRefusesStaleUID(t *testing.T) {
+	for _, pid := range []int{10, 11} {
+		t.Run(fmt.Sprint(pid), func(t *testing.T) {
+			sig := newSig(10, 11, 12)
+			sig.procs[pid] = ident{key(pid).Start, 502}
+			c := New(sig, me, clock, nil)
+			err := c.Pause(context.Background(), target(10, 11, 12))
+			if r := reason(err); r != ReasonForeignUID {
+				t.Fatalf("reason = %q (err %v), want %q", r, err, ReasonForeignUID)
+			}
+			if len(sig.log()) != 0 || len(c.Paused()) != 0 {
+				t.Errorf("refusal signaled %v / recorded %v", sig.log(), c.Paused())
+			}
+		})
+	}
+}
+
+// A failed live lookup fails closed: nothing is signaled. A member that is
+// gone or whose PID was reused is not a refusal; Stop skips it as before.
+func TestPauseLiveIdentity(t *testing.T) {
+	sig := newSig(10, 11, 12)
+	sig.identErr[11] = errors.New("read /proc/11/status: EIO")
+	c := New(sig, me, clock, nil)
+	if err := c.Pause(context.Background(), target(10, 11, 12)); err == nil || reason(err) != "" {
+		t.Fatalf("Pause with a failed lookup = %v, want a non-refusal error", err)
+	}
+	if len(sig.log()) != 0 || len(c.Paused()) != 0 {
+		t.Errorf("failed lookup signaled %v / recorded %v", sig.log(), c.Paused())
+	}
+
+	sig = newSig(10, 12)
+	sig.procs[13] = ident{key(13).Start.Add(time.Second), 502} // pid reused by another user
+	c = New(sig, me, clock, nil)
+	if err := c.Pause(context.Background(), target(10, 11, 12, 13)); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"stop 10", "stop 11", "stop 12", "stop 13"}; !reflect.DeepEqual(sig.log(), want) {
+		t.Errorf("calls = %v, want %v", sig.log(), want)
+	}
+	if got := c.Paused()[0].Members; !reflect.DeepEqual(got, keys(10, 12)) {
+		t.Errorf("members = %v, want %v", got, keys(10, 12))
+	}
+	if sig.idents != 4 {
+		t.Errorf("Identify calls = %d, want one per member", sig.idents)
+	}
+}
+
 func TestPauseAlreadyPaused(t *testing.T) {
 	sig := newSig(10, 11, 20)
 	c := New(sig, me, clock, nil)
@@ -283,7 +365,7 @@ func TestPauseRaces(t *testing.T) {
 		},
 		{
 			name:      "top pid now another user aborts",
-			setup:     func(f *fakeSig) { f.procs[10] = ident{key(10).Start, 0} },
+			setup:     func(f *fakeSig) { f.chownAtFirstSignal(10, 0) },
 			wantErr:   domain.ErrProcessGone,
 			wantCalls: []string{"stop 10"},
 		},
@@ -309,7 +391,7 @@ func TestPauseRaces(t *testing.T) {
 		},
 		{
 			name:        "child pid now foreign uid is skipped",
-			setup:       func(f *fakeSig) { f.procs[12] = ident{key(12).Start, 0} },
+			setup:       func(f *fakeSig) { f.chownAtFirstSignal(12, 0) },
 			wantCalls:   []string{"stop 10", "stop 11", "stop 12"},
 			wantMembers: keys(10, 11),
 		},
@@ -762,6 +844,11 @@ func (hangingSig) Continue(ctx context.Context, _ domain.ProcessKey, _ uint32) e
 func (hangingSig) Gone(ctx context.Context, _ domain.ProcessKey) (bool, error) {
 	<-ctx.Done()
 	return false, ctx.Err()
+}
+
+func (hangingSig) Identify(ctx context.Context, _ int) (domain.ProcessSample, error) {
+	<-ctx.Done()
+	return domain.ProcessSample{}, ctx.Err()
 }
 
 func TestCallDeadline(t *testing.T) {

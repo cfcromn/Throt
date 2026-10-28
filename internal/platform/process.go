@@ -34,10 +34,10 @@ type ProcessController interface {
 	// process, or one with another start time. An error means the OS could
 	// not be asked.
 	Gone(ctx context.Context, key domain.ProcessKey) (bool, error)
+	ProcessIdentifier
 }
 
-// ProcessIdentifier looks up one live process. Every ProcessController of
-// this package implements it.
+// ProcessIdentifier looks up one live process.
 type ProcessIdentifier interface {
 	// Identify returns pid's parent, uid and start time, with exactly the
 	// values the platform's ProcessSampler reports (from NewProcessTools on

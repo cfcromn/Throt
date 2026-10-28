@@ -44,6 +44,11 @@ func (r *recordingSig) Gone(_ context.Context, k domain.ProcessKey) (bool, error
 	return false, nil
 }
 
+func (r *recordingSig) Identify(_ context.Context, pid int) (domain.ProcessSample, error) {
+	r.record("identify", domain.ProcessKey{PID: pid})
+	return domain.ProcessSample{}, domain.ErrProcessGone
+}
+
 func FuzzRestoreAndResume(f *testing.F) {
 	member := func(pid int, start string) string {
 		return fmt.Sprintf(`{"version":1,"paused":[{"process":{"pid":%d,"start":%q},"members":[{"pid":%d,"start":%q}]}]}`, pid, start, pid, start)

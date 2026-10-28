@@ -121,6 +121,10 @@ type Signaler interface {
 	// or its PID now names a process with another start time). An error
 	// means it could not be determined.
 	Gone(ctx context.Context, key domain.ProcessKey) (bool, error)
+	// Identify returns pid's live start time and uid, with exactly the
+	// values Stop compares. It fails with domain.ErrProcessGone when pid
+	// names no process.
+	Identify(ctx context.Context, pid int) (domain.ProcessSample, error)
 }
 
 // PausedWorkload records one paused workload. Members are ordered parents
@@ -254,8 +258,8 @@ func (c *Controller) PauseAs(ctx context.Context, t process.WorkloadTarget, by s
 	if err := c.eligible(t); err != nil {
 		return err
 	}
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("control: pause of %s: %w", keyString(t.Key), err)
+	if err := c.liveOwners(ctx, t); err != nil {
+		return err
 	}
 
 	rec := PausedWorkload{Key: t.Key, Name: t.Name, Owner: t.Owner, Since: c.now(), State: StatePausing, By: by}
@@ -347,6 +351,35 @@ func (c *Controller) eligible(t process.WorkloadTarget) error {
 	}
 	if len(c.paused) >= MaxPaused {
 		return refuse(ReasonLimitReached)
+	}
+	return nil
+}
+
+// liveOwners checks every member's live uid before anything is signaled:
+// a sample's uid can be stale (a process that called setuid keeps its PID
+// and start time), and a member refused by Stop mid-pause would stop and
+// roll back the rest every round. A member that is gone or whose PID was
+// reused is left for Stop to skip. A failed lookup refuses to pause.
+func (c *Controller) liveOwners(ctx context.Context, t process.WorkloadTarget) error {
+	for _, m := range t.Members {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("control: pause of %s: %w", keyString(t.Key), err)
+		}
+		var p domain.ProcessSample
+		err := c.call(ctx, func(ctx context.Context) (err error) {
+			p, err = c.sig.Identify(ctx, m.Key.PID)
+			return err
+		})
+		switch {
+		case errors.Is(err, domain.ErrProcessGone):
+			continue
+		case err != nil:
+			return fmt.Errorf("control: pause of %s: identify %s: %w", keyString(t.Key), keyString(m.Key), err)
+		case !p.Start.Equal(m.Key.Start):
+			continue
+		case p.UID != c.uid:
+			return refuse(ReasonForeignUID)
+		}
 	}
 	return nil
 }

@@ -83,6 +83,16 @@ func (f *fakeSignaler) setContFail(fail bool) {
 	f.contFail = fail
 }
 
+func (f *fakeSignaler) Identify(ctx context.Context, pid int) (domain.ProcessSample, error) {
+	procs, _ := fakeSampler{}.SampleProcesses(ctx)
+	for _, p := range procs {
+		if p.PID == pid {
+			return p, nil
+		}
+	}
+	return domain.ProcessSample{}, domain.ErrProcessGone
+}
+
 func (f *fakeSignaler) Gone(_ context.Context, k domain.ProcessKey) (bool, error) {
 	_, ok := f.identity(k)
 	return !ok, nil

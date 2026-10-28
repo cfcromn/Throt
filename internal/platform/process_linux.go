@@ -238,8 +238,9 @@ func procRoot(root string) string {
 // ponytail: a rolling refresh instead of change detection; a process that
 // changes its real uid in place (a root daemon dropping privileges after
 // its first sample) keeps its old uid for up to this many samples. The
-// controller re-reads the uid before every signal, so a stale one can only
-// make a signal fail its identity check, never reach another user's process.
+// controller checks every member's live uid before a pause sends its first
+// signal, and again with each signal, so a stale one never reaches another
+// user's process.
 const uidRefresh = 15
 
 // procID is a process identity: a reused PID has a new start time.
