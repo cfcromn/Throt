@@ -76,7 +76,14 @@ Metrics the platform cannot provide show as `n/a`, and if `throtd` is not runnin
 
 ## Install
 
-Download a release archive for macOS or Linux (amd64/arm64) from [Releases](https://github.com/cfcromn/Throt/releases), verify it against `checksums.txt`, and put `throt` and `throtd` on your `PATH`. Or build from source with the Go version in `go.mod`:
+Download a release archive for macOS or Linux (amd64/arm64) from [Releases](https://github.com/cfcromn/Throt/releases), verify it (build provenance for `gh attestation verify` is published only while the repository is public), and put `throt` and `throtd` on your `PATH`:
+
+```bash
+sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 --ignore-missing -c checksums.txt
+gh attestation verify throt_<version>_<os>_<arch>.tar.gz --repo cfcromn/Throt
+```
+
+Or build from source with the Go version in `go.mod`:
 
 ```bash
 go install github.com/cfcromn/Throt/cmd/throt@latest
