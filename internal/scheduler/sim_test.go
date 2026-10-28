@@ -150,16 +150,7 @@ func runSim(t *testing.T, sc simScenario) simResult {
 				continue
 			}
 			switched = true
-			exempt := false
-			switch d.Reason {
-			case ReasonPressureNormal:
-				exempt = pressure == domain.PressureNormal
-			case ReasonPressureThroughput:
-				exempt = pressure == domain.PressureElevated && in.ThroughputOnly
-			case ReasonWorkloadExited:
-				exempt = pressure != domain.PressureHigh && pressure != domain.PressureCritical
-			}
-			if d.Action == ActionResume && exempt {
+			if cooldownExemptResume(d, pressure, in.ThroughputOnly) {
 				if lastPreempt >= 0 && tick-lastPreempt < cooldown {
 					t.Fatalf("%s t=%d: resume (%s) %ds after a preemption", sc.name, tick, d.Reason, tick-lastPreempt)
 				}
@@ -734,4 +725,23 @@ func TestLineNoStarvation(t *testing.T) {
 			t.Errorf("%s waited up to %ds, bound %ds", k, w, bound)
 		}
 	}
+}
+
+// cooldownExemptResume reports whether d is a resume the cooldown does not
+// space: into a free slot at normal or throughput-only pressure, or into a
+// slot an exit freed below high pressure. Every other resume and every
+// preemption is spaced, so a round has at most one of those.
+func cooldownExemptResume(d Decision, pressure domain.PressureLevel, throughputOnly bool) bool {
+	if d.Action != ActionResume {
+		return false
+	}
+	switch d.Reason {
+	case ReasonPressureNormal:
+		return pressure == domain.PressureNormal
+	case ReasonPressureThroughput:
+		return pressure == domain.PressureElevated && throughputOnly
+	case ReasonWorkloadExited:
+		return pressure != domain.PressureHigh && pressure != domain.PressureCritical
+	}
+	return false
 }

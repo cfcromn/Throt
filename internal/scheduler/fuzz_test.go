@@ -19,6 +19,9 @@ func FuzzDecideInvariants(f *testing.F) {
 	f.Add(uint8(2), uint8(1), true, true, []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
 	f.Add(uint8(1), uint8(0), false, true, []byte{0, 0, 0, 0x34, 0x34, 0x34, 5, 5, 0x44, 0x44, 9})
 	f.Add(uint8(4), uint8(2), true, false, []byte{0, 0, 0, 0, 0x14, 0x24, 0x34, 0x44, 0x07, 0x17, 0x27})
+	// High pressure queues three arrivals; at normal pressure they refill
+	// free slots together, which the cooldown does not space.
+	f.Add(uint8(4), uint8(0), false, false, []byte{0x34, 0x11, 0x21, 0x31, 0x14, 0x25})
 	f.Fuzz(func(t *testing.T, ceiling, perOwner uint8, adaptiveOn, pauseOnCritical bool, ops []byte) {
 		ops = ops[:min(len(ops), 256)] // rounds are O(workloads); keep each input fast
 		p := DefaultPolicy()
@@ -35,6 +38,8 @@ func FuzzDecideInvariants(f *testing.F) {
 		held := map[domain.ProcessKey]bool{}
 		now, pid := t0, 100
 		pressure := domain.PressureNormal
+		throughputOnly := false
+		var exited []domain.ProcessKey // exits since the last round
 
 		round := func(level domain.PressureLevel) []Decision {
 			var ps, hs []domain.ProcessKey
@@ -46,18 +51,22 @@ func FuzzDecideInvariants(f *testing.F) {
 					hs = append(hs, v.Key)
 				}
 			}
-			ds := s.Decide(Input{Now: now, Pressure: level, Heavy: slices.Clone(live), Paused: ps, Held: hs})
+			ds := s.Decide(Input{Now: now, Pressure: level, ThroughputOnly: throughputOnly && level == domain.PressureElevated,
+				Heavy: slices.Clone(live), Paused: ps, Held: hs, Exited: exited})
+			exited = nil
 			if l := s.Limit(); l < 1 || l > ceil {
 				t.Fatalf("limit %d outside [1, %d]", l, ceil)
 			}
-			resumes, preempts := 0, 0
+			spaced, preempts := 0, 0
 			for _, d := range ds {
 				if held[d.Key] {
 					t.Fatalf("decision %+v on a held workload", d)
 				}
 				switch d.Action {
 				case ActionResume:
-					resumes++
+					if !cooldownExemptResume(d, level, throughputOnly && level == domain.PressureElevated) {
+						spaced++
+					}
 					if !paused[d.Key] {
 						t.Fatalf("resume of %d, which is not paused", d.Key.PID)
 					}
@@ -71,6 +80,7 @@ func FuzzDecideInvariants(f *testing.F) {
 					}
 					if d.Action == ActionPreempt {
 						preempts++
+						spaced++
 						if level != domain.PressureCritical || !s.Policy().PauseOnCritical {
 							t.Fatalf("preempt at %v", level)
 						}
@@ -78,8 +88,8 @@ func FuzzDecideInvariants(f *testing.F) {
 					paused[d.Key] = true
 				}
 			}
-			if resumes > 1 || preempts > 1 {
-				t.Fatalf("%d resumes and %d preemptions in one round", resumes, preempts)
+			if spaced > 1 || preempts > 1 {
+				t.Fatalf("%d spaced switches and %d preemptions in one round", spaced, preempts)
 			}
 			return ds
 		}
@@ -92,6 +102,7 @@ func FuzzDecideInvariants(f *testing.F) {
 			case 2: // one exits
 				if len(live) > 0 {
 					i := arg % len(live)
+					exited = append(exited, live[i].Key)
 					delete(paused, live[i].Key)
 					delete(held, live[i].Key)
 					live = slices.Delete(live, i, i+1)
@@ -109,6 +120,8 @@ func FuzzDecideInvariants(f *testing.F) {
 				now = now.Add(time.Duration(arg+1) * time.Second)
 			case 6:
 				now = now.Add(-time.Duration(arg+1) * time.Second)
+			case 7:
+				throughputOnly = !throughputOnly
 			}
 			round(pressure)
 		}
