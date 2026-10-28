@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a reproducible problem in Throt
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve Throt. Remove secrets before posting diagnostics.
+  - type: input
+    id: version
+    attributes:
+      label: Throt version
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS / architecture
+      placeholder: macOS 26.x / arm64
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal steps, agent/tool involved, and workload.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste sanitized `throt doctor` output when available.
+      render: text
