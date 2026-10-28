@@ -61,7 +61,7 @@ TIMELINE
 q quit  tab focus  j/k move  enter details  ? help
 ```
 
-CPU is a percentage of one core, so a process using two cores shows 200%. Keys: `tab` switches between the agents and heavy-workload tables, `j`/`k` or the arrow keys move the selection, `enter` shows details for the selected row, `?` shows help, `q` quits. Metrics the platform cannot provide show as `n/a`, and if `throtd` is not running the TUI says so and reconnects when it starts. Narrow terminals (down to 40×12) drop low-value columns and truncate names.
+CPU is a percentage of one core, so a process using two cores shows 200%. Keys: `tab` switches between the agents and heavy-workload tables, `j`/`k` or the arrow keys move the selection, `enter` shows details for the selected row, `p`/`r` pause or resume the selected heavy workload after a `y/n` confirmation, `?` shows help, `q` quits. Metrics the platform cannot provide show as `n/a`, and if `throtd` is not running the TUI says so and reconnects when it starts. Narrow terminals (down to 40×12) drop low-value columns and truncate names.
 
 ## Install
 
@@ -118,6 +118,8 @@ throt           # terminal UI (same as `throt top`)
 throt ping      # check that the client can reach it
 throt status    # pressure, host resources, agents, heavy workloads
 throt events    # recent daemon events as JSON lines
+throt events -f # keep printing new events until interrupted
+throt explain PID # why a heavy workload is running, paused, or queued
 throt doctor    # sanitized diagnostics to paste into a bug report
 throt pause PID # pause a heavy workload owned by one of your agents
 throt resume PID

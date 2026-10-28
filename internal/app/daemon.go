@@ -45,9 +45,14 @@ type PingResult struct {
 // message size limit.
 const MaxEventsPerCall = 1000
 
-// EventsParams selects how many recent events the "events" method returns.
+// EventsParams selects which events the "events" method returns.
 type EventsParams struct {
 	Limit int `json:"limit"`
+	// Since, when > 0, returns only events with a greater seq, oldest first,
+	// up to Limit; poll again with the last seq to get the rest. A Since
+	// beyond the newest event means the daemon restarted, so the newest
+	// events are returned instead and the client sees seq go down.
+	Since uint64 `json:"since,omitempty"`
 }
 
 // StatusResult is returned by the "status" method.
@@ -310,7 +315,16 @@ func (d *Daemon) recentEvents(_ context.Context, raw json.RawMessage) (any, erro
 	if p.Limit <= 0 || p.Limit > MaxEventsPerCall {
 		p.Limit = MaxEventsPerCall
 	}
-	return d.events.Recent(p.Limit), nil
+	if p.Since == 0 {
+		return d.events.Recent(p.Limit), nil
+	}
+	if evs := d.events.Since(p.Since, p.Limit); len(evs) > 0 {
+		return evs, nil
+	}
+	if newest := d.events.Recent(1); len(newest) == 1 && newest[0].Seq < p.Since {
+		return d.events.Recent(p.Limit), nil
+	}
+	return []domain.Event{}, nil
 }
 
 // lockInstance takes an exclusive lock next to the socket so only one daemon
