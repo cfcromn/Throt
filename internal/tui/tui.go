@@ -6,6 +6,7 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/process"
 )
 
 // Client is the daemon API the TUI needs.
@@ -64,8 +66,29 @@ type pane int
 const (
 	paneAgents pane = iota
 	paneHeavy
+	// paneDrill is the workload table of the agent drilldown.
+	paneDrill
 	paneCount
 )
+
+// tablePanes is how many panes tab cycles through: the drilldown is
+// entered with enter, not tab.
+const tablePanes = paneDrill
+
+// sortKey is a table's sort column. sortDaemon keeps throtd's order.
+type sortKey int
+
+const (
+	sortDaemon sortKey = iota
+	sortCPU
+	sortMem
+	sortName
+	sortCount
+)
+
+func (k sortKey) String() string {
+	return [...]string{"daemon order", "cpu", "mem", "name"}[k]
+}
 
 // tickMsg asks for the next poll.
 type tickMsg struct{}
@@ -91,8 +114,13 @@ type Model struct {
 	polled    bool
 	err       error
 	status    app.StatusResult
+	// agents and heavy are status.Agents and status.Heavy in display order.
+	agents    []process.AgentView
+	heavy     []process.WorkloadView
 	events    []domain.Event
 	eventsErr error
+	// hist holds the newest host samples for the sparklines.
+	hist history
 	// lastSeq is the seq of the newest event held; polls ask only for
 	// newer ones. 0 means fetch the newest eventLimit.
 	lastSeq uint64
@@ -111,6 +139,15 @@ type Model struct {
 	off [paneCount]int
 	// selKey keeps the selection on the same process when rows reorder.
 	selKey [paneCount]domain.ProcessKey
+	// sortBy is the sort column of the agents and heavy tables; the
+	// drilldown uses the heavy table's.
+	sortBy [tablePanes]sortKey
+
+	// drill is true while the drilldown of agent drillKey is open. The
+	// label selects its workloads, as status.Heavy reports owners by label.
+	drill      bool
+	drillKey   domain.ProcessKey
+	drillLabel string
 
 	details bool
 	help    bool
@@ -206,6 +243,7 @@ func (m *Model) applyPoll(r pollMsg) {
 		// Drop the old data rather than show stale numbers as current.
 		m.connected, m.err = false, r.statusErr
 		m.status, m.events, m.eventsErr, m.lastSeq = app.StatusResult{}, nil, nil, 0
+		m.hist = history{}
 	} else {
 		m.connected, m.err = true, nil
 		m.status = r.status
@@ -213,7 +251,18 @@ func (m *Model) applyPoll(r pollMsg) {
 		if r.eventsErr == nil {
 			m.addEvents(r.events)
 		}
+		if r.status.Host != nil {
+			m.hist.add(*r.status.Host)
+		}
 	}
+	m.resort()
+}
+
+// resort rebuilds the display order of both tables and keeps each
+// selection on its process.
+func (m *Model) resort() {
+	m.agents = sortedAgents(m.status.Agents, m.sortBy[paneAgents])
+	m.heavy = sortedHeavy(m.status.Heavy, m.sortBy[paneHeavy])
 	for p := range paneCount {
 		keys := m.keys(p)
 		for i, k := range keys {
@@ -224,6 +273,43 @@ func (m *Model) applyPoll(r pollMsg) {
 		}
 		m.setSel(p, m.sel[p])
 	}
+}
+
+// sortedAgents returns agents ordered by k: CPU and memory descending, name
+// ascending. Ties keep throtd's order. The input is never modified.
+func sortedAgents(agents []process.AgentView, k sortKey) []process.AgentView {
+	if k == sortDaemon {
+		return agents
+	}
+	out := slices.Clone(agents)
+	slices.SortStableFunc(out, func(a, b process.AgentView) int {
+		switch k {
+		case sortCPU:
+			return cmp.Compare(b.CPU, a.CPU)
+		case sortMem:
+			return cmp.Compare(b.RSS, a.RSS)
+		}
+		return cmp.Compare(a.Agent, b.Agent)
+	})
+	return out
+}
+
+// sortedHeavy is sortedAgents for workloads; name is the process name.
+func sortedHeavy(heavy []process.WorkloadView, k sortKey) []process.WorkloadView {
+	if k == sortDaemon {
+		return heavy
+	}
+	out := slices.Clone(heavy)
+	slices.SortStableFunc(out, func(a, b process.WorkloadView) int {
+		switch k {
+		case sortCPU:
+			return cmp.Compare(b.CPU, a.CPU)
+		case sortMem:
+			return cmp.Compare(b.RSS, a.RSS)
+		}
+		return cmp.Compare(a.Name, b.Name)
+	})
+	return out
 }
 
 // addEvents merges one poll's events into the bounded history. A batch that
@@ -266,10 +352,12 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 	case "q", "ctrl+c":
 		return tea.Quit
 	case "p", "r":
-		if m.focus != paneHeavy || m.help || len(m.status.Heavy) == 0 {
+		p := m.active()
+		rows := m.workloads(p)
+		if m.help || len(rows) == 0 {
 			return nil
 		}
-		h := m.status.Heavy[m.sel[paneHeavy]]
+		h := rows[m.sel[p]]
 		verb := "pause"
 		if k.String() == "r" {
 			verb = "resume"
@@ -278,28 +366,97 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 	case "?":
 		m.help = !m.help
 	case "esc":
-		m.help, m.details = false, false
+		if m.drill && !m.help {
+			m.drill = false
+		} else {
+			m.help, m.details = false, false
+		}
 	case "tab", "shift+tab":
-		m.focus = (m.focus + 1) % paneCount
+		if !m.drill {
+			m.focus = (m.focus + 1) % tablePanes
+		}
 	case "j", "down":
-		m.setSel(m.focus, m.sel[m.focus]+1)
+		p := m.active()
+		m.setSel(p, m.sel[p]+1)
 	case "k", "up":
-		m.setSel(m.focus, m.sel[m.focus]-1)
+		p := m.active()
+		m.setSel(p, m.sel[p]-1)
+	case "s":
+		if m.help {
+			return nil
+		}
+		t := m.sortPane(m.active())
+		m.sortBy[t] = (m.sortBy[t] + 1) % sortCount
+		m.resort()
 	case "enter":
-		m.details = !m.details
+		switch {
+		case m.help || m.drill:
+		case m.focus == paneAgents:
+			if len(m.agents) > 0 {
+				a := m.agents[m.sel[paneAgents]]
+				m.drill, m.drillKey, m.drillLabel = true, a.Key, a.Agent
+				m.off[paneDrill] = 0
+				m.setSel(paneDrill, 0)
+			}
+		default:
+			m.details = !m.details
+		}
 	}
 	return nil
+}
+
+// active is the pane j/k, s, p and r act on.
+func (m Model) active() pane {
+	if m.drill {
+		return paneDrill
+	}
+	return m.focus
+}
+
+// sortPane is the table whose sort column pane p uses.
+func (m Model) sortPane(p pane) pane {
+	if p == paneDrill {
+		return paneHeavy
+	}
+	return p
+}
+
+// workloads returns the heavy workloads pane p lists in display order, or
+// nil for the agents pane.
+func (m Model) workloads(p pane) []process.WorkloadView {
+	switch p {
+	case paneHeavy:
+		return m.heavy
+	case paneDrill:
+		var out []process.WorkloadView
+		for _, h := range m.heavy {
+			if h.Owner == m.drillLabel {
+				out = append(out, h)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// drillAgent returns the drilled-into agent as last reported.
+func (m Model) drillAgent() (process.AgentView, bool) {
+	i := slices.IndexFunc(m.agents, func(a process.AgentView) bool { return a.Key == m.drillKey })
+	if i < 0 {
+		return process.AgentView{}, false
+	}
+	return m.agents[i], true
 }
 
 // keys returns the row identities of pane p.
 func (m Model) keys(p pane) []domain.ProcessKey {
 	var keys []domain.ProcessKey
 	if p == paneAgents {
-		for _, a := range m.status.Agents {
+		for _, a := range m.agents {
 			keys = append(keys, a.Key)
 		}
 	} else {
-		for _, h := range m.status.Heavy {
+		for _, h := range m.workloads(p) {
 			keys = append(keys, h.Key)
 		}
 	}
@@ -320,7 +477,7 @@ func (m *Model) setSel(p pane, i int) {
 // clampScroll keeps each selection inside its pane's visible window.
 func (m *Model) clampScroll() {
 	l := m.layout()
-	rows := [paneCount]int{l.agentRows, l.heavyRows}
+	rows := [paneCount]int{l.agentRows, l.heavyRows, l.drillRows}
 	for p := range paneCount {
 		n := len(m.keys(p))
 		h := max(rows[p], 1)
