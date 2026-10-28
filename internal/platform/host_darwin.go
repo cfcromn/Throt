@@ -14,7 +14,8 @@ import (
 )
 
 // NewHostSampler returns a sampler for the current OS. On macOS it reads
-// sysctl values only (no cgo, no Mach calls).
+// sysctl values only (no cgo, no Mach calls), including the kernel's
+// memory-pressure verdict.
 //
 // CPU is always reported as missing: the per-CPU tick counters are only
 // available through Mach host_statistics/host_processor_info, which require
@@ -50,6 +51,12 @@ func (s *darwinSampler) SampleHost(ctx context.Context) (domain.HostSample, erro
 		fails.fail(domain.MetricSwap, err)
 	} else {
 		out.SwapTotal, out.SwapUsed = total, used
+	}
+
+	if p, err := darwinMemoryPressure(); err != nil {
+		fails.fail(domain.MetricMemoryPressure, err)
+	} else {
+		out.MemoryPressure = p
 	}
 
 	return out, fails.finish(&out)
@@ -149,6 +156,35 @@ func darwinMemory() (total, avail uint64, err error) {
 		pages += n
 	}
 	return total, min(pages*pageSize, total), nil
+}
+
+// darwinMemoryPressure reads the kernel's memory-pressure verdict.
+// kern.memorystatus_vm_pressure_level is a uint32 holding one of xnu's
+// NOTE_MEMORYSTATUS_PRESSURE_* values (bsd/sys/event_private.h), the same
+// values as DISPATCH_MEMORYPRESSURE_*: 1 normal, 2 warning, 4 critical.
+func darwinMemoryPressure() (domain.MemoryPressure, error) {
+	const name = "kern.memorystatus_vm_pressure_level"
+	v, err := syscall.SysctlUint32(name)
+	if err != nil {
+		return domain.MemoryPressureUnknown, fmt.Errorf("sysctl %s: %w", name, err)
+	}
+	return kernelMemoryPressure(v)
+}
+
+// kernelMemoryPressure maps a NOTE_MEMORYSTATUS_PRESSURE_* value to a
+// verdict. Any other value is an error, so the metric is reported missing
+// rather than guessed.
+func kernelMemoryPressure(v uint32) (domain.MemoryPressure, error) {
+	switch v {
+	case 1:
+		return domain.MemoryPressureNormal, nil
+	case 2:
+		return domain.MemoryPressureWarning, nil
+	case 4:
+		return domain.MemoryPressureCritical, nil
+	default:
+		return domain.MemoryPressureUnknown, fmt.Errorf("kern.memorystatus_vm_pressure_level: unexpected value %d", v)
+	}
 }
 
 // darwinSwap returns total and used swap in bytes. vm.swapusage is

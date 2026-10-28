@@ -59,6 +59,7 @@ func TestParseProcStatErrors(t *testing.T) {
 		"non-num":   "cpu 1 2 x 4 5\n",
 		"negative":  "cpu 1 2 -3 4 5\n",
 		"duplicate": "cpu 1 2 3 4\ncpu 1 2 3 4\n",
+		"overflow":  "cpu 1 1 1 18446744073709551615 0 1\n", // found by FuzzParseProcStat
 	}
 	for name, in := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -102,7 +103,7 @@ func TestParseLoadavg(t *testing.T) {
 	if got != 1.25 {
 		t.Errorf("load1 = %v, want 1.25", got)
 	}
-	for _, bad := range []string{"", "  \n", "abc 1 2", "-1 0 0"} {
+	for _, bad := range []string{"", "  \n", "abc 1 2", "-1 0 0", "NaN", "+Inf", "-Inf"} {
 		if _, err := parseLoadavg(strings.NewReader(bad)); err == nil {
 			t.Errorf("parseLoadavg(%q): want error", bad)
 		}
@@ -148,6 +149,11 @@ func TestParseMeminfo(t *testing.T) {
 			want: memInfo{MemTotal: 100 * 1024, MemAvailable: 100 * 1024, HasMem: true},
 		},
 		{
+			name: "fallback sum saturates",
+			in:   "MemTotal: 100 kB\nMemFree: 18446744073709551615\nBuffers: 1\n",
+			want: memInfo{MemTotal: 100 * 1024, MemAvailable: 100 * 1024, HasMem: true},
+		},
+		{
 			name: "swap only",
 			in:   "SwapTotal: 10 kB\nSwapFree: 4 kB\n",
 			want: memInfo{SwapTotal: 10 * 1024, SwapFree: 4 * 1024, HasSwap: true},
@@ -179,6 +185,7 @@ func TestParseMeminfoErrors(t *testing.T) {
 		"no value":    "MemTotal:\n",
 		"zero total":  "MemTotal: 0 kB\nMemAvailable: 0 kB\n",
 		"swap halves": "SwapTotal: 10 kB\n",
+		"kB overflow": "MemTotal: 18014398509481985 kB\nMemAvailable: 1 kB\n", // found by FuzzParseMeminfo
 	}
 	for name, in := range tests {
 		t.Run(name, func(t *testing.T) {

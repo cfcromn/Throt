@@ -310,6 +310,33 @@ func TestMissingMetricsShowNA(t *testing.T) {
 	}
 }
 
+func TestKernelMemoryPressureShown(t *testing.T) {
+	st := sampleStatus(1, 0)
+	m := newModel(t, &fakeClient{status: st}, 100, 24)
+	if out := view(m); strings.Contains(out, "kernel:") {
+		t.Errorf("kernel verdict shown without one:\n%s", out)
+	}
+
+	st.Host.MemoryPressure = domain.MemoryPressureWarning
+	m = newModel(t, &fakeClient{status: st}, 100, 24)
+	out := view(m)
+	if !regexp.MustCompile(`(?m)^MEM .*12\.0 GiB / 16\.0 GiB  kernel: warning`).MatchString(out) {
+		t.Errorf("kernel verdict not on the MEM line:\n%s", out)
+	}
+
+	st.Host.Missing = []domain.Metric{domain.MetricMemory}
+	m = newModel(t, &fakeClient{status: st}, 100, 24)
+	if out := view(m); !regexp.MustCompile(`(?m)^MEM\s+n/a  kernel: warning$`).MatchString(out) {
+		t.Errorf("kernel verdict not shown with memory missing:\n%s", out)
+	}
+
+	st.Host.Missing = []domain.Metric{domain.MetricMemoryPressure}
+	m = newModel(t, &fakeClient{status: st}, 100, 24)
+	if out := view(m); strings.Contains(out, "kernel:") {
+		t.Errorf("kernel verdict shown while missing:\n%s", out)
+	}
+}
+
 func selectedLine(t *testing.T, out string) string {
 	t.Helper()
 	for _, l := range strings.Split(out, "\n") {

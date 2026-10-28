@@ -6,9 +6,15 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+## [0.5.0-rc.1] - 2026-10-28
+
+Accurate pressure everywhere: cgroup-aware Linux, the macOS kernel verdict, and a CPU policy driven by benchmark evidence. Also hardening: fuzzing, a patched toolchain, and a pinned supply chain.
+
 ### Added
 - Run-at-login (launchd, systemd) and upgrade/rollback instructions.
 - `make bench`: containerized real-kernel benchmark (baseline vs enforce), with results in `docs/ARCHITECTURE.md`.
+- macOS kernel memory-pressure verdict (`kern.memorystatus_vm_pressure_level`) as a pressure signal (warning → elevated, critical → high), shown in `throt status` and the TUI.
+- More heavy tools classified: ninja, cmake, swiftc, kotlinc, dotnet, msbuild, zig, ghc, scalac, sbt, bazelisk, buck2, turbo, nx, rollup, webpack-cli, next, nuxt, rspack (build); rspec, mocha, playwright, cypress, phpunit, ctest (test); buildctl, buildah, kaniko (container build).
 - Hot config reload via `SIGHUP` or `throt reload` (privileged `reload` method): applies `scheduler.*`, `profile` and `agents` live, reports restart-only keys, and changes nothing on an invalid file.
 - Events carry a `seq`, and the `events` method takes an optional `since` for incremental polling (protocol stays v1).
 - `throt events -f` follows new events, and notices when throtd restarts.
@@ -17,6 +23,17 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ### Changed
 - LICENSE copyright holder romanized.
+- Linux host pressure is cgroup v2-aware: CPU (including throttling), memory and swap are measured against the tightest `cpu.max`, `memory.max` and `memory.swap.max` limits of the daemon's cgroup and its ancestors, falling back to host-wide figures per metric; the host-wide load average is reported missing under a CPU quota.
+- CPU and load alone now cap pressure at elevated; high and critical come from memory, swap, and foreground latency. Saturated build cores no longer halve the adaptive limit.
+- On macOS, memory used no longer drives pressure while the kernel verdict is available; it sat at 80–90% on idle machines and held pressure at elevated.
+
+### Fixed
+- Parsers reject overflowing, negative, NaN, and control-character input found by fuzzing (ps, procfs, loadavg, meminfo); MCP matches JSON-RPC member names exactly and rejects non-scalar ids.
+
+### Security
+- Built with Go 1.26.10, which fixes 20 standard-library vulnerabilities present in 1.26.4 (none reachable from Throt's code according to govulncheck).
+- GitHub Actions pinned to commit SHAs; `govulncheck` runs in CI.
+- Native fuzz tests for every parser and decoder of untrusted input (15 targets).
 
 ## [0.4.0-rc.2] - 2026-10-28
 

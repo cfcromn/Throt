@@ -20,21 +20,23 @@ type sig struct {
 	load    float64
 	swapMiB float64 // absolute swap used
 	lat     time.Duration
+	kp      domain.MemoryPressure // kernel verdict; zero means absent
 	missing []domain.Metric
 }
 
 func (g sig) sample() domain.HostSample {
 	const total = 1000_000
 	return domain.HostSample{
-		Time:         epoch.Add(time.Duration(g.sec * float64(time.Second))),
-		CPUUsage:     g.cpu,
-		Load1:        g.load,
-		MemTotal:     total,
-		MemAvailable: uint64((1 - g.mem) * total),
-		SwapTotal:    4096 * mib,
-		SwapUsed:     uint64(g.swapMiB * mib),
-		Latency:      g.lat,
-		Missing:      g.missing,
+		Time:           epoch.Add(time.Duration(g.sec * float64(time.Second))),
+		CPUUsage:       g.cpu,
+		Load1:          g.load,
+		MemTotal:       total,
+		MemAvailable:   uint64((1 - g.mem) * total),
+		SwapTotal:      4096 * mib,
+		SwapUsed:       uint64(g.swapMiB * mib),
+		Latency:        g.lat,
+		MemoryPressure: g.kp,
+		Missing:        g.missing,
 	}
 }
 
@@ -222,20 +224,20 @@ func TestTransitions(t *testing.T) {
 			final:  N,
 		},
 		{
-			name:   "load triggers",
+			name:   "heavy load alone stops at elevated",
 			window: 2 * time.Second,
-			script: []sig{{sec: 0, load: 1.6}, {sec: 1, load: 1.6}, {sec: 2, load: 1.6}, {sec: 3, load: 1.6}},
-			want:   []domain.PressureLevel{H},
-			final:  H,
-			reason: "load>=1.5",
+			script: []sig{{sec: 0, load: 4}, {sec: 1, load: 4}, {sec: 2, load: 4}, {sec: 3, load: 4}},
+			want:   []domain.PressureLevel{E},
+			final:  E,
+			reason: "load>=1",
 		},
 		{
-			name:   "saturated cpu alone never reaches critical",
+			name:   "saturated cpu alone stops at elevated",
 			window: 2 * time.Second,
 			script: []sig{{sec: 0, cpu: 1}, {sec: 1, cpu: 1}, {sec: 2, cpu: 1}, {sec: 3, cpu: 1}},
-			want:   []domain.PressureLevel{H},
-			final:  H,
-			reason: "cpu>=0.95",
+			want:   []domain.PressureLevel{E},
+			final:  E,
+			reason: "cpu>=0.85",
 		},
 		{
 			name:   "missing metrics are ignored",

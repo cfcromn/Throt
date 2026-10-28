@@ -190,7 +190,7 @@ func privilegedMethods() []string { return []string{"pause", "resume", "reload"}
 // allMissing marks every host metric unavailable. A failed host sample still
 // reaches the pressure engine this way, so stale readings age out of the
 // window and pressure falls back to unknown instead of freezing.
-var allMissing = []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap, domain.MetricLatency}
+var allMissing = []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap, domain.MetricLatency, domain.MetricMemoryPressure}
 
 // latencyProbe is the timer the responsiveness probe waits on each tick.
 const latencyProbe = 10 * time.Millisecond

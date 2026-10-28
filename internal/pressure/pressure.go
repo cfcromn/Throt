@@ -23,6 +23,11 @@ const DefaultWindow = 30 * time.Second
 // reaches the level when its window statistic is >= the threshold. A zero
 // threshold means the signal never triggers that level on its own.
 type LevelThresholds struct {
+	// KernelMemory is the kernel memory-pressure verdict (see
+	// domain.MetricMemoryPressure) whose window median reaches this level.
+	// It is ignored for the critical level: the kernel verdict alone never
+	// makes pressure critical.
+	KernelMemory domain.MemoryPressure
 	// MemoryUsed is the median of 1 - MemAvailable/MemTotal, 0..1.
 	MemoryUsed float64
 	// SwapGrowth is swap-used growth across the window in bytes per second.
@@ -41,6 +46,14 @@ type Thresholds struct {
 	Elevated LevelThresholds
 	High     LevelThresholds
 	Critical LevelThresholds
+	// MemoryUsedWhenKernelSignal keeps evaluating MemoryUsed while a kernel
+	// memory-pressure verdict is present in the window. By default (false)
+	// the kernel verdict takes precedence and MemoryUsed is ignored then:
+	// macOS keeps memory deliberately full (compressor, file cache), so the
+	// used fraction sits at 80-90% on an idle machine and would hold
+	// pressure at elevated forever. Without a kernel verdict in the window
+	// (Linux, or a failed read) MemoryUsed applies as usual.
+	MemoryUsedWhenKernelSignal bool
 	// ExitMargin is subtracted from the MemoryUsed, CPU and Load enter
 	// thresholds to form exit thresholds, so a value hovering at a boundary
 	// cannot flap the level.
@@ -61,6 +74,12 @@ type Thresholds struct {
 
 // DefaultThresholds returns defaults tuned for a developer laptop:
 //
+//   - kernel memory pressure (macOS): warning → elevated, critical → high,
+//     never critical on its own. When present it replaces memory used (see
+//     MemoryUsedWhenKernelSignal). The verdict is ordinal, so its exit
+//     threshold is half a step below the enter one: entering needs the
+//     window median at the verdict (a majority of samples), holding needs
+//     at least half the window there.
 //   - memory used: elevated 0.80, high 0.90, critical 0.95. Memory is the
 //     signal that most directly predicts an unresponsive machine.
 //   - swap growth: elevated 1 MiB/s, high 8 MiB/s, critical 32 MiB/s.
@@ -77,9 +96,13 @@ type Thresholds struct {
 func DefaultThresholds() Thresholds {
 	const mib = 1 << 20
 	return Thresholds{
-		Elevated:         LevelThresholds{MemoryUsed: 0.80, SwapGrowth: 1 * mib, CPU: 0.85, Load: 1.0, Latency: 25 * time.Millisecond},
-		High:             LevelThresholds{MemoryUsed: 0.90, SwapGrowth: 8 * mib, CPU: 0.95, Load: 1.5, Latency: 100 * time.Millisecond},
-		Critical:         LevelThresholds{MemoryUsed: 0.95, SwapGrowth: 32 * mib, Load: 3.0},
+		Elevated: LevelThresholds{KernelMemory: domain.MemoryPressureWarning, MemoryUsed: 0.80, SwapGrowth: 1 * mib, CPU: 0.85, Load: 1.0, Latency: 25 * time.Millisecond},
+		// CPU and load stop at elevated: builds saturating every core is the
+		// throughput Throt exists to protect, not a problem by itself. Their
+		// effect on the person at the keyboard is measured directly by the
+		// latency probe, which (with memory and swap) drives high/critical.
+		High:             LevelThresholds{KernelMemory: domain.MemoryPressureCritical, MemoryUsed: 0.90, SwapGrowth: 8 * mib, Latency: 100 * time.Millisecond},
+		Critical:         LevelThresholds{MemoryUsed: 0.95, SwapGrowth: 32 * mib},
 		ExitMargin:       0.05,
 		SwapExitRatio:    0.5,
 		LatencyExitRatio: 0.75,
@@ -94,14 +117,17 @@ type point struct {
 	cpu, load, mem                               float64
 	latency                                      time.Duration
 	swap                                         uint64
+	kernel                                       domain.MemoryPressure
 	hasCPU, hasLoad, hasMem, hasSwap, hasLatency bool
+	hasKernel                                    bool
 }
 
 // stats are the window statistics evaluated against thresholds.
 type stats struct {
-	// latency is in nanoseconds.
-	mem, swap, cpu, load, latency                float64
+	// latency is in nanoseconds; kernel is the median verdict ordinal.
+	mem, swap, cpu, load, latency, kernel        float64
 	hasMem, hasSwap, hasCPU, hasLoad, hasLatency bool
+	hasKernel                                    bool
 	// has reports whether any signal is present in the window.
 	has bool
 }
@@ -231,6 +257,7 @@ func (e *Engine) add(s domain.HostSample) {
 		latency: s.Latency,
 	}
 	p.hasLatency = s.Has(domain.MetricLatency)
+	p.kernel, p.hasKernel = s.MemoryPressure, s.HasMemoryPressure()
 
 	if p.hasMem {
 		avail := min(s.MemAvailable, s.MemTotal)
@@ -259,6 +286,7 @@ func (e *Engine) stats() stats {
 	st.cpu, st.hasCPU = e.median(func(p point) (float64, bool) { return p.cpu, p.hasCPU })
 	st.load, st.hasLoad = e.median(func(p point) (float64, bool) { return p.load, p.hasLoad })
 	st.latency, st.hasLatency = e.median(func(p point) (float64, bool) { return float64(p.latency), p.hasLatency })
+	st.kernel, st.hasKernel = e.median(func(p point) (float64, bool) { return float64(p.kernel), p.hasKernel })
 
 	// Rates go in e.scratch, which median also uses; compute them last.
 	e.scratch = e.scratch[:0]
@@ -281,7 +309,7 @@ func (e *Engine) stats() stats {
 		prev = i
 	}
 	st.swap = medianOf(e.scratch)
-	st.has = st.hasMem || st.hasCPU || st.hasLoad || st.hasSwap || st.hasLatency
+	st.has = st.hasMem || st.hasCPU || st.hasLoad || st.hasSwap || st.hasLatency || st.hasKernel
 	return st
 }
 
@@ -313,7 +341,12 @@ func medianOf(vals []float64) float64 {
 
 // classify returns the highest level any present signal reaches, using enter
 // thresholds or, when exit is true, the lower exit thresholds.
+//
+// A kernel memory-pressure verdict in the window takes precedence over
+// memory used unless MemoryUsedWhenKernelSignal is set, and never reaches
+// critical on its own.
 func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
+	useMem := st.hasMem && (!st.hasKernel || e.th.MemoryUsedWhenKernelSignal)
 	levels := [...]struct {
 		l  domain.PressureLevel
 		th LevelThresholds
@@ -329,7 +362,8 @@ func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
 			present bool
 			kind    sigKind
 		}{
-			{"memory_used", st.mem, lv.th.MemoryUsed, st.hasMem, kindFraction},
+			{"kernel_memory_pressure", st.kernel, float64(lv.th.KernelMemory), st.hasKernel && lv.l != domain.PressureCritical, kindVerdict},
+			{"memory_used", st.mem, lv.th.MemoryUsed, useMem, kindFraction},
 			{"swap_growth", st.swap, lv.th.SwapGrowth, st.hasSwap, kindRate},
 			{"load", st.load, lv.th.Load, st.hasLoad, kindFraction},
 			{"latency", st.latency, float64(lv.th.Latency), st.hasLatency, kindDuration},
@@ -344,7 +378,11 @@ func (e *Engine) classify(st stats, exit bool) (domain.PressureLevel, string) {
 				t = e.exitThreshold(t, sg.kind)
 			}
 			if sg.v >= t {
-				return lv.l, sg.name + ">=" + formatThreshold(t, sg.kind)
+				shown := t
+				if sg.kind == kindVerdict {
+					shown = sg.t // name the verdict, not the half-step exit
+				}
+				return lv.l, sg.name + ">=" + formatThreshold(shown, sg.kind)
 			}
 		}
 	}
@@ -365,6 +403,10 @@ const (
 	kindRate
 	// kindDuration (latency, in nanoseconds) uses LatencyExitRatio.
 	kindDuration
+	// kindVerdict (kernel memory pressure, an ordinal) exits half a step
+	// below its enter threshold: ExitMargin is sized for fractions and
+	// would make a split window flap.
+	kindVerdict
 )
 
 // exitThreshold lowers an enter threshold by the configured hysteresis. A
@@ -377,6 +419,8 @@ func (e *Engine) exitThreshold(enter float64, kind sigKind) float64 {
 		t = enter * e.th.SwapExitRatio
 	case kindDuration:
 		t = enter * e.th.LatencyExitRatio
+	case kindVerdict:
+		t = enter - 0.5
 	default:
 		t = enter - e.th.ExitMargin
 	}
@@ -387,8 +431,11 @@ func (e *Engine) exitThreshold(enter float64, kind sigKind) float64 {
 }
 
 func formatThreshold(t float64, kind sigKind) string {
-	if kind == kindDuration {
+	switch kind {
+	case kindDuration:
 		return time.Duration(t).Round(time.Microsecond).String()
+	case kindVerdict:
+		return domain.MemoryPressure(math.Round(t)).String()
 	}
 	return strconv.FormatFloat(math.Round(t*1000)/1000, 'f', -1, 64)
 }

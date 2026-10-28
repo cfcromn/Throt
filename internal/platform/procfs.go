@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -71,6 +72,9 @@ func parseProcStat(r io.Reader) (cpuTimes, int, error) {
 			if err != nil {
 				return cpuTimes{}, 0, fmt.Errorf("parse /proc/stat field %d: %w", i+1, err)
 			}
+			if t.Total > math.MaxUint64-v {
+				return cpuTimes{}, 0, errors.New("parse /proc/stat: cpu time overflows")
+			}
 			t.Total += v
 			if i == 3 || i == 4 { // idle, iowait
 				t.Idle += v
@@ -101,8 +105,8 @@ func parseLoadavg(r io.Reader) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parse /proc/loadavg: %w", err)
 	}
-	if v < 0 {
-		return 0, fmt.Errorf("parse /proc/loadavg: negative load %v", v)
+	if !(v >= 0) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("parse /proc/loadavg: invalid load %v", v)
 	}
 	return v, nil
 }
@@ -143,6 +147,9 @@ func parseMeminfo(r io.Reader) (memInfo, error) {
 			return memInfo{}, fmt.Errorf("parse /proc/meminfo %s: %w", key, err)
 		}
 		if len(fields) > 1 && fields[1] == "kB" {
+			if v > math.MaxUint64/1024 {
+				return memInfo{}, fmt.Errorf("parse /proc/meminfo %s: %d kB overflows", key, v)
+			}
 			v *= 1024
 		}
 		vals[key] = v
@@ -157,7 +164,8 @@ func parseMeminfo(r io.Reader) (memInfo, error) {
 		if !ok {
 			var free uint64
 			free, ok = vals["MemFree"]
-			avail = free + vals["Buffers"] + vals["Cached"]
+			// Saturate: avail is clamped to total below.
+			avail = satAdd(satAdd(free, vals["Buffers"]), vals["Cached"])
 		}
 		if ok {
 			m.MemTotal, m.MemAvailable, m.HasMem = total, min(avail, total), true
@@ -172,4 +180,12 @@ func parseMeminfo(r io.Reader) (memInfo, error) {
 		return memInfo{}, errors.New("parse /proc/meminfo: no memory or swap fields")
 	}
 	return m, nil
+}
+
+// satAdd returns a+b, or math.MaxUint64 if the sum overflows.
+func satAdd(a, b uint64) uint64 {
+	if a > math.MaxUint64-b {
+		return math.MaxUint64
+	}
+	return a + b
 }

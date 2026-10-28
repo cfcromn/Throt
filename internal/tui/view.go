@@ -165,7 +165,8 @@ func (m Model) topLines() []string {
 }
 
 // metricLines renders CPU, MEM, and SWAP bars. Metrics the host did not
-// report, or all of them before the first sample, show as n/a.
+// report, or all of them before the first sample, show as n/a. The kernel
+// memory-pressure verdict, when present, follows the MEM detail.
 func (m Model) metricLines() []string {
 	h := m.status.Host
 	has := func(x domain.Metric) bool { return m.connected && h != nil && h.Has(x) }
@@ -183,6 +184,11 @@ func (m Model) metricLines() []string {
 		used := h.MemTotal - min(h.MemAvailable, h.MemTotal)
 		memFrac, mem = ratio(used, h.MemTotal), fmt.Sprintf("%s / %s", formatBytes(used), formatBytes(h.MemTotal))
 	}
+	kernel := ""
+	if m.connected && h != nil && h.HasMemoryPressure() {
+		kernel = "kernel: " + h.MemoryPressure.String()
+		mem += "  " + kernel
+	}
 	if has(domain.MetricSwap) {
 		swapFrac, swap = ratio(h.SwapUsed, h.SwapTotal), fmt.Sprintf("%s / %s", formatBytes(h.SwapUsed), formatBytes(h.SwapTotal))
 	}
@@ -190,9 +196,13 @@ func (m Model) metricLines() []string {
 	if !has(domain.MetricCPU) && has(domain.MetricLoad) {
 		cpuLine = truncate("CPU   n/a  "+load, m.width)
 	}
+	memLine := m.bar("MEM", has(domain.MetricMemory), memFrac, mem)
+	if !has(domain.MetricMemory) && kernel != "" {
+		memLine = truncate("MEM   n/a  "+kernel, m.width)
+	}
 	return []string{
 		cpuLine,
-		m.bar("MEM", has(domain.MetricMemory), memFrac, mem),
+		memLine,
 		m.bar("SWAP", has(domain.MetricSwap), swapFrac, swap),
 	}
 }

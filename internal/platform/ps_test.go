@@ -28,7 +28,9 @@ func TestParsePSTime(t *testing.T) {
 			t.Errorf("parsePSTime(%q) = %v, %v; want %v", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "-", "x:00", "1:2:3:4", ":05", "1:-5", "1:05.x", "a-01:00:00", "1:00.1234567890"} {
+	for _, in := range []string{"", "-", "x:00", "1:2:3:4", ":05", "1:-5", "1:05.x", "a-01:00:00", "1:00.1234567890",
+		// Overflow time.Duration (found by FuzzParsePSTime).
+		"4294967295-00:00:00", "4294967295-4294967295:4294967295:4294967295.999999999"} {
 		if got, err := parsePSTime(in); err == nil {
 			t.Errorf("parsePSTime(%q) = %v, want error", in, got)
 		}
@@ -52,6 +54,8 @@ func TestParsePS(t *testing.T) {
 		"  420     1   501  100 0:00.00 lun. 5 oct. 09:00:00 2026",
 		"\t421\t1\t501\t8\t1-02:03:04\tTue Oct  6 10:00:00 2026",
 		"  422     1   501  8 0:00.00 Tue Oct  6 10:00:00 2026", // exited before the names pass
+		"    0     0     0  8 0:00.00 Tue Oct  6 10:00:00 2026", // pid 0 is not a process
+		"  423     1   501  8 4294967295-00:00:00 Tue Oct  6 10:00:00 2026",
 	}, "\n")
 	names := strings.Join([]string{
 		"    1 /sbin/launchd",
