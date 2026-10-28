@@ -41,13 +41,21 @@ Core scheduling logic must not import the TUI, OS-specific packages, or a partic
 - the workload is heavy and attributed to an agent;
 - every member process belongs to the daemon's user.
 
-Members are the workload's process plus its descendants owned by the same agent. They are stopped parent-first with `SIGSTOP` and resumed child-first with `SIGCONT`. Before each signal, the process's identity (PID + start time + uid) is re-read from the OS, and a mismatch means the process is skipped, never signaled. If a stop fails, everything already stopped is resumed.
+Members are the workload's process plus its descendants owned by the same agent. They are stopped parent-first with `SIGSTOP` and resumed child-first with `SIGCONT`. Every signal is sent by one platform call that first verifies the process's identity (PID + start time + uid) and refuses, sending nothing, on a mismatch. A mismatch counts as "gone": the process is skipped, never signaled. If a stop fails, everything already stopped is resumed.
 
-Paused workloads are written to `paused.json` in the private socket directory. On shutdown the daemon resumes everything. After a crash, the next daemon resumes whatever it finds there whose identity still matches. Restoring never pauses anything.
+Identity verification and signaling cannot be fully atomic on every OS:
+- **Linux** opens a pidfd first, then verifies identity from `/proc`, then signals through the pidfd. The pidfd pins the process, so a PID reused after the pidfd opens can never receive the signal. Kernels without pidfds (before 5.3, or with a seccomp filter that blocks `pidfd_open`) fall back to verify-then-`kill(2)`.
+- **macOS** has no pidfd, so it verifies with one `/bin/ps` call and then calls `kill(2)`. The residual risk: if the process exits and the user's own new process reuses its PID within that one `ps` call, with a start time in the same second (`ps` start times are second-granular), the new process gets the signal. PIDs are allocated sequentially, so the PID space would have to wrap within that window.
+
+Throt never forgets work that might still be stopped. A record lists every process it may have stopped and moves through three states: *pausing* (written before the first `SIGSTOP`, listing every intended member), *paused* (the members actually stopped), and *resuming* (members still to be continued). A member leaves a record only after it was continued or the OS confirms it is gone; a process missing from one sample is confirmed with the OS before it is dropped. When a resume, a pause rollback, or a shutdown resume fails for some member (on macOS `/bin/ps` can fail to fork under the memory pressure that prompted the pause), the record stays *resuming* and the daemon retries it every sample tick.
+
+Every per-process OS call has its own deadline (2 s), so a hung `ps` can delay but never freeze the daemon. Shutdown does not cancel resumes. `throt status` reads a copy of the records and never waits for a pause or resume in progress. The tick's retry and cleanup skip a round instead of waiting.
+
+Records are written atomically to `paused.json` in the private socket directory each time they change, before any signal that depends on the change, and the file is removed when no records remain. On shutdown the daemon resumes everything; anything it cannot resume stays in the file. On startup the daemon loads every record in the file as *resuming* and resumes it, continuing only processes whose identity still matches. Restoring never pauses anything. Continuing a member that was never stopped (after a crash mid-pause) is harmless. A file that cannot be parsed is moved to `paused.json.invalid` and nothing is signaled.
 
 ## Failure behavior
 
-- daemon crash: controlled processes continue (paused work is resumed on shutdown);
+- daemon crash: paused processes stay stopped until throtd starts again and resumes them from `paused.json`, or until the user runs `kill -CONT PID`. A clean shutdown resumes them;
 - TUI crash: daemon continues;
 - metrics unavailable: degrade to observe-only;
 - attribution uncertain: mark unknown, never guess ownership for control;

@@ -55,8 +55,40 @@ func waitState(t *testing.T, pid int, ok func(string) bool) string {
 	}
 }
 
+// identifier is implemented by the darwin and linux controllers.
+type identifier interface {
+	identity(ctx context.Context, pid int) (time.Time, uint32, error)
+}
+
+func identityOf(t *testing.T, ctl ProcessController) identifier {
+	t.Helper()
+	id, ok := ctl.(identifier)
+	if !ok {
+		t.Fatalf("%T has no identity method", ctl)
+	}
+	return id
+}
+
+// stillState checks that pid stays in a state satisfying ok for a while,
+// to show that no signal arrived.
+func stillState(t *testing.T, pid int, ok func(string) bool) {
+	t.Helper()
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if s := processState(t, pid); !ok(s) {
+			t.Fatalf("state changed to %q: a signal was delivered", s)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestProcessControllerLifecycle(t *testing.T) {
 	skipUnlessControl(t)
+	sampler, ctl := NewProcessTools()
+	testLifecycle(t, sampler, ctl)
+}
+
+func testLifecycle(t *testing.T, sampler ProcessSampler, ctl ProcessController) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -73,7 +105,6 @@ func TestProcessControllerLifecycle(t *testing.T) {
 		}
 	})
 
-	sampler, ctl := NewProcessTools()
 	procs, err := sampler.SampleProcesses(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -87,24 +118,46 @@ func TestProcessControllerLifecycle(t *testing.T) {
 	if sample == nil {
 		t.Fatalf("pid %d not sampled", pid)
 	}
-	start, uid, err := ctl.Identity(ctx, pid)
+	key, uid := sample.Key(), sample.UID
+	start, got, err := identityOf(t, ctl).identity(ctx, pid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if (domain.ProcessKey{PID: pid, Start: start}) != sample.Key() || uid != sample.UID {
-		t.Fatalf("Identity = %v uid %d, sample = %v uid %d", start, uid, sample.Start, sample.UID)
+	if (domain.ProcessKey{PID: pid, Start: start}) != key || got != uid {
+		t.Fatalf("identity = %v uid %d, sample = %v uid %d", start, got, sample.Start, uid)
 	}
 	if uid != uint32(os.Getuid()) {
 		t.Errorf("uid = %d, want %d", uid, os.Getuid())
 	}
+	if gone, err := ctl.Gone(ctx, key); err != nil || gone {
+		t.Errorf("Gone(live) = %v, %v", gone, err)
+	}
 
-	if err := ctl.Stop(pid); err != nil {
+	// A live PID with another start time (a reused PID) or another owner
+	// is reported gone and never signaled.
+	reused := domain.ProcessKey{PID: pid, Start: key.Start.Add(-time.Hour)}
+	if gone, err := ctl.Gone(ctx, reused); err != nil || !gone {
+		t.Errorf("Gone(reused) = %v, %v", gone, err)
+	}
+	if err := ctl.Stop(ctx, reused, uid); !errors.Is(err, domain.ErrProcessGone) {
+		t.Fatalf("Stop(reused) err = %v, want ErrProcessGone", err)
+	}
+	if err := ctl.Stop(ctx, key, uid+1); !errors.Is(err, domain.ErrProcessGone) {
+		t.Fatalf("Stop(foreign uid) err = %v, want ErrProcessGone", err)
+	}
+	stillState(t, pid, func(s string) bool { return s != "T" })
+
+	if err := ctl.Stop(ctx, key, uid); err != nil {
 		t.Fatal(err)
 	}
 	if s := waitState(t, pid, func(s string) bool { return s == "T" }); s != "T" {
 		t.Fatalf("state after Stop = %q, want T", s)
 	}
-	if err := ctl.Continue(pid); err != nil {
+	if err := ctl.Continue(ctx, reused, uid); !errors.Is(err, domain.ErrProcessGone) {
+		t.Fatalf("Continue(reused) err = %v, want ErrProcessGone", err)
+	}
+	stillState(t, pid, func(s string) bool { return s == "T" })
+	if err := ctl.Continue(ctx, key, uid); err != nil {
 		t.Fatal(err)
 	}
 	if s := waitState(t, pid, func(s string) bool { return s != "T" }); s == "T" {
@@ -117,13 +170,16 @@ func TestProcessControllerLifecycle(t *testing.T) {
 	}
 	_ = cmd.Wait()
 	reaped = true
-	if _, _, err := ctl.Identity(ctx, pid); !errors.Is(err, domain.ErrProcessGone) {
-		t.Errorf("Identity after exit: err = %v, want ErrProcessGone", err)
+	if _, _, err := identityOf(t, ctl).identity(ctx, pid); !errors.Is(err, domain.ErrProcessGone) {
+		t.Errorf("identity after exit: err = %v, want ErrProcessGone", err)
 	}
-	if err := ctl.Stop(pid); !errors.Is(err, domain.ErrProcessGone) {
+	if gone, err := ctl.Gone(ctx, key); err != nil || !gone {
+		t.Errorf("Gone after exit = %v, %v", gone, err)
+	}
+	if err := ctl.Stop(ctx, key, uid); !errors.Is(err, domain.ErrProcessGone) {
 		t.Errorf("Stop after exit: err = %v, want ErrProcessGone", err)
 	}
-	if err := ctl.Continue(pid); !errors.Is(err, domain.ErrProcessGone) {
+	if err := ctl.Continue(ctx, key, uid); !errors.Is(err, domain.ErrProcessGone) {
 		t.Errorf("Continue after exit: err = %v, want ErrProcessGone", err)
 	}
 }
@@ -133,7 +189,7 @@ func TestProcessControllerIdentitySelf(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Independent constructors must still agree while the clock is steady.
-	start, uid, err := NewProcessController().Identity(ctx, os.Getpid())
+	start, uid, err := identityOf(t, NewProcessController()).identity(ctx, os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +200,7 @@ func TestProcessControllerIdentitySelf(t *testing.T) {
 	for _, p := range procs {
 		if p.PID == os.Getpid() {
 			if !p.Start.Equal(start) || p.UID != uid {
-				t.Fatalf("Identity = %v uid %d, sample = %v uid %d", start, uid, p.Start, p.UID)
+				t.Fatalf("identity = %v uid %d, sample = %v uid %d", start, uid, p.Start, p.UID)
 			}
 			return
 		}
@@ -156,26 +212,50 @@ func TestProcessControllerCancelled(t *testing.T) {
 	skipUnlessControl(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := NewProcessController().Identity(ctx, os.Getpid())
+	ctl := NewProcessController()
+	_, _, err := identityOf(t, ctl).identity(ctx, os.Getpid())
 	if !errors.Is(err, context.Canceled) || errors.Is(err, domain.ErrProcessGone) {
-		t.Fatalf("err = %v, want context.Canceled", err)
+		t.Fatalf("identity err = %v, want context.Canceled", err)
+	}
+	// An undeterminable identity is an error, never "gone" and never a
+	// signal.
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	key := domain.ProcessKey{PID: cmd.Process.Pid, Start: time.Unix(1, 0)}
+	if err := ctl.Stop(ctx, key, uint32(os.Getuid())); !errors.Is(err, context.Canceled) || errors.Is(err, domain.ErrProcessGone) {
+		t.Errorf("Stop err = %v, want context.Canceled", err)
+	}
+	if _, err := ctl.Gone(ctx, key); !errors.Is(err, context.Canceled) {
+		t.Errorf("Gone err = %v, want context.Canceled", err)
 	}
 }
 
 func TestProcessControllerRefuses(t *testing.T) {
 	skipUnlessControl(t)
 	ctl := NewProcessController()
+	ctx := context.Background()
+	uid := uint32(os.Getuid())
 	for _, pid := range []int{0, 1, -1, -os.Getpid(), os.Getpid()} {
-		if err := ctl.Stop(pid); err == nil || errors.Is(err, domain.ErrProcessGone) {
+		key := domain.ProcessKey{PID: pid, Start: time.Unix(1, 0)}
+		if err := ctl.Stop(ctx, key, uid); err == nil || errors.Is(err, domain.ErrProcessGone) {
 			t.Errorf("Stop(%d) err = %v, want refusal", pid, err)
 		}
-		if err := ctl.Continue(pid); err == nil || errors.Is(err, domain.ErrProcessGone) {
+		if err := ctl.Continue(ctx, key, uid); err == nil || errors.Is(err, domain.ErrProcessGone) {
 			t.Errorf("Continue(%d) err = %v, want refusal", pid, err)
 		}
 	}
 	for _, pid := range []int{0, -1} {
-		if _, _, err := ctl.Identity(context.Background(), pid); err == nil || errors.Is(err, domain.ErrProcessGone) {
-			t.Errorf("Identity(%d) err = %v, want refusal", pid, err)
+		if _, _, err := identityOf(t, ctl).identity(ctx, pid); err == nil || errors.Is(err, domain.ErrProcessGone) {
+			t.Errorf("identity(%d) err = %v, want refusal", pid, err)
+		}
+		if _, err := ctl.Gone(ctx, domain.ProcessKey{PID: pid}); err == nil {
+			t.Errorf("Gone(%d) succeeded, want refusal", pid)
 		}
 	}
 }

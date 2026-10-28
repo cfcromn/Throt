@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/cfcromn/Throt/internal/domain"
 )
@@ -19,18 +18,22 @@ type ProcessSampler interface {
 }
 
 // ProcessController sends job-control signals to single processes. It never
-// decides whether a process may be controlled: callers must first confirm,
-// via Identity, that the PID still names the process they mean to signal.
+// decides whether a process may be controlled, but it does refuse to signal
+// a process that is not the one the caller means: Stop and Continue verify
+// identity and signal as one operation.
 type ProcessController interface {
-	// Identity re-reads pid from the OS now. Start and UID are exactly the
-	// values the platform's ProcessSampler reports for the same process, so
-	// they can be compared with a domain.ProcessKey. An error wrapping
-	// domain.ErrProcessGone means pid does not exist.
-	Identity(ctx context.Context, pid int) (start time.Time, uid uint32, err error)
-	// Stop sends SIGSTOP to pid alone, never to a process group.
-	Stop(pid int) error
-	// Continue sends SIGCONT to pid alone, never to a process group.
-	Continue(pid int) error
+	// Stop sends SIGSTOP to key's process alone, never to a process group,
+	// if key's PID still names a process with key's start time owned by
+	// uid. Otherwise it sends nothing and returns an error wrapping
+	// domain.ErrProcessGone. Start and uid are compared with exactly the
+	// values the platform's ProcessSampler reports.
+	Stop(ctx context.Context, key domain.ProcessKey, uid uint32) error
+	// Continue is Stop with SIGCONT.
+	Continue(ctx context.Context, key domain.ProcessKey, uid uint32) error
+	// Gone reports whether key's process no longer exists: its PID names no
+	// process, or one with another start time. An error means the OS could
+	// not be asked.
+	Gone(ctx context.Context, key domain.ProcessKey) (bool, error)
 }
 
 // checkSignalTarget refuses PIDs that must never be signalled: 0 and

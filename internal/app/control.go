@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 
 	"github.com/cfcromn/Throt/internal/control"
@@ -38,7 +39,6 @@ func (d *Daemon) pause(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := d.ctl.Pause(ctx, target); err != nil {
 		return nil, d.controlError("pause", pid, err)
 	}
-	d.saveState()
 	d.emit(domain.EventControlPaused, "paused "+target.Name+" ("+target.Owner+")",
 		map[string]string{"pid": strconv.Itoa(pid), "name": target.Name, "owner": target.Owner})
 	return nil, nil
@@ -59,9 +59,8 @@ func (d *Daemon) resume(ctx context.Context, raw json.RawMessage) (any, error) {
 	if !found {
 		return nil, d.refused("resume", pid, "not paused")
 	}
-	err = d.ctl.Resume(ctx, key)
-	d.saveState() // the record is removed even on partial failure
-	if err != nil {
+	// On partial failure the record stays, and each tick retries it.
+	if err := d.ctl.Resume(ctx, key); err != nil {
 		return nil, d.controlError("resume", pid, err)
 	}
 	d.emit(domain.EventControlResumed, "resumed pid "+strconv.Itoa(pid), map[string]string{"pid": strconv.Itoa(pid)})
@@ -108,19 +107,34 @@ func (d *Daemon) controlError(action string, pid int, err error) error {
 	return fmt.Errorf("%s failed: %w", action, err)
 }
 
-// forgetExited drops paused records whose processes have all exited.
-func (d *Daemon) forgetExited(procs []domain.ProcessSample) {
-	before := len(d.ctl.Paused())
-	if before == 0 {
+// forgetExited drops recorded processes that are absent from procs and that
+// the OS confirms are gone.
+func (d *Daemon) forgetExited(ctx context.Context, procs []domain.ProcessSample) {
+	if len(d.ctl.Paused()) == 0 {
 		return
 	}
 	alive := make(map[domain.ProcessKey]bool, len(procs))
 	for _, p := range procs {
 		alive[p.Key()] = true
 	}
-	d.ctl.Forget(func(k domain.ProcessKey) bool { return alive[k] })
-	if len(d.ctl.Paused()) != before {
-		d.saveState()
+	d.ctl.Forget(ctx, func(k domain.ProcessKey) bool { return alive[k] })
+}
+
+// retryResumes continues processes a failed resume left stopped. It emits
+// one event when retries start failing and one when nothing is left, not
+// one per tick. It is called only from the sampling goroutine.
+func (d *Daemon) retryResumes(ctx context.Context) {
+	errs := d.ctl.RetryResumes(ctx)
+	resuming := slices.ContainsFunc(d.ctl.Paused(), func(p control.PausedWorkload) bool {
+		return p.State == control.StateResuming
+	})
+	switch {
+	case len(errs) > 0 && !d.retryFailing:
+		d.retryFailing = true
+		d.emit(domain.EventControlFailed, "resume retry failed; will keep retrying: "+errors.Join(errs...).Error(), nil)
+	case !resuming && d.retryFailing:
+		d.retryFailing = false
+		d.emit(domain.EventControlResumed, "resumed processes left stopped by an earlier failure", nil)
 	}
 }
 
@@ -130,48 +144,91 @@ func (d *Daemon) statePath() string {
 	return filepath.Join(filepath.Dir(d.cfg.SocketPath), "paused.json")
 }
 
-// saveState persists paused workloads, or removes the file when none are.
-func (d *Daemon) saveState() {
+// saveState is the controller's onChange hook: it persists the records
+// before the controller signals anything that depends on them, or removes
+// the file when state is nil (no records). It runs under the controller's
+// lock and must not call back into the controller.
+func (d *Daemon) saveState(state []byte) {
 	path := d.statePath()
-	if len(d.ctl.Paused()) == 0 {
+	if state == nil {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			d.log.Warn("remove paused state", "err", err)
 		}
 		return
 	}
-	b, err := d.ctl.MarshalState()
-	if err == nil {
-		tmp := path + ".tmp"
-		if err = os.WriteFile(tmp, b, 0o600); err == nil {
-			err = os.Rename(tmp, path)
-		}
-	}
-	if err != nil {
+	if err := writeFileAtomic(path, state); err != nil {
 		d.log.Warn("save paused state", "err", err)
 	}
 }
 
+// writeFileAtomic replaces path with data so readers see either the old or
+// the new contents, and the new contents survive a crash once it returns.
+func writeFileAtomic(path string, data []byte) (err error) {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp") // mode 0600
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			os.Remove(f.Name())
+		}
+	}()
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	if err = os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	if df, derr := os.Open(dir); derr == nil {
+		_ = df.Sync()
+		df.Close()
+	}
+	return nil
+}
+
 // recoverPaused resumes anything a previous daemon left paused. Restoring
 // never pauses; it only continues processes whose identity still matches.
+// Restored records that cannot be resumed stay in paused.json (rewritten by
+// the controller) and are retried every tick. A state file that cannot be
+// parsed is moved aside for inspection rather than deleted.
 func (d *Daemon) recoverPaused(ctx context.Context) {
-	b, err := os.ReadFile(d.statePath())
+	path := d.statePath()
+	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return
 	}
-	if err == nil {
-		errs := d.ctl.RestoreAndResume(ctx, b)
-		err = errors.Join(errs...)
-		d.emit(domain.EventControlResumed, "resumed workloads left paused by a previous throtd", nil)
-	}
 	if err != nil {
 		d.emit(domain.EventControlFailed, "recover paused workloads: "+err.Error(), nil)
+		return
 	}
-	os.Remove(d.statePath())
+	errs := d.ctl.RestoreAndResume(ctx, b)
+	if len(errs) == 1 && errors.Is(errs[0], control.ErrMalformedState) {
+		bad := path + ".invalid"
+		if rerr := os.Rename(path, bad); rerr != nil {
+			d.log.Warn("move aside paused state", "err", rerr)
+		}
+		d.emit(domain.EventControlFailed, "recover paused workloads: "+errs[0].Error()+"; moved to "+bad, nil)
+		return
+	}
+	if len(errs) > 0 {
+		d.retryFailing = true
+		d.emit(domain.EventControlFailed, "recover paused workloads, will keep retrying: "+errors.Join(errs...).Error(), nil)
+		return
+	}
+	d.emit(domain.EventControlResumed, "resumed workloads left paused by a previous throtd", nil)
 }
 
+// resumeAll resumes everything on shutdown. Anything that cannot be resumed
+// stays in paused.json for the next daemon.
 func (d *Daemon) resumeAll() {
 	if errs := d.ctl.ResumeAll(context.Background()); len(errs) > 0 {
-		d.emit(domain.EventControlFailed, "resume on shutdown: "+errors.Join(errs...).Error(), nil)
+		d.emit(domain.EventControlFailed, "resume on shutdown, left in paused state for the next throtd: "+errors.Join(errs...).Error(), nil)
 	}
-	d.saveState()
 }

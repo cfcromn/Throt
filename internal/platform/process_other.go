@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"time"
 
 	"github.com/cfcromn/Throt/internal/domain"
 )
@@ -36,14 +35,14 @@ func (unsupportedProcessSampler) SampleProcesses(context.Context) ([]domain.Proc
 
 type unsupportedProcessController struct{}
 
-func (unsupportedProcessController) Identity(context.Context, int) (time.Time, uint32, error) {
-	return time.Time{}, 0, fmt.Errorf("process identity on %s: %w", runtime.GOOS, errors.ErrUnsupported)
-}
-
-func (unsupportedProcessController) Stop(int) error {
+func (unsupportedProcessController) Stop(context.Context, domain.ProcessKey, uint32) error {
 	return fmt.Errorf("stop process on %s: %w", runtime.GOOS, errors.ErrUnsupported)
 }
 
-func (unsupportedProcessController) Continue(int) error {
+func (unsupportedProcessController) Continue(context.Context, domain.ProcessKey, uint32) error {
 	return fmt.Errorf("continue process on %s: %w", runtime.GOOS, errors.ErrUnsupported)
+}
+
+func (unsupportedProcessController) Gone(context.Context, domain.ProcessKey) (bool, error) {
+	return false, fmt.Errorf("process lookup on %s: %w", runtime.GOOS, errors.ErrUnsupported)
 }

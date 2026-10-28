@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/domain"
@@ -54,7 +55,15 @@ func (darwinProcessSampler) SampleProcesses(ctx context.Context) ([]domain.Proce
 }
 
 // NewProcessController returns a process controller for the current OS. On
-// macOS Identity runs /bin/ps for the one PID.
+// macOS it verifies identity with /bin/ps for the one PID and then signals
+// with kill(2).
+//
+// Residual risk: macOS has no pidfd, so verification and signaling are two
+// steps. If the process exits and its PID is reused by another process of
+// the same user, started within the same second (ps lstart is
+// second-granular), in the window between the ps call and kill(2), the
+// signal reaches the new process. PIDs are allocated sequentially, so this
+// needs the PID space to wrap within that window.
 func NewProcessController() ProcessController { return darwinProcessController{} }
 
 // NewProcessTools returns a sampler and a controller whose identities agree.
@@ -63,9 +72,22 @@ func NewProcessTools() (ProcessSampler, ProcessController) {
 	return NewProcessSampler(), NewProcessController()
 }
 
-type darwinProcessController struct{ unixSignaler }
+type darwinProcessController struct{}
 
-func (darwinProcessController) Identity(ctx context.Context, pid int) (time.Time, uint32, error) {
+func (c darwinProcessController) Stop(ctx context.Context, key domain.ProcessKey, uid uint32) error {
+	return verifyThenKill(ctx, c.identity, key, uid, syscall.SIGSTOP)
+}
+
+func (c darwinProcessController) Continue(ctx context.Context, key domain.ProcessKey, uid uint32) error {
+	return verifyThenKill(ctx, c.identity, key, uid, syscall.SIGCONT)
+}
+
+func (c darwinProcessController) Gone(ctx context.Context, key domain.ProcessKey) (bool, error) {
+	return goneBy(ctx, c.identity, key)
+}
+
+// identity runs ps for pid. Start and uid match what the sampler reports.
+func (darwinProcessController) identity(ctx context.Context, pid int) (time.Time, uint32, error) {
 	if err := checkIdentityPID(pid); err != nil {
 		return time.Time{}, 0, err
 	}

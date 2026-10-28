@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cfcromn/Throt/internal/domain"
+	"golang.org/x/sys/unix"
 )
 
 // NewProcessSampler returns a process sampler for the current OS. On Linux
@@ -23,15 +24,16 @@ import (
 func NewProcessSampler() ProcessSampler { return &linuxProcessSampler{boot: &bootClock{}} }
 
 // NewProcessController returns a process controller for the current OS. On
-// Linux Identity reads /proc/<pid>/stat and /proc/<pid>/status. It caches
-// boot time independently of any sampler; use NewProcessTools when Identity
-// must match a sampler's Start values.
+// Linux it pins the process with a pidfd, verifies identity from
+// /proc/<pid>/stat and /proc/<pid>/status, and signals through the pidfd.
+// It caches boot time independently of any sampler; use NewProcessTools
+// when identities must match a sampler's Start values.
 func NewProcessController() ProcessController {
 	return linuxProcessController{boot: &bootClock{}}
 }
 
 // NewProcessTools returns a sampler and a controller that share one boot-time
-// cache, so Identity reports exactly the Start the sampler reports.
+// cache, so the controller compares exactly the Start the sampler reports.
 func NewProcessTools() (ProcessSampler, ProcessController) {
 	boot := &bootClock{}
 	return &linuxProcessSampler{boot: boot}, linuxProcessController{boot: boot}
@@ -104,11 +106,68 @@ func (s *linuxProcessSampler) SampleProcesses(ctx context.Context) ([]domain.Pro
 }
 
 type linuxProcessController struct {
-	unixSignaler
 	boot *bootClock
+	// pidfdOpen opens a pidfd; nil means unix.PidfdOpen. Tests replace it
+	// to exercise the fallback for kernels without pidfds.
+	pidfdOpen func(pid, flags int) (int, error)
 }
 
-func (c linuxProcessController) Identity(ctx context.Context, pid int) (time.Time, uint32, error) {
+func (c linuxProcessController) Stop(ctx context.Context, key domain.ProcessKey, uid uint32) error {
+	return c.signal(ctx, key, uid, unix.SIGSTOP)
+}
+
+func (c linuxProcessController) Continue(ctx context.Context, key domain.ProcessKey, uid uint32) error {
+	return c.signal(ctx, key, uid, unix.SIGCONT)
+}
+
+func (c linuxProcessController) Gone(ctx context.Context, key domain.ProcessKey) (bool, error) {
+	return goneBy(ctx, c.identity, key)
+}
+
+// signal verifies key and sends sig to it without a reuse window. The pidfd
+// is opened first and pins the process: it can never refer to a later
+// process that reuses the PID. If /proc, read after the pidfd is open, still
+// shows key's start time and uid, the pidfd refers to key's process, and
+// pidfd_send_signal reaches that process or fails with ESRCH.
+//
+// Without pidfd support (ENOSYS before Linux 5.3, or EPERM when a seccomp
+// filter blocks the syscall, as older container runtimes do) it falls back
+// to verifying and then calling kill(2), which leaves the same short reuse
+// window as macOS.
+func (c linuxProcessController) signal(ctx context.Context, key domain.ProcessKey, uid uint32, sig unix.Signal) error {
+	if err := checkSignalTarget(key.PID); err != nil {
+		return err
+	}
+	open := c.pidfdOpen
+	if open == nil {
+		open = unix.PidfdOpen
+	}
+	fd, err := open(key.PID, 0)
+	switch {
+	case errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EPERM):
+		return verifyThenKill(ctx, c.identity, key, uid, sig)
+	case errors.Is(err, unix.ESRCH):
+		return fmt.Errorf("signal %v to pid %d: %w", sig, key.PID, domain.ErrProcessGone)
+	case err != nil:
+		return fmt.Errorf("signal %v to pid %d: pidfd_open: %w", sig, key.PID, err)
+	}
+	defer unix.Close(fd)
+	if err := verifyIdentity(ctx, c.identity, key, uid); err != nil {
+		return fmt.Errorf("signal %v to pid %d: %w", sig, key.PID, err)
+	}
+	err = unix.PidfdSendSignal(fd, sig, nil, 0)
+	switch {
+	case errors.Is(err, unix.ESRCH):
+		return fmt.Errorf("signal %v to pid %d: %w", sig, key.PID, domain.ErrProcessGone)
+	case err != nil:
+		return fmt.Errorf("signal %v to pid %d: %w", sig, key.PID, err)
+	}
+	return nil
+}
+
+// identity reads pid from /proc. Start and uid match what the sampler
+// reports.
+func (c linuxProcessController) identity(ctx context.Context, pid int) (time.Time, uint32, error) {
 	if err := checkIdentityPID(pid); err != nil {
 		return time.Time{}, 0, err
 	}

@@ -88,9 +88,10 @@ type Daemon struct {
 	graph   *process.Graph
 
 	// Owned by the sampling goroutine.
-	engine   *pressure.Engine
-	failing  map[string]bool // sampler name -> currently failing
-	failures map[string]string
+	engine       *pressure.Engine
+	failing      map[string]bool // sampler name -> currently failing
+	failures     map[string]string
+	retryFailing bool // resume retries are failing
 
 	mu     sync.Mutex // guards status
 	status StatusResult
@@ -99,8 +100,7 @@ type Daemon struct {
 // NewDaemon returns a daemon for cfg using the given samplers and process
 // signaler, logging to log.
 func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig control.Signaler, log *slog.Logger) *Daemon {
-	return &Daemon{
-		ctl:    control.New(sig, uint32(os.Getuid()), time.Now),
+	d := &Daemon{
 		cfg:    cfg,
 		log:    log,
 		events: domain.NewEventLog(cfg.EventHistory),
@@ -112,6 +112,8 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		failing:  map[string]bool{},
 		failures: map[string]string{},
 	}
+	d.ctl = control.New(sig, uint32(os.Getuid()), time.Now, d.saveState)
+	return d
 }
 
 // Run listens on the configured socket and serves clients until ctx is
@@ -185,8 +187,11 @@ func (d *Daemon) tick(parent context.Context) {
 		for _, c := range changes {
 			d.emitChange(c)
 		}
-		d.forgetExited(procs)
+		d.forgetExited(ctx, procs)
 	}
+	// Retry even when sampling fails: that is when memory is tight and a
+	// resume is most likely to have failed.
+	d.retryResumes(ctx)
 	if herr != nil {
 		host = domain.HostSample{Time: now, Missing: allMissing}
 	} else if !host.Has(domain.MetricCPU) && snap.HasCPU {
