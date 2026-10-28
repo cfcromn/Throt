@@ -149,7 +149,7 @@ A scheduler can make graphs calmer while making real work slower, so changes to 
 
 - **Responsiveness:** foreground probe latency (p95/p99), time in severe pressure, swap growth.
 - **Throughput:** total wall-clock, heavy jobs/hour, build/test durations.
-- **Scenarios:** 1 agent + 1 build; 4 agents with light work; 6–8 agents with overlapping builds; Docker + JVM + JS builds; memory-heavy; long job mixed with short jobs (starvation).
+- **Scenarios:** one build alone (Throt must stay out of the way); overlapping builds, at once and staggered; long jobs mixed with short ones (starvation); memory-heavy builds.
 - **Method:** fixed fixtures, warm-up, repetitions, same machine for baseline vs. Throt, report medians and tails.
 
 ### Results
@@ -208,6 +208,13 @@ Before, the limit went 2 → 3 in the first calm round and 3 → 4 at 28 s; with
 
 This keeps the default decision: the scheduler stays off. CPU-only contention on a bare-metal kernel is not a reason to enable it; memory contention is.
 
+### One build, and long jobs mixed with short ones
+
+Two more scenarios use the same helpers, sizing and modes; their CI results will be added here once the `Bench` workflow has run them.
+
+- **1 job alone** (in `TestBench`): one agent starts one 5 s build. Nothing contends, so Throt must not intervene: the test fails if an enforce run records any scheduler decision, and its makespan should match the baseline within noise. It measures what enabling the scheduler costs a machine that does not need it.
+- **Long + short** (`TestBenchMixed`): max(1, CPUs/2) long jobs of 30 s of CPU each start at once, and from the same moment the staggered stream of 5 s jobs arrives (its count and interval as in the staggered scenario). It checks starvation and fairness. A short job's *wait* is its turnaround (launch to exit) minus the 5 s it takes alone, so it counts time queued and time sharing a CPU alike; the table reports its p50, p95 and maximum. The *long makespan* runs from the long jobs' launch to the last one's exit. Short jobs starved behind the long ones would show as a wait near 30 s, long jobs starved by the stream as a long makespan well above baseline.
+
 ### Memory pressure
 
 The scenarios above are CPU-only. Throt's main target is memory: several agents' builds that together exceed RAM, so the machine swaps and the foreground freezes. `TestBenchMemory` measures that case. Its job (the same `make` helper, with `-mem`) allocates 22% of the memory limit, writes every word with incompressible pseudo-random data (so neither zswap nor the macOS compressor can shrink it), then writes one word per page in a loop for about 6 s of uncontended work, calibrated alone before the runs, and exits. A swapped-out or paused job does the same work, only later. Eight such jobs want 176% of the limit, launched at once ("memory burst") or one per second ("memory staggered"). Baseline is `scheduler.mode` off; Throt is enforce with the shipped defaults (the `balanced` profile, 2s sampling). Each run first waits up to 3 minutes for pressure below high, so it does not start on the previous run's thrashing, and logs the scheduler's decisions, limit and pressure changes. The columns are those above plus peak swap used and swap growth (peak minus the last sample before the first job), both from the daemon's own host sampler, which is cgroup-aware in a container, and the jobs that hit their cap or were killed by a signal (the OOM killer).
@@ -217,7 +224,7 @@ These scenarios deliberately exhaust memory, so they are guarded more tightly th
 - In a container they size from the cgroup limit (`memory.max`, or `memory.limit_in_bytes` on cgroup v1), never the host, and skip when there is none. On CI they size from `hw.memsize` (macOS) or `MemTotal` (Linux).
 - Every job exits by itself after 3 minutes of wall time outside SIGSTOP (status 3, counted as capped), so a lost job cannot hold memory for long; time queued does not count, or a job queued past 3 minutes would exit unrun on resume. A run fails after 10 minutes, which leaves room for `max_queue_wait` and a full run. Cleanup kills the agent stub's whole process group, jobs included, stopped or not.
 
-The `Bench` workflow runs them after the CPU scenarios. On a hosted runner they push the VM into swap and possibly the OOM killer; that is acceptable only because the runner is thrown away.
+The `Bench` workflow runs them after the CPU scenarios: on macOS on the bare runner, on Linux in a container on the runner (`docker run --init --memory 3g --memory-swap 4g --cpus 2`, the `golang` Alpine image at `go.mod`'s version), because on a bare Linux runner they exhausted RAM and the job was killed. The container still runs on the runner's real kernel, without Docker Desktop's VM. On a hosted runner they push the VM into swap and possibly the OOM killer; that is acceptable only because the runner is thrown away.
 
 **Container results**, not a real machine: two runs on the same Docker Desktop VM as above, with `docker run --memory=1g --memory-swap=2g --cpus=2 --init` (1 GiB of RAM and 1 GiB of swap for the container, 225 MiB per job). With two runs, each column shows the higher of the two:
 
