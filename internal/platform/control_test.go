@@ -132,6 +132,9 @@ func testLifecycle(t *testing.T, sampler ProcessSampler, ctl ProcessController) 
 	if gone, err := ctl.Gone(ctx, key); err != nil || gone {
 		t.Errorf("Gone(live) = %v, %v", gone, err)
 	}
+	if ctl.Exited(ctx, key) {
+		t.Error("Exited(live) = true")
+	}
 
 	// A live PID with another start time (a reused PID) or another owner
 	// is reported gone and never signaled.
@@ -175,6 +178,9 @@ func testLifecycle(t *testing.T, sampler ProcessSampler, ctl ProcessController) 
 	}
 	if gone, err := ctl.Gone(ctx, key); err != nil || !gone {
 		t.Errorf("Gone after exit = %v, %v", gone, err)
+	}
+	if !ctl.Exited(ctx, key) {
+		t.Error("Exited after exit = false")
 	}
 	if err := ctl.Stop(ctx, key, uid); !errors.Is(err, domain.ErrProcessGone) {
 		t.Errorf("Stop after exit: err = %v, want ErrProcessGone", err)

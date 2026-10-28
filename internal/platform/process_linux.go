@@ -145,6 +145,13 @@ func (c linuxProcessController) Gone(ctx context.Context, key domain.ProcessKey)
 	return goneBy(ctx, c.identity, key)
 }
 
+// Exited is Gone: on Linux it reads one /proc stat file, which also tells a
+// reused PID apart.
+func (c linuxProcessController) Exited(ctx context.Context, key domain.ProcessKey) bool {
+	gone, err := c.Gone(ctx, key)
+	return err == nil && gone
+}
+
 // signal verifies key and sends sig to it without a reuse window. The pidfd
 // is opened first and pins the process: it can never refer to a later
 // process that reuses the PID. If /proc, read after the pidfd is open, still

@@ -14,7 +14,6 @@ import (
 	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
-	"github.com/cfcromn/Throt/internal/monitor"
 	"github.com/cfcromn/Throt/internal/pressure"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
@@ -71,6 +70,11 @@ type Daemon struct {
 	// ident resolves acquire callers; nil when sig cannot identify
 	// processes, and then acquire is refused.
 	ident ProcessIdentifier
+	// exits polls running heavy workloads for an early refill; nil when
+	// sig cannot, and then freed slots refill at the next sample.
+	exits ExitChecker
+	// refillEvery is how often exits is polled; tests shorten it.
+	refillEvery time.Duration
 
 	graphMu sync.Mutex // guards graph; held briefly, never while signaling
 	graph   *process.Graph
@@ -87,6 +91,9 @@ type Daemon struct {
 	// reported holds the orphans an orphan_stopped event already named; it
 	// is pruned to the current orphans each tick, so it stays bounded.
 	reported map[domain.ProcessKey]bool
+	// watch holds the running heavy workloads whose exit the loop polls
+	// for while work waits for a slot (see refillWatch); nil otherwise.
+	watch []domain.ProcessKey
 
 	// mu guards status, leases, and stopped together, so an acquire checks
 	// and grants against one consistent view, and a tick replaces the heavy
@@ -150,11 +157,14 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		live:     cfg,
 		policyCh: make(chan scheduler.Policy, 1),
 
+		refillEvery: refillCheck,
+
 		writeFile: writeFileAtomic,
 		rename:    os.Rename,
 	}
 	d.ctl = control.New(sig, d.uid, time.Now, d.saveState)
 	d.ident, _ = sig.(ProcessIdentifier)
+	d.exits, _ = sig.(ExitChecker)
 	d.linePolicy = d.sched.Policy()
 	return d
 }
@@ -192,7 +202,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		monitor.Run(ctx, time.Duration(d.cfg.SampleInterval), d.tick)
+		sampleLoop(ctx, time.Duration(d.cfg.SampleInterval), d.refillEvery, d.tickAndWatch)
 	}()
 	err = srv.Serve(ctx, l)
 	cancel()

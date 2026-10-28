@@ -50,3 +50,5 @@ func (unsupportedProcessController) Identify(context.Context, int) (domain.Proce
 func (unsupportedProcessController) Gone(context.Context, domain.ProcessKey) (bool, error) {
 	return false, fmt.Errorf("process lookup on %s: %w", runtime.GOOS, errors.ErrUnsupported)
 }
+
+func (unsupportedProcessController) Exited(context.Context, domain.ProcessKey) bool { return false }

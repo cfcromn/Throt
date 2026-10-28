@@ -168,6 +168,12 @@ func (c darwinProcessController) Gone(ctx context.Context, key domain.ProcessKey
 	return goneBy(ctx, c.identity, key)
 }
 
+// Exited uses kill(pid, 0) instead of ps: ESRCH means no process has the
+// PID. A reused PID reads as live until the next sample.
+func (darwinProcessController) Exited(_ context.Context, key domain.ProcessKey) bool {
+	return pidExited(key.PID)
+}
+
 // identity runs ps for pid. Start and uid match what the sampler reports.
 func (darwinProcessController) identity(ctx context.Context, pid int) (time.Time, uint32, error) {
 	if err := checkIdentityPID(pid); err != nil {

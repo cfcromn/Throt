@@ -21,6 +21,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - Built-in agents `amp` (Amp) and `copilot` (GitHub Copilot CLI), matched by exact executable name like the others. Arguments are still never read, so an agent run as `node script.js` or `python3 -m …` stays unattributed.
 
 ### Changed
+- In `enforce` mode, a heavy slot freed by an exit is refilled within about 250 ms instead of at the next sample (up to `sample_interval`, 2 s by default): while work is queued, throtd checks every 250 ms whether a running heavy workload's top process exited (`kill(pid, 0)` on macOS, `/proc` on Linux, never `ps`) and samples at once when one did.
 - TUI: colors adapt to a light or dark terminal background, so warnings keep their contrast on light themes. The scheduler moved from the `SYSTEM` header to its own line.
 - TUI: the "terminal too small" message is cut to the window, so even a 1×1 window gets no overflowing lines.
 - Every `throt mcp` tool description now tells the model when to call the tool, and the server instructions mention the new tools.
