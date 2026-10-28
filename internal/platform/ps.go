@@ -15,61 +15,82 @@ import (
 	"github.com/cfcromn/Throt/internal/domain"
 )
 
-// psColumns is the ps -o argument parsePS expects. comm must stay last
-// because it may contain spaces. args/command are never requested: they can
-// contain secrets.
-const psColumns = "pid=,ppid=,uid=,rss=,time=,lstart=,comm="
+// psStatColumns has no free-text column, so every record is unambiguous and
+// the set of PIDs it lists is authoritative.
+const psStatColumns = "pid=,ppid=,uid=,rss=,time=,lstart="
+
+// psNameColumns lists executable names. comm may contain spaces or even
+// newlines, so this pass is parsed defensively. args/command are never
+// requested: they can contain secrets.
+const psNameColumns = "pid=,comm="
 
 // psLstartLayout is lstart in the C locale, e.g. "Sun Oct 18 11:06:02 2026".
 // Fields are re-joined with single spaces, so a padded day still matches.
 const psLstartLayout = "Mon Jan 2 15:04:05 2006"
 
-// parsePS parses ps output in the psColumns format. lstart is interpreted in
-// loc. Malformed lines are skipped; an error is returned only when r fails.
-func parsePS(r io.Reader, loc *time.Location) ([]domain.ProcessSample, error) {
-	var all []domain.ProcessSample
-	seen := make(map[int]int) // pid -> occurrences
-	sc := bufio.NewScanner(r)
-	sc.Buffer(nil, 1<<20)
+// parsePS combines the stats and names passes. lstart is interpreted in loc.
+// Malformed lines are skipped; an error is returned only when a reader fails.
+func parsePS(stats, names io.Reader, loc *time.Location) ([]domain.ProcessSample, error) {
+	var out []domain.ProcessSample
+	seen := make(map[int]bool)
+	sc := bufio.NewScanner(stats)
 	for sc.Scan() {
-		if p, ok := parsePSLine(sc.Text(), loc); ok {
-			all = append(all, p)
-			seen[p.PID]++
+		if p, ok := parsePSStatLine(sc.Text(), loc); ok && !seen[p.PID] {
+			seen[p.PID] = true
+			out = append(out, p)
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, fmt.Errorf("read ps output: %w", err)
 	}
-	// An executable name containing a newline can forge extra records. A PID
-	// that appears twice is ambiguous, so drop every record for it.
-	out := all[:0]
-	for _, p := range all {
-		if seen[p.PID] == 1 {
-			out = append(out, p)
-		}
+	nameOf, err := parsePSNames(names)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Name = nameOf[out[i].PID]
 	}
 	return out, nil
 }
 
-// parsePSLine parses one line: pid ppid uid rss time lstart(5 fields) comm.
-func parsePSLine(line string, loc *time.Location) (domain.ProcessSample, bool) {
-	const fixed = 10 // pid, ppid, uid, rss, time and the five lstart fields
-	fields := make([]string, 0, fixed)
-	rest := line
-	for len(fields) < fixed {
-		rest = strings.TrimLeft(rest, " \t")
-		end := strings.IndexAny(rest, " \t")
-		if end <= 0 {
-			return domain.ProcessSample{}, false
+// parsePSNames maps PID to executable base name. An executable path that
+// contains a newline can forge a "pid name" line, but only for a PID that
+// also has its own genuine line, so any PID seen twice gets no name at all:
+// an unnamed process is merely unattributed (observe-only), and a forged
+// line can neither hide a process nor invent one.
+func parsePSNames(r io.Reader) (map[int]string, error) {
+	names := make(map[int]string)
+	dup := make(map[int]bool)
+	sc := bufio.NewScanner(r)
+	sc.Buffer(nil, 1<<20)
+	for sc.Scan() {
+		pidStr, comm, ok := strings.Cut(strings.TrimLeft(sc.Text(), " \t"), " ")
+		comm = strings.TrimSpace(comm)
+		pid, err := strconv.Atoi(pidStr)
+		if !ok || err != nil || comm == "" {
+			continue
 		}
-		fields = append(fields, rest[:end])
-		rest = rest[end:]
+		if _, exists := names[pid]; exists {
+			dup[pid] = true
+		}
+		names[pid] = path.Base(comm)
 	}
-	comm := strings.TrimSpace(rest)
-	if comm == "" {
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read ps names: %w", err)
+	}
+	for pid := range dup {
+		delete(names, pid)
+	}
+	return names, nil
+}
+
+// parsePSStatLine parses one psStatColumns line: pid ppid uid rss time
+// lstart (5 fields). Lines with any other number of fields are rejected.
+func parsePSStatLine(line string, loc *time.Location) (domain.ProcessSample, bool) {
+	fields := strings.Fields(line)
+	if len(fields) != 10 {
 		return domain.ProcessSample{}, false
 	}
-
 	pid, err1 := strconv.Atoi(fields[0])
 	ppid, err2 := strconv.Atoi(fields[1])
 	uid, err3 := strconv.ParseUint(fields[2], 10, 32)
@@ -84,7 +105,6 @@ func parsePSLine(line string, loc *time.Location) (domain.ProcessSample, bool) {
 		PPID:    ppid,
 		UID:     uint32(uid),
 		Start:   start,
-		Name:    path.Base(comm),
 		CPUTime: cpu,
 		RSS:     rssKiB * 1024, // macOS ps reports RSS in KiB
 	}, true

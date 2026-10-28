@@ -18,6 +18,14 @@ import (
 
 type fakeSampler struct{}
 
+func (fakeSampler) SampleProcesses(context.Context) ([]domain.ProcessSample, error) {
+	start := time.Unix(1, 0)
+	return []domain.ProcessSample{
+		{PID: 10, PPID: 1, Start: start, Name: "claude"},
+		{PID: 11, PPID: 10, Start: start, Name: "go", RSS: 1 << 20},
+	}, nil
+}
+
 func (fakeSampler) SampleHost(context.Context) (domain.HostSample, error) {
 	return domain.HostSample{Time: time.Now(), MemTotal: 100, MemAvailable: 50}, nil
 }
@@ -39,7 +47,9 @@ func startDaemon(t *testing.T, sock string) (cancel func() error) {
 	cfg.SocketPath = sock
 	ctx, stop := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- NewDaemon(cfg, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(ctx) }()
+	go func() {
+		done <- NewDaemon(cfg, fakeSampler{}, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(ctx)
+	}()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for transport.Call(context.Background(), sock, "ping", nil, nil) != nil {
@@ -83,6 +93,9 @@ func TestDaemonLifecycle(t *testing.T) {
 	if st.Host == nil || st.Host.MemTotal != 100 {
 		t.Errorf("status = %+v", st)
 	}
+	if len(st.Agents) != 1 || st.Agents[0].Agent != "claude-1" || len(st.Heavy) != 1 || st.Heavy[0].Owner != "claude-1" {
+		t.Errorf("agents = %+v, heavy = %+v", st.Agents, st.Heavy)
+	}
 
 	if err := stop(); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -99,7 +112,7 @@ func TestDaemonRefusesSecondInstance(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.SocketPath = sock
-	err := NewDaemon(cfg, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	err := NewDaemon(cfg, fakeSampler{}, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("err = %v", err)
 	}
@@ -126,7 +139,7 @@ func TestDaemonKeepsNonSocketFile(t *testing.T) {
 	}
 	cfg := config.Default()
 	cfg.SocketPath = sock
-	err := NewDaemon(cfg, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	err := NewDaemon(cfg, fakeSampler{}, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "not a socket") {
 		t.Fatalf("err = %v", err)
 	}
@@ -143,7 +156,7 @@ func TestDaemonRejectsSharedSocketDir(t *testing.T) {
 	os.Chmod(dir, 0o777) // bypass umask
 	cfg := config.Default()
 	cfg.SocketPath = filepath.Join(dir, "throtd.sock")
-	err := NewDaemon(cfg, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	err := NewDaemon(cfg, fakeSampler{}, fakeSampler{}, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "writable by other users") {
 		t.Fatalf("err = %v", err)
 	}

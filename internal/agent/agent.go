@@ -87,7 +87,6 @@ var classes = map[string]domain.WorkloadClass{
 	"pytest":         domain.ClassTest,
 	"jest":           domain.ClassTest,
 	"vitest":         domain.ClassTest,
-	"docker":         domain.ClassContainerBuild,
 	"buildkitd":      domain.ClassContainerBuild,
 	"podman":         domain.ClassContainerBuild,
 }

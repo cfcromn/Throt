@@ -37,22 +37,31 @@ func TestParsePSTime(t *testing.T) {
 
 func TestParsePS(t *testing.T) {
 	loc := time.FixedZone("test", 9*3600)
-	in := strings.Join([]string{
-		"    1     0     0   7584  90:36.83 Sun Oct 18 11:06:02 2026     /sbin/launchd",
-		"  412     1   501  20480   0:01.50 Mon Oct  5 09:00:00 2026     /System/Library/Input Methods/KoreanIM.app/Contents/MacOS/Korean IM",
-		"  413     1   501      0   0:00.00 Mon Oct  5 09:00:00 2026     Core Audio Driver (Parrot.driver)",
+	stats := strings.Join([]string{
+		"    1     0     0   7584  90:36.83 Sun Oct 18 11:06:02 2026",
+		"  412     1   501  20480   0:01.50 Mon Oct  5 09:00:00 2026",
+		"  413     1   501      0   0:00.00 Mon Oct  5 09:00:00 2026",
 		"",
 		"garbage",
-		"  414     1   501  100 0:00.00 Mon Oct  5 09:00:00 2026", // no comm
-		"  415     x   501  100 0:00.00 Mon Oct  5 09:00:00 2026 bad-ppid",
-		"  416     1   501  -1 0:00.00 Mon Oct  5 09:00:00 2026 bad-rss",
-		"  417     1   501  100 nope Mon Oct  5 09:00:00 2026 bad-time",
-		"  418     1   501  100 0:00.00 Mon Oct 45 09:00:00 2026 bad-date",
-		"  419     1  4294967296  100 0:00.00 Mon Oct  5 09:00:00 2026 bad-uid",
-		"  420     1   501  100 0:00.00 lun. 5 oct. 09:00:00 2026 localized",
-		"\t421\t1\t501\t8\t1-02:03:04\tTue Oct  6 10:00:00 2026\tgo",
+		"  414     1   501  100 0:00.00 Mon Oct  5 09:00:00 2026 extra", // wrong field count
+		"  415     x   501  100 0:00.00 Mon Oct  5 09:00:00 2026",
+		"  416     1   501  -1 0:00.00 Mon Oct  5 09:00:00 2026",
+		"  417     1   501  100 nope Mon Oct  5 09:00:00 2026",
+		"  418     1   501  100 0:00.00 Mon Oct 45 09:00:00 2026",
+		"  419     1  4294967296  100 0:00.00 Mon Oct  5 09:00:00 2026",
+		"  420     1   501  100 0:00.00 lun. 5 oct. 09:00:00 2026",
+		"\t421\t1\t501\t8\t1-02:03:04\tTue Oct  6 10:00:00 2026",
+		"  422     1   501  8 0:00.00 Tue Oct  6 10:00:00 2026", // exited before the names pass
 	}, "\n")
-	got, err := parsePS(strings.NewReader(in), loc)
+	names := strings.Join([]string{
+		"    1 /sbin/launchd",
+		"  412 /System/Library/Input Methods/KoreanIM.app/Contents/MacOS/Korean IM",
+		"  413 Core Audio Driver (Parrot.driver)",
+		"  421 /usr/local/go/bin/go",
+		"  999 /bin/new-after-stats-pass",
+		"bad line",
+	}, "\n")
+	got, err := parsePS(strings.NewReader(stats), strings.NewReader(names), loc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +73,7 @@ func TestParsePS(t *testing.T) {
 		{PID: 413, PPID: 1, UID: 501, Start: time.Date(2026, 10, 5, 9, 0, 0, 0, loc), Name: "Core Audio Driver (Parrot.driver)"},
 		{PID: 421, PPID: 1, UID: 501, Start: time.Date(2026, 10, 6, 10, 0, 0, 0, loc), Name: "go",
 			CPUTime: 26*time.Hour + 3*time.Minute + 4*time.Second, RSS: 8 * 1024},
+		{PID: 422, PPID: 1, UID: 501, Start: time.Date(2026, 10, 6, 10, 0, 0, 0, loc), RSS: 8 * 1024},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d samples, want %d: %+v", len(got), len(want), got)
@@ -79,24 +89,27 @@ func TestParsePS(t *testing.T) {
 	}
 }
 
-func TestParsePSDropsForgedRecords(t *testing.T) {
-	// "/tmp/evil\n1 0 0 ..." is one executable path containing a newline that
-	// forges a record for PID 1.
-	in := "  500   1 501 100 0:00.00 Mon Oct  5 09:00:00 2026 /tmp/evil\n" +
-		"    1   0   0 100 0:00.00 Mon Oct  5 09:00:00 2026 fake\n" +
-		"    1   0   0 100 0:00.00 Sun Oct 18 11:06:02 2026 /sbin/launchd\n"
-	got, err := parsePS(strings.NewReader(in), time.UTC)
+func TestParsePSForgedNameLine(t *testing.T) {
+	// The executable "/tmp/evil\n    1 claude" forges a name line for PID 1.
+	// Both processes must survive; PID 1 merely loses its (ambiguous) name.
+	stats := "  500   1 501 100 0:00.00 Mon Oct  5 09:00:00 2026\n" +
+		"    1   0   0 100 0:00.00 Sun Oct 18 11:06:02 2026\n"
+	names := "  500 /tmp/evil\n    1 claude\n    1 /sbin/launchd\n"
+	got, err := parsePS(strings.NewReader(stats), strings.NewReader(names), time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].PID != 500 {
-		t.Fatalf("got %+v, want only pid 500", got)
+	if len(got) != 2 || got[0].PID != 500 || got[0].Name != "evil" || got[1].PID != 1 || got[1].Name != "" {
+		t.Fatalf("got %+v", got)
 	}
 }
 
 func TestParsePSReadError(t *testing.T) {
 	boom := errors.New("boom")
-	if _, err := parsePS(iotest.ErrReader(boom), time.UTC); !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want boom", err)
+	if _, err := parsePS(iotest.ErrReader(boom), strings.NewReader(""), time.UTC); !errors.Is(err, boom) {
+		t.Fatalf("stats err = %v, want boom", err)
+	}
+	if _, err := parsePS(strings.NewReader(""), iotest.ErrReader(boom), time.UTC); !errors.Is(err, boom) {
+		t.Fatalf("names err = %v, want boom", err)
 	}
 }

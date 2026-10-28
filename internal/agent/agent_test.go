@@ -95,7 +95,7 @@ func TestClassify(t *testing.T) {
 		{"pytest", domain.ClassTest},
 		{"jest", domain.ClassTest},
 		{"vitest", domain.ClassTest},
-		{"docker", domain.ClassContainerBuild},
+		{"docker", domain.ClassUnknown}, // CLI client; the work runs in buildkitd/the VM
 		{"buildkitd", domain.ClassContainerBuild},
 		{"podman", domain.ClassContainerBuild},
 		{"node", domain.ClassUnknown},

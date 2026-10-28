@@ -248,9 +248,9 @@ func TestSnapshots(t *testing.T) {
 		{
 			name: "unattributed heavy workload",
 			steps: []step{
-				{0, []ps{{pid: 1, ppid: 0, name: "launchd"}, {pid: 5, ppid: 1, name: "zsh"}, {pid: 6, ppid: 5, name: "docker", rss: 2}}},
+				{0, []ps{{pid: 1, ppid: 0, name: "launchd"}, {pid: 5, ppid: 1, name: "zsh"}, {pid: 6, ppid: 5, name: "buildkitd", rss: 2}}},
 			},
-			heavy: []WorkloadView{{Key: key(6, 0), Name: "docker", Class: domain.ClassContainerBuild, RSS: 2 << 20}},
+			heavy: []WorkloadView{{Key: key(6, 0), Name: "buildkitd", Class: domain.ClassContainerBuild, RSS: 2 << 20}},
 		},
 		{
 			name: "same-name heavy chains collapse into the topmost",

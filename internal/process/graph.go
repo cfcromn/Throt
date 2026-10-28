@@ -30,47 +30,47 @@ type Change struct {
 
 // AgentView summarizes one agent instance and the processes it owns.
 type AgentView struct {
-	Key domain.ProcessKey
+	Key domain.ProcessKey `json:"process"`
 	// Agent is the instance label, e.g. "claude-1".
-	Agent string
+	Agent string `json:"agent"`
 	// Name is the agent process's executable name.
-	Name string
+	Name string `json:"name"`
 	// Children counts owned descendants, excluding the agent itself and any
 	// subtree owned by a nested agent.
-	Children int
+	Children int `json:"children"`
 	// CPU is cores used by the agent and its owned descendants. Processes
 	// whose rate is not yet known contribute 0.
-	CPU float64
+	CPU float64 `json:"cpu"`
 	// RSS is bytes resident in the agent and its owned descendants.
-	RSS uint64
+	RSS uint64 `json:"rss"`
 }
 
 // WorkloadView summarizes one heavy workload, after collapsing same-name
 // heavy descendants into their topmost ancestor.
 type WorkloadView struct {
-	Key   domain.ProcessKey
-	Name  string
-	Class domain.WorkloadClass
+	Key   domain.ProcessKey    `json:"process"`
+	Name  string               `json:"name"`
+	Class domain.WorkloadClass `json:"class"`
 	// Owner is the owning agent instance label, or "" when unattributed.
-	Owner string
+	Owner string `json:"owner"`
 	// OwnerPID is the owning agent's PID, or 0 when unattributed.
-	OwnerPID int
+	OwnerPID int `json:"owner_pid"`
 	// CPU (cores) and RSS (bytes) include collapsed descendants.
-	CPU float64
-	RSS uint64
+	CPU float64 `json:"cpu"`
+	RSS uint64  `json:"rss"`
 }
 
 // Snapshot is an immutable view of the graph after the latest Update. It
 // shares no memory with the graph and is safe to hand to other goroutines.
 type Snapshot struct {
 	// Agents is sorted by CPU descending, then PID ascending.
-	Agents []AgentView
+	Agents []AgentView `json:"agents"`
 	// Heavy is sorted by CPU descending, then PID ascending.
-	Heavy []WorkloadView
+	Heavy []WorkloadView `json:"heavy"`
 	// TotalCPU is the busy fraction of all CPUs across observed processes
 	// since the previous Update, 0..1. Valid only when HasCPU is true.
-	TotalCPU float64
-	HasCPU   bool
+	TotalCPU float64 `json:"total_cpu"`
+	HasCPU   bool    `json:"has_cpu"`
 }
 
 // Option configures a Graph.

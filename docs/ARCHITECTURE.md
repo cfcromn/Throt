@@ -26,6 +26,14 @@ tui ─────────────────> client API
 
 Core scheduling logic must not import the TUI, OS-specific packages, or a particular agent adapter. Core code is deterministic and testable without real processes.
 
+## Attribution
+
+- A process is identified by PID + start time, so a reused PID is a new process.
+- Adapters recognize agents by exact executable name. Generic runtimes such as `node` never match on their own.
+- A process belongs to the nearest ancestor (or itself) an adapter matches. A nested agent owns its own subtree. Anything else stays unattributed: Throt never guesses.
+- Heavy workloads (build, test, container-build) are classified by executable name. A heavy process folds into its topmost same-name, same-owner heavy ancestor, so `go` → `go` shows once.
+- Only executable base names are read, never arguments or environment. On macOS, `/bin/ps` runs twice. The first pass has no free-text columns and defines the process set. The second supplies names, and a PID with an ambiguous (forged) name line gets no name, which leaves it unattributed and observe-only.
+
 ## Failure behavior
 
 - daemon crash: controlled processes continue (paused work is resumed on shutdown);
@@ -79,7 +87,7 @@ One structured event model feeds logs, diagnostics, and the TUI timeline: proces
 
 Platform code implements *capabilities* (host metrics, process enumeration, ancestry, per-process resources, suspend/resume, priority) instead of pretending every OS is identical. The scheduler queries capabilities and degrades explicitly.
 
-- **macOS** — first target: enumeration, ancestry, CPU/RSS, memory/swap, process-group handling. No undocumented APIs on the stable path. Throt avoids cgo, so host CPU busy time (Mach-only) is currently reported as missing; load average covers CPU saturation.
+- **macOS** — first target: enumeration, ancestry, CPU/RSS, memory/swap, process-group handling. No undocumented APIs on the stable path. Throt avoids cgo, so per-process data comes from `/bin/ps`, and host CPU busy time is derived from per-process CPU deltas.
 - **Linux** — native procfs/cgroup facilities, not macOS semantics.
 - **Windows** — not committed before 1.0.
 

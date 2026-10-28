@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -31,7 +32,30 @@ func (darwinProcessSampler) SampleProcesses(ctx context.Context) ([]domain.Proce
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, psPath, "-axww", "-o", psColumns)
+	// Two passes: the stats pass has no attacker-controlled text and defines
+	// the process set; names come from a separate pass (see parsePSNames).
+	stats, err := runPS(ctx, psStatColumns)
+	if err != nil {
+		return nil, fmt.Errorf("sample processes: %w", err)
+	}
+	names, err := runPS(ctx, psNameColumns)
+	if err != nil {
+		return nil, fmt.Errorf("sample processes: %w", err)
+	}
+	procs, err := parsePS(bytes.NewReader(stats), bytes.NewReader(names), time.Local)
+	if err != nil {
+		return nil, fmt.Errorf("sample processes: %w", err)
+	}
+	if len(procs) == 0 {
+		return nil, errors.New("sample processes: ps listed no processes")
+	}
+	return procs, nil
+}
+
+// runPS runs ps for all processes with the given -o columns and returns its
+// bounded output.
+func runPS(ctx context.Context, columns string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, psPath, "-axww", "-o", columns)
 	// The C locale fixes the lstart format; TZ is kept so ps and Go agree on
 	// local time. Nothing else from the environment is passed on.
 	cmd.Env = []string{"LC_ALL=C"}
@@ -41,29 +65,26 @@ func (darwinProcessSampler) SampleProcesses(ctx context.Context) ([]domain.Proce
 	cmd.WaitDelay = time.Second
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("sample processes: %w", err)
+		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("sample processes: start ps: %w", err)
+		return nil, fmt.Errorf("start ps: %w", err)
 	}
-	lr := &io.LimitedReader{R: stdout, N: maxPSOutput + 1}
-	procs, parseErr := parsePS(lr, time.Local)
-	overflow := lr.N == 0
-	if overflow || parseErr != nil {
+	out, readErr := io.ReadAll(io.LimitReader(stdout, maxPSOutput+1))
+	overflow := len(out) > maxPSOutput
+	if overflow || readErr != nil {
 		_ = cmd.Process.Kill()
 	}
 	waitErr := cmd.Wait()
 	switch {
 	case ctx.Err() != nil:
-		return nil, fmt.Errorf("sample processes: %w", ctx.Err())
+		return nil, ctx.Err()
 	case overflow:
-		return nil, fmt.Errorf("sample processes: ps output exceeds %d bytes", maxPSOutput)
-	case parseErr != nil:
-		return nil, fmt.Errorf("sample processes: %w", parseErr)
+		return nil, fmt.Errorf("ps output exceeds %d bytes", maxPSOutput)
+	case readErr != nil:
+		return nil, fmt.Errorf("read ps output: %w", readErr)
 	case waitErr != nil:
-		return nil, fmt.Errorf("sample processes: ps: %w", waitErr)
-	case len(procs) == 0:
-		return nil, errors.New("sample processes: ps listed no processes")
+		return nil, fmt.Errorf("ps: %w", waitErr)
 	}
-	return procs, nil
+	return out, nil
 }
