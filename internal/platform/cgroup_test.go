@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -157,11 +158,13 @@ func TestParseCPUStat(t *testing.T) {
 		{
 			"full",
 			"usage_usec 8001234\nuser_usec 7000000\nsystem_usec 1001234\nnr_periods 120\nnr_throttled 30\nthrottled_usec 450000\nnr_bursts 0\nburst_usec 0\n",
-			cgroupCPU{Usage: 8001234, Throttled: 450000}, false,
+			cgroupCPU{Usage: 8001234, Periods: 120, Throttled: 30}, false,
 		},
 		{"no cpu controller", "usage_usec 42\nuser_usec 40\nsystem_usec 2\n", cgroupCPU{Usage: 42}, false},
-		{"no usage", "nr_periods 1\nthrottled_usec 5\n", cgroupCPU{}, true},
+		{"no usage", "nr_periods 1\nnr_throttled 1\n", cgroupCPU{}, true},
 		{"bad usage", "usage_usec many\n", cgroupCPU{}, true},
+		{"bad periods", "usage_usec 1\nnr_periods x\n", cgroupCPU{}, true},
+		{"bad throttled", "usage_usec 1\nnr_throttled -1\n", cgroupCPU{}, true},
 		{"empty", "", cgroupCPU{}, true},
 	}
 	for _, tt := range tests {
@@ -184,18 +187,24 @@ func TestCgroupCPUBusy(t *testing.T) {
 		want      float64
 		ok        bool
 	}{
-		{"idle", cgroupCPU{1000, 0}, cgroupCPU{1000, 0}, sec, 2, 0, true},
-		{"half of quota", cgroupCPU{0, 0}, cgroupCPU{1_000_000, 0}, sec, 2, 0.5, true},
-		{"full quota", cgroupCPU{0, 0}, cgroupCPU{2_000_000, 0}, sec, 2, 1, true},
-		{"over quota clamps", cgroupCPU{0, 0}, cgroupCPU{2_100_000, 0}, sec, 2, 1, true},
-		{"fractional quota", cgroupCPU{0, 0}, cgroupCPU{250_000, 0}, sec, 0.5, 0.5, true},
-		{"throttled with low usage", cgroupCPU{0, 100}, cgroupCPU{400_000, 101}, sec, 2, 1, true},
-		{"throttled earlier only", cgroupCPU{0, 500}, cgroupCPU{400_000, 500}, sec, 2, 0.2, true},
-		{"usage went backwards", cgroupCPU{5000, 0}, cgroupCPU{4000, 0}, sec, 2, 0, false},
-		{"throttled went backwards", cgroupCPU{0, 10}, cgroupCPU{1000, 5}, sec, 2, 0, false},
-		{"no wall time", cgroupCPU{0, 0}, cgroupCPU{1000, 0}, 0, 2, 0, false},
-		{"sub-microsecond wall", cgroupCPU{0, 0}, cgroupCPU{1000, 0}, time.Nanosecond, 2, 0, false},
-		{"no cpus", cgroupCPU{0, 0}, cgroupCPU{1000, 0}, sec, 0, 0, false},
+		// cgroupCPU{Usage µs, Periods, Throttled periods}; 1s is 10 periods of 100ms.
+		{"idle", cgroupCPU{1000, 0, 0}, cgroupCPU{1000, 10, 0}, sec, 2, 0, true},
+		{"half of quota", cgroupCPU{0, 0, 0}, cgroupCPU{1_000_000, 10, 0}, sec, 2, 0.5, true},
+		{"full quota", cgroupCPU{0, 0, 0}, cgroupCPU{2_000_000, 10, 10}, sec, 2, 1, true},
+		{"over quota clamps", cgroupCPU{0, 0, 0}, cgroupCPU{2_100_000, 10, 0}, sec, 2, 1, true},
+		{"fractional quota", cgroupCPU{0, 0, 0}, cgroupCPU{250_000, 10, 0}, sec, 0.5, 0.5, true},
+		{"throttled every period, bursty usage", cgroupCPU{0, 0, 0}, cgroupCPU{400_000, 10, 10}, sec, 2, 1, true},
+		{"throttled most periods", cgroupCPU{0, 0, 0}, cgroupCPU{400_000, 10, 9}, sec, 2, 0.9, true},
+		{"throttled once, usage wins", cgroupCPU{0, 0, 0}, cgroupCPU{1_000_000, 10, 1}, sec, 2, 0.5, true},
+		{"throttled once, low usage", cgroupCPU{0, 0, 0}, cgroupCPU{200_000, 10, 1}, sec, 2, 0.1, true},
+		{"throttled earlier only", cgroupCPU{0, 100, 50}, cgroupCPU{400_000, 110, 50}, sec, 2, 0.2, true},
+		{"no periods counted", cgroupCPU{0, 0, 0}, cgroupCPU{400_000, 0, 0}, sec, 2, 0.2, true},
+		{"usage went backwards", cgroupCPU{5000, 0, 0}, cgroupCPU{4000, 10, 0}, sec, 2, 0, false},
+		{"periods went backwards", cgroupCPU{0, 10, 0}, cgroupCPU{1000, 5, 0}, sec, 2, 0, false},
+		{"throttled went backwards", cgroupCPU{0, 0, 10}, cgroupCPU{1000, 20, 5}, sec, 2, 0, false},
+		{"no wall time", cgroupCPU{0, 0, 0}, cgroupCPU{1000, 0, 0}, 0, 2, 0, false},
+		{"sub-microsecond wall", cgroupCPU{0, 0, 0}, cgroupCPU{1000, 0, 0}, time.Nanosecond, 2, 0, false},
+		{"no cpus", cgroupCPU{0, 0, 0}, cgroupCPU{1000, 0, 0}, sec, 0, 0, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -275,25 +284,93 @@ func TestParseMemoryStatInactiveFile(t *testing.T) {
 	}
 }
 
-func TestCgroupMemory(t *testing.T) {
+func TestCgroupLimitsApply(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/", true},                             // root of a private cgroup namespace: containerized
+		{"/system.slice/throtd.service", false}, // systemd system unit (CPUQuota=, MemoryMax=)
+		{"/user.slice/user-1000.slice/user@1000.service/app.slice/throtd.service", false}, // systemd user unit
+		{"/docker/0123abcd", false},   // container without its own cgroup namespace
+		{"/kubepods/pod1/ctr", false}, // likewise
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := cgroupLimitsApply(tt.path); got != tt.want {
+				t.Errorf("cgroupLimitsApply(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLeastHeadroom(t *testing.T) {
 	const gib = 1 << 30
 	tests := []struct {
-		name                                         string
-		limit, current, inactive, hostTotal, hostAvl uint64
-		total, avail                                 uint64
+		name   string
+		levels []cgroupLevel
+		want   cgroupLevel
+		ok     bool
 	}{
-		{"limit below host", gib, gib / 4, 0, 8 * gib, 6 * gib, gib, 3 * gib / 4},
-		{"inactive file is reclaimable", gib, gib / 2, gib / 4, 8 * gib, 6 * gib, gib, 3 * gib / 4},
-		{"limit above host", 16 * gib, gib, 0, 8 * gib, 6 * gib, 8 * gib, 6 * gib},
-		{"over limit floors at zero", gib, 2 * gib, 0, 8 * gib, 6 * gib, gib, 0},
-		{"inactive exceeds current", gib, gib / 4, gib / 2, 8 * gib, 6 * gib, gib, gib},
-		{"host has less available", gib, 0, 0, 8 * gib, gib / 8, gib, gib / 8},
+		{"none", nil, cgroupLevel{}, false},
+		{"one", []cgroupLevel{{gib, gib / 4}}, cgroupLevel{gib, gib / 4}, true},
+		{"smaller limit, more headroom", []cgroupLevel{{4 * gib, gib}, {8 * gib, 7 * gib}}, cgroupLevel{8 * gib, 7 * gib}, true},
+		{"smaller limit, less headroom", []cgroupLevel{{gib, gib / 2}, {8 * gib, gib}}, cgroupLevel{gib, gib / 2}, true},
+		{"over limit is zero headroom", []cgroupLevel{{8 * gib, gib}, {gib, 2 * gib}}, cgroupLevel{gib, 2 * gib}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			total, avail := cgroupMemory(tt.limit, tt.current, tt.inactive, tt.hostTotal, tt.hostAvl)
+			got, ok := leastHeadroom(tt.levels)
+			if got != tt.want || ok != tt.ok {
+				t.Errorf("got %+v, %v; want %+v, %v", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestCgroupMemory(t *testing.T) {
+	const gib = 1 << 30
+	tests := []struct {
+		name               string
+		lvl                cgroupLevel
+		hostTotal, hostAvl uint64
+		total, avail       uint64
+	}{
+		{"limit below host", cgroupLevel{gib, gib / 4}, 8 * gib, 6 * gib, gib, 3 * gib / 4},
+		{"limit above host", cgroupLevel{16 * gib, gib}, 8 * gib, 6 * gib, 8 * gib, 6 * gib},
+		{"headroom above host total", cgroupLevel{16 * gib, 0}, 8 * gib, 8 * gib, 8 * gib, 8 * gib},
+		{"over limit floors at zero", cgroupLevel{gib, 2 * gib}, 8 * gib, 6 * gib, gib, 0},
+		{"host has less available", cgroupLevel{gib, 0}, 8 * gib, gib / 8, gib, gib / 8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			total, avail := cgroupMemory(tt.lvl, tt.hostTotal, tt.hostAvl)
 			if total != tt.total || avail != tt.avail {
 				t.Errorf("got %d, %d; want %d, %d", total, avail, tt.total, tt.avail)
+			}
+		})
+	}
+}
+
+func TestCgroupSwap(t *testing.T) {
+	const gib = 1 << 30
+	tests := []struct {
+		name        string
+		lvl         cgroupLevel
+		hostTotal   uint64
+		total, used uint64
+	}{
+		{"limit below host", cgroupLevel{gib, gib / 4}, 4 * gib, gib, gib / 4},
+		{"limit above host", cgroupLevel{8 * gib, gib}, 4 * gib, 4 * gib, gib},
+		{"over limit", cgroupLevel{gib, 2 * gib}, 4 * gib, gib, gib},
+		{"no host swap", cgroupLevel{gib, 0}, 0, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			total, used := cgroupSwap(tt.lvl, tt.hostTotal)
+			if total != tt.total || used != tt.used {
+				t.Errorf("got %d, %d; want %d, %d", total, used, tt.total, tt.used)
 			}
 		})
 	}
@@ -339,20 +416,20 @@ func TestCgroupCPULimit(t *testing.T) {
 
 func TestCgroupCPUTracker(t *testing.T) {
 	a, b := filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")
-	writeCgroup(t, a, map[string]string{"cpu.stat": "usage_usec 0\nthrottled_usec 0\n"})
-	writeCgroup(t, b, map[string]string{"cpu.stat": "usage_usec 0\nthrottled_usec 0\n"})
+	writeCgroup(t, a, map[string]string{"cpu.stat": "usage_usec 0\nnr_periods 0\nnr_throttled 0\n"})
+	writeCgroup(t, b, map[string]string{"cpu.stat": "usage_usec 0\nnr_periods 0\nnr_throttled 0\n"})
 	var tr cgroupCPUTracker
 	t0 := time.Unix(1000, 0)
 
 	if _, ok, err := tr.sample(a, 2, t0); ok || err != nil {
 		t.Fatalf("first reading: ok=%v err=%v", ok, err)
 	}
-	writeCgroup(t, a, map[string]string{"cpu.stat": "usage_usec 1000000\nthrottled_usec 0\n"})
+	writeCgroup(t, a, map[string]string{"cpu.stat": "usage_usec 1000000\nnr_periods 10\nnr_throttled 0\n"})
 	if busy, ok, err := tr.sample(a, 2, t0.Add(time.Second)); !ok || err != nil || busy != 0.5 {
 		t.Fatalf("second reading: %v, %v, %v", busy, ok, err)
 	}
-	writeCgroup(t, a, map[string]string{"cpu.stat": "usage_usec 1100000\nthrottled_usec 7\n"})
-	if busy, ok, _ := tr.sample(a, 2, t0.Add(2*time.Second)); !ok || busy != 1 {
+	writeCgroup(t, a, map[string]string{"cpu.stat": "usage_usec 1100000\nnr_periods 20\nnr_throttled 8\n"})
+	if busy, ok, _ := tr.sample(a, 2, t0.Add(2*time.Second)); !ok || busy != 0.8 {
 		t.Fatalf("throttled: %v, %v", busy, ok)
 	}
 	if _, ok, _ := tr.sample(b, 2, t0.Add(3*time.Second)); ok {
@@ -403,5 +480,46 @@ func TestApplyCgroupMemory(t *testing.T) {
 				t.Errorf("got %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestApplyCgroupHeadroom is the review scenario: a leaf with a 4G limit and
+// 1G used sits in a pod with an 8G limit and 7.9G used. The pod binds, so
+// about 100M is available, not the leaf's 3G.
+func TestApplyCgroupHeadroom(t *testing.T) {
+	const (
+		mib = 1 << 20
+		gib = 1 << 30
+	)
+	pod := t.TempDir()
+	leaf := filepath.Join(pod, "leaf")
+	num := func(v uint64) string { return strconv.FormatUint(v, 10) + "\n" }
+	writeCgroup(t, pod, map[string]string{
+		"memory.max": num(8 * gib), "memory.current": num(8*gib - 100*mib), "memory.stat": "inactive_file 0\n",
+		"memory.swap.max": num(2 * gib), "memory.swap.current": num(2*gib - 50*mib),
+	})
+	writeCgroup(t, leaf, map[string]string{
+		"memory.max": num(4 * gib), "memory.current": num(gib), "memory.stat": "inactive_file 0\n",
+		"memory.swap.max": num(gib), "memory.swap.current": num(0),
+	})
+	got := domain.HostSample{MemTotal: 16 * gib, MemAvailable: 12 * gib, SwapTotal: 4 * gib}
+	applyCgroupMemory(&got, []string{leaf, pod})
+	applyCgroupSwap(&got, []string{leaf, pod})
+	if got.MemTotal != 8*gib || got.MemAvailable != 100*mib {
+		t.Errorf("memory: total %d, available %d; want %d, %d", got.MemTotal, got.MemAvailable, uint64(8*gib), uint64(100*mib))
+	}
+	if got.SwapTotal != 2*gib || got.SwapUsed != 2*gib-50*mib {
+		t.Errorf("swap: total %d, used %d; want the pod's 2G with 50M headroom", got.SwapTotal, got.SwapUsed)
+	}
+
+	// A limited level whose usage cannot be read keeps the host figures.
+	if err := os.Remove(filepath.Join(pod, "memory.current")); err != nil {
+		t.Fatal(err)
+	}
+	host := domain.HostSample{MemTotal: 16 * gib, MemAvailable: 12 * gib}
+	got = host
+	applyCgroupMemory(&got, []string{leaf, pod})
+	if got.MemTotal != host.MemTotal || got.MemAvailable != host.MemAvailable {
+		t.Errorf("unreadable pod usage: got %+v, want host figures", got)
 	}
 }

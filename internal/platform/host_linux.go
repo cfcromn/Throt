@@ -18,10 +18,12 @@ import (
 // /proc/stat, /proc/loadavg and /proc/meminfo. The first sample reports CPU
 // as missing because the busy fraction needs two counter readings.
 //
-// When the daemon runs in a cgroup v2 hierarchy whose own cgroup or an
-// ancestor sets a limit (cpu.max, memory.max, memory.swap.max), each metric
-// is measured against the tightest limit instead of the whole machine. The
-// cgroup is located once, on the first sample; the limit files are re-read
+// When the daemon runs containerized (at the root of a private cgroup v2
+// namespace, see cgroupLimitsApply) and its cgroup sets a limit (cpu.max,
+// memory.max, memory.swap.max), each metric is measured against that limit
+// instead of the whole machine: the tightest CPU quota, the memory or swap
+// level with the least headroom. The cgroup is located once, on the first
+// sample; the limit files are re-read
 // on every sample because limits can change at runtime. Any cgroup read
 // error falls back to the host figure for that metric.
 func NewHostSampler() HostSampler { return &linuxSampler{} }
@@ -123,8 +125,9 @@ func (s *linuxSampler) SampleHost(ctx context.Context) (domain.HostSample, error
 }
 
 // locateCgroup returns the daemon's cgroup v2 directory and its ancestors
-// up to the cgroup2 mount root, or nil when there is no cgroup v2 or the
-// path cannot be resolved.
+// up to the cgroup2 mount root, or nil when there is no cgroup v2, the
+// daemon is not containerized (cgroupLimitsApply), or the path cannot be
+// resolved.
 func locateCgroup() []string {
 	var (
 		cg   string
@@ -133,7 +136,7 @@ func locateCgroup() []string {
 	if err := withFile("/proc/self/cgroup", func(r io.Reader) (err error) {
 		cg, isV2, err = parseProcSelfCgroup(r)
 		return err
-	}); err != nil || !isV2 {
+	}); err != nil || !isV2 || !cgroupLimitsApply(cg) {
 		return nil
 	}
 	var (
