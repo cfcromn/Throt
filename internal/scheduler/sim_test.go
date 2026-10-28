@@ -78,7 +78,7 @@ func runSim(t *testing.T, sc simScenario) simResult {
 	budget := s.Policy().PerOwnerLimit
 	cooldown := int(s.Policy().ResumeCooldown / time.Second)
 	maxQueueWait := int(s.Policy().MaxQueueWait / time.Second)
-	lastSwitch, preemptedNow := -1, false
+	lastSwitch, lastPreempt, preemptedNow := -1, -1, false
 	res := simResult{limitMin: s.Limit(), limitMax: s.Limit(), ownerMaxWait: map[string]int{}, ownerFinish: map[string]int{}}
 	done := 0
 	// counts returns the running controlled jobs and the running jobs per
@@ -127,14 +127,42 @@ func runSim(t *testing.T, sc simScenario) simResult {
 				t.Fatalf("%s t=%d: decision limit %d, effective %d", sc.name, tick, d.HeavyLimit, lim)
 			}
 		}
+		// Resumes and preemptions are at least one cooldown apart, except
+		// resumes exempt from it: at normal or throughput-only pressure, or
+		// into a slot an exit freed, and never within a cooldown of a
+		// preemption. So a round has at most one switch that is not exempt.
+		spaced, switched := 0, false
 		for _, d := range decisions {
-			if d.Action != ActionQueue {
-				// Resumes and preemptions are at least one cooldown apart.
-				if lastSwitch >= 0 && tick-lastSwitch < cooldown {
-					t.Fatalf("%s t=%d: %s %ds after the previous switch", sc.name, tick, d.Action, tick-lastSwitch)
-				}
-				lastSwitch = tick
+			if d.Action == ActionQueue {
+				continue
 			}
+			switched = true
+			exempt := false
+			switch d.Reason {
+			case ReasonPressureNormal:
+				exempt = pressure == domain.PressureNormal
+			case ReasonPressureThroughput:
+				exempt = pressure == domain.PressureElevated && in.ThroughputOnly
+			case ReasonWorkloadExited:
+				exempt = pressure != domain.PressureHigh && pressure != domain.PressureCritical
+			}
+			if d.Action == ActionResume && exempt {
+				if lastPreempt >= 0 && tick-lastPreempt < cooldown {
+					t.Fatalf("%s t=%d: resume (%s) %ds after a preemption", sc.name, tick, d.Reason, tick-lastPreempt)
+				}
+				continue
+			}
+			if spaced++; spaced > 1 || (lastSwitch >= 0 && tick-lastSwitch < cooldown) {
+				t.Fatalf("%s t=%d: %s (%s) %ds after the previous switch", sc.name, tick, d.Action, d.Reason, tick-lastSwitch)
+			}
+			if d.Action == ActionPreempt {
+				lastPreempt = tick
+			}
+		}
+		if switched {
+			lastSwitch = tick
+		}
+		for _, d := range decisions {
 			i := index[d.Key]
 			j := sc.jobs[i]
 			switch d.Action {
@@ -312,6 +340,14 @@ func TestSimulation(t *testing.T) {
 	// ideal is the makespan with every build running at once on 8 CPUs.
 	const oversubIdeal = 32 * 120 / 8
 
+	// A burst of short builds at the default 10s cooldown, as on the 2-CPU
+	// CI runner: 8 jobs of 5s at once, 2 slots. Each exit frees a slot that
+	// is refilled the next round, so the cooldown does not serialize them.
+	var burst []simJob
+	for i := range 8 {
+		burst = append(burst, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 1, dur: 5})
+	}
+
 	scenarios := []simScenario{
 		{name: "1 agent, 1 build", policy: base, jobs: []simJob{{owner: "agent-0", arrive: 1, dur: 120}}, pressure: normalPressure},
 		{name: "6 agents, 12 overlapping builds", policy: base, jobs: overlap, pressure: normalPressure},
@@ -357,6 +393,15 @@ func TestSimulation(t *testing.T) {
 					t.Errorf("makespan %ds, want the held limit to cost at least 3x the ideal %ds", r.makespan, oversubIdeal)
 				}
 			},
+		},
+		{name: "burst of short builds", policy: base, jobs: burst, pressure: normalPressure},
+		{
+			name: "same, elevated by CPU", policy: base, jobs: burst,
+			pressure: oversubPressure, throughputOnly: cpuOnly,
+		},
+		{
+			name: "same, elevated by memory", policy: base, jobs: burst,
+			pressure: oversubPressure, throughputOnly: memoryElevated,
 		},
 		{
 			name: "owner budget, 1 agent floods", policy: budgetPolicy, jobs: flood, pressure: normalPressure,

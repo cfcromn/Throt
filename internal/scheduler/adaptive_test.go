@@ -270,7 +270,9 @@ func TestOwnerBudgetDoesNotBlockOtherOwners(t *testing.T) {
 	expect(t, s.Decide(Input{Now: at(2), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(2)}))
 	// But work that could run still blocks a newcomer.
 	heavy = []process.WorkloadView{wv(2, "a"), wv(3, "b")}
-	s.lastSwitch = at(3) // hold the resume back with the cooldown
+	// Hold the resume back with the cooldown after a pressure-driven pause,
+	// which 1's exit does not skip.
+	s.lastSwitch, s.lastPressureSwitch = at(3), at(3)
 	heavy = append(heavy, wv(5, "c"))
 	expect(t, s.Decide(Input{Now: at(4), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(2)}),
 		brief{ActionQueue, 5, ReasonQueueWaiting})

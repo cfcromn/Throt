@@ -68,6 +68,11 @@ const (
 	// ReasonPressureThroughput is an increase at elevated pressure that
 	// only throughput signals cause (Input.ThroughputOnly).
 	ReasonPressureThroughput = "pressure_elevated_throughput"
+	// Resumes that skip ResumeCooldown (see cooldownExempt) say why:
+	// ReasonWorkloadExited when a running workload exited since the
+	// previous round and freed the slot, otherwise ReasonPressureNormal or
+	// ReasonPressureThroughput for the calm pressure that allowed it.
+	ReasonWorkloadExited = "workload_exited"
 )
 
 // Policy defaults.
@@ -90,7 +95,9 @@ type Policy struct {
 	HeavyLimit int
 	// ResumeCooldown is the minimum time between two resumes, two
 	// preemptions, or a preemption and a resume in either order, which
-	// avoids oscillation. Negative values are treated as 0.
+	// avoids oscillation. A resume into a free slot skips it while
+	// pressure is calm or the slot was freed by an exit (see
+	// cooldownExempt). Negative values are treated as 0.
 	ResumeCooldown time.Duration
 	// PauseOnCritical allows pausing a running workload under critical
 	// pressure.
@@ -276,6 +283,9 @@ type entry struct {
 	preemptions int
 	// preemptPending marks a preempt decision not yet confirmed by Paused.
 	preemptPending bool
+	// running is set when the latest round counted the workload as
+	// running (or resumed or admitted it), so its exit frees a slot.
+	running bool
 }
 
 // Scheduler is a deterministic heavy-slot scheduler.
@@ -287,6 +297,10 @@ type Scheduler struct {
 	seen      map[domain.ProcessKey]*entry
 	// lastSwitch is when the last resume or preemption was decided.
 	lastSwitch time.Time
+	// lastPressureSwitch is when the last preemption, or queueing for high
+	// or critical pressure, was decided. Within ResumeCooldown of it no
+	// resume skips the cooldown.
+	lastPressureSwitch time.Time
 	// limit is the effective heavy limit, in [1, policy.HeavyLimit].
 	limit int
 	// lastAdapt is when the last interval-limited limit change happened;
@@ -429,7 +443,9 @@ type cand struct {
 }
 
 // Decide returns this round's decisions, sorted by action (resume, queue,
-// preempt) and then by process key.
+// preempt) and then by process key. It resumes at most one queued workload
+// per ResumeCooldown, plus every one a cooldown exemption lets fill a free
+// slot (cooldownExempt).
 func (s *Scheduler) Decide(in Input) []Decision {
 	p := s.policy
 	if p.Mode == ModeOff {
@@ -440,6 +456,9 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		// The clock went backwards; do not let the cooldown block forever.
 		s.lastSwitch = time.Time{}
 	}
+	if !s.lastPressureSwitch.IsZero() && in.Now.Before(s.lastPressureSwitch) {
+		s.lastPressureSwitch = time.Time{}
+	}
 	s.lastRound = in.Now
 	s.adapt(in.Now, in.Pressure, in.ThroughputOnly)
 	s.pressureKnown = s.pressureKnown || in.Pressure != domain.PressureUnknown
@@ -447,7 +466,7 @@ func (s *Scheduler) Decide(in Input) []Decision {
 
 	paused := keySet(in.Paused)
 	held := keySet(in.Held)
-	cands := s.observe(in, paused, held, keySet(in.Admitted))
+	cands, exited := s.observe(in, paused, held, keySet(in.Admitted))
 
 	// Running heavy workloads, before admitting new ones. Unattributed
 	// workloads count: they consume resources even though they are never
@@ -468,6 +487,7 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		default:
 			running++
 			perOwner[c.v.Owner]++
+			c.e.running = true
 		}
 	}
 
@@ -481,10 +501,24 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		})
 	}
 
-	// Resume at most one queued workload.
-	if c, reason := s.pickResume(in, queued, running, perOwner); c != nil {
+	// Resume queued workloads: one per cooldown, plus as many as a
+	// cooldown exemption lets fill free slots.
+	for {
+		c, reason := s.pickResume(in, queued, running, perOwner)
+		if c == nil {
+			break
+		}
+		if !s.cooledDown(in.Now) {
+			if reason = s.cooldownExempt(in, running, exited); reason == "" {
+				break
+			}
+			if reason == ReasonWorkloadExited {
+				exited--
+			}
+		}
 		running++
 		perOwner[c.v.Owner]++
+		c.e.running = true
 		add(ActionResume, c, reason)
 		queued = slices.DeleteFunc(queued, func(q *cand) bool { return q == c })
 		s.lastSwitch = in.Now
@@ -519,9 +553,13 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		if reason == "" {
 			running++
 			perOwner[c.v.Owner]++
+			c.e.running = true
 			continue
 		}
 		c.e.queuedSince = in.Now
+		if reason == ReasonPressureHigh || reason == ReasonPressureCritical {
+			s.lastPressureSwitch = in.Now
+		}
 		add(ActionQueue, c, reason)
 	}
 
@@ -544,7 +582,8 @@ func (s *Scheduler) Decide(in Input) []Decision {
 			}
 		}
 		if eligible > 1 {
-			s.lastSwitch = in.Now
+			s.lastSwitch, s.lastPressureSwitch = in.Now, in.Now
+			victim.e.running = false
 			victim.e.queuedSince = in.Now
 			victim.e.preemptPending = true
 			add(ActionPreempt, victim, ReasonPressureCritical)
@@ -559,8 +598,9 @@ func (s *Scheduler) Decide(in Input) []Decision {
 }
 
 // observe updates per-workload state from the snapshot and returns this
-// round's candidates in snapshot order.
-func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessKey]struct{}) []*cand {
+// round's candidates in snapshot order, and how many workloads the previous
+// round counted as running have exited since.
+func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessKey]struct{}) ([]*cand, int) {
 	present := make(map[domain.ProcessKey]struct{}, len(in.Heavy))
 	cands := make([]*cand, 0, len(in.Heavy))
 	for _, v := range in.Heavy {
@@ -599,22 +639,27 @@ func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessK
 			e.queuedSince = time.Time{}
 		}
 		e.preemptPending = false
+		e.running = false // set again by Decide
 		cands = append(cands, c)
 	}
-	for k := range s.seen {
+	exited := 0
+	for k, e := range s.seen {
 		if _, ok := present[k]; !ok {
+			if e.running {
+				exited++
+			}
 			delete(s.seen, k)
 		}
 	}
 	s.baselined = true
-	return cands
+	return cands, exited
 }
 
 // pickResume returns the queued workload to resume this round, if any, and
 // the reason.
 func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner map[string]int) (*cand, string) {
 	p := s.policy
-	if len(queued) == 0 || !s.cooledDown(in.Now) {
+	if len(queued) == 0 {
 		return nil, ""
 	}
 	aged := func(c *cand) bool { return in.Now.Sub(c.e.queuedSince) >= p.MaxQueueWait }
@@ -682,6 +727,34 @@ func (s *Scheduler) yields(in Input, c *cand, perOwner map[string]int) bool {
 	})
 }
 
+// cooldownExempt returns the reason a resume may skip ResumeCooldown, or ""
+// if it must wait. The cooldown keeps resumes from compounding pressure, so
+// a resume skips it when it fills a free slot under the effective limit and
+// either a running workload exited since the previous round (its
+// replacement adds no load: ReasonWorkloadExited) or pressure is calm:
+// normal, or elevated by throughput only (ReasonPressureNormal,
+// ReasonPressureThroughput). It never does at high or critical pressure,
+// nor within ResumeCooldown of a preemption or of queueing for high or
+// critical pressure, so recovery stays spaced. exited is the number of
+// exits not yet refilled this round.
+func (s *Scheduler) cooldownExempt(in Input, running, exited int) string {
+	if running >= s.limit || in.Pressure == domain.PressureHigh || in.Pressure == domain.PressureCritical {
+		return ""
+	}
+	if !s.lastPressureSwitch.IsZero() && in.Now.Sub(s.lastPressureSwitch) < s.policy.ResumeCooldown {
+		return ""
+	}
+	switch {
+	case exited > 0:
+		return ReasonWorkloadExited
+	case in.Pressure == domain.PressureNormal:
+		return ReasonPressureNormal
+	case in.Pressure == domain.PressureElevated && in.ThroughputOnly:
+		return ReasonPressureThroughput
+	}
+	return ""
+}
+
 // cooledDown reports whether ResumeCooldown has elapsed since the last
 // resume or preemption.
 func (s *Scheduler) cooledDown(now time.Time) bool {
@@ -691,6 +764,7 @@ func (s *Scheduler) cooledDown(now time.Time) bool {
 func (s *Scheduler) reset() {
 	s.baselined = false
 	s.lastSwitch = time.Time{}
+	s.lastPressureSwitch = time.Time{}
 	clear(s.seen)
 	s.limit = s.policy.start()
 	s.lastAdapt = time.Time{}
