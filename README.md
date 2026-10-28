@@ -92,15 +92,27 @@ Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.js
 ```json
 {
   "sample_interval": "2s",
+  "profile": "balanced",
   "scheduler": {
     "mode": "observe",
-    "heavy_limit": 2,
+    "heavy_limit": 3,
+    "adaptive": true,
+    "per_agent_limit": 0,
     "resume_cooldown": "10s",
     "pause_on_critical": false,
     "max_queue_wait": "5m"
   }
 }
 ```
+
+`profile` presets the scheduler; explicit keys override it.
+- `performance`: limit = CPUs/2, not adaptive.
+- `balanced` (default): limit = CPUs/4, adaptive.
+- `cool`: limit 1, adaptive, may pause one workload under critical pressure.
+
+A profile never turns the scheduler on.
+- `adaptive` halves the running limit under high pressure and raises it by one per 30s of calm.
+- `per_agent_limit` caps heavy workloads per agent, so one agent can't take every slot.
 
 `scheduler.mode` is `off` (default), `observe` (log what it would do as `scheduler_decision` events), or `enforce` (queue new agent-owned heavy workloads with SIGSTOP when `heavy_limit` heavy workloads are already running, and resume them as slots free up). Try `observe` first and watch `throt events`.
 

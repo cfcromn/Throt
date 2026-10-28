@@ -78,7 +78,7 @@ One structured event model feeds logs, diagnostics, and the TUI timeline: proces
 
 **Inputs:** CPU utilization and load, memory used/available, swap usage and growth, per-process CPU/RSS, ancestry, number of heavy workloads, workload runtime. Later: platform memory-pressure APIs and responsiveness probes.
 
-**Pressure states:** `NORMAL → ELEVATED → HIGH → CRITICAL` (plus `UNKNOWN` when no signal is available). Signals are window medians (memory used, CPU, load per CPU) and swap growth rate over a 30s window. Escalation needs 3 consecutive samples; recovery needs every signal below its exit threshold (enter − 0.05 for fractions, half the enter rate for swap growth) for twice the window. Swap growth is the median of rates between adjacent samples, so one jump doesn't count as sustained growth. CPU alone never reaches critical. Thresholds live in `internal/pressure`.
+**Pressure states:** `NORMAL → ELEVATED → HIGH → CRITICAL` (plus `UNKNOWN` when no signal is available). Signals are window medians (memory used, CPU, load per CPU, and foreground latency, measured as how late a 10ms timer fires each tick) and the swap growth rate, over a 30s window. Escalation needs 3 consecutive samples; recovery needs every signal below its exit threshold (enter − 0.05 for fractions, half the enter rate for swap growth) for twice the window. Swap growth is the median of rates between adjacent samples, so one jump doesn't count as sustained growth. CPU alone never reaches critical. Thresholds live in `internal/pressure`.
 
 **Workload states:** `DISCOVERED`, `RUNNING`, `QUEUED`, `PAUSED`, `RESUMING`, `EXITED`, `UNKNOWN`.
 
@@ -99,6 +99,8 @@ One structured event model feeds logs, diagnostics, and the TUI timeline: proces
 - Unknown pressure (degraded metrics) fails open: nothing new is queued, and work queued longer than `max_queue_wait` is resumed.
 - New arrivals queue behind already-waiting work, so short jobs can't starve a long queued one.
 - Unattributed workloads count toward the limit but are never controlled. The controller records whether a pause was manual or the scheduler's, and the scheduler never touches manual pauses.
+- **Adaptive** (AIMD): the effective limit starts at `heavy_limit`. It rises by 1 per 30s at normal pressure, halves (floor 1) at most once per 30s at high or critical pressure, holds at elevated, and resets at unknown pressure. Lowering it never preempts; it only delays new starts. Changes are `scheduler_limit` events.
+- **Per-agent budget:** with `per_agent_limit`, an agent's new heavy workload waits (`owner_budget_exhausted`) while that agent already runs that many, even if global slots are free.
 - If a queued workload's top process exits while stopped, its remaining members are resumed (`top_exited`). The scheduler only queues workloads of up to 256 processes.
 
 **Fairness:** priority combines user override, workload class, queue age, project fairness, and previous preemption count. No project may hold every heavy slot indefinitely.
