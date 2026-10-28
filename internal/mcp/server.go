@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/domain"
@@ -163,8 +164,8 @@ func (s *Server) handle(ctx context.Context, line []byte) *response {
 	if !json.Valid(line) {
 		return errorResponse(nil, codeParseError, "parse error: invalid JSON")
 	}
-	var req request
-	if err := json.Unmarshal(line, &req); err != nil {
+	req, ok := decodeRequest(line)
+	if !ok {
 		// Valid JSON that is not a request object, e.g. a batch array.
 		return errorResponse(nil, codeInvalidRequest, "invalid request: expected a JSON-RPC request object")
 	}
@@ -181,6 +182,10 @@ func (s *Server) handle(ctx context.Context, line []byte) *response {
 		s.log.Debug("ignored message without method")
 		return nil
 	}
+	if !validID(req.ID) {
+		// It cannot be echoed: it may not even be valid UTF-8.
+		return errorResponse(nil, codeInvalidRequest, "invalid request: id must be a string, number, or null")
+	}
 	if req.JSONRPC != "2.0" {
 		return errorResponse(req.ID, codeInvalidRequest, `invalid request: jsonrpc must be "2.0"`)
 	}
@@ -189,6 +194,35 @@ func (s *Server) handle(ctx context.Context, line []byte) *response {
 		return &response{JSONRPC: "2.0", ID: req.ID, Error: rerr}
 	}
 	return &response{JSONRPC: "2.0", ID: req.ID, Result: result}
+}
+
+// decodeRequest decodes a request object. JSON-RPC member names are
+// case-sensitive, unlike encoding/json's struct field matching: {"ID":1} has
+// no id and is a notification.
+func decodeRequest(line []byte) (request, bool) {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(line, &members); err != nil || members == nil {
+		return request{}, false
+	}
+	req := request{ID: members["id"], Params: members["params"]}
+	for name, dst := range map[string]*string{"jsonrpc": &req.JSONRPC, "method": &req.Method} {
+		if v, ok := members[name]; ok && json.Unmarshal(v, dst) != nil {
+			return request{}, false
+		}
+	}
+	return req, true
+}
+
+// validID reports whether id, which is valid JSON, is a JSON-RPC id: a
+// string, number, or null. A string must be valid UTF-8 to be echoed.
+func validID(id json.RawMessage) bool {
+	switch id[0] {
+	case '"':
+		return utf8.Valid(id)
+	case 'n', '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		return true
+	}
+	return false
 }
 
 // errorResponse builds an error reply; a nil id is sent as null.
