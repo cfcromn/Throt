@@ -299,7 +299,7 @@ The config file is optional: `~/.config/throt/config.json`, or `$XDG_CONFIG_HOME
 | `profile` | `balanced` | See [Profiles](#profiles). |
 | `scheduler.heavy_limit` | from the profile | The fixed limit, or with `adaptive` the ceiling (1 to 64). |
 | `scheduler.start_limit` | from the profile | Where the adaptive limit starts (0 to `heavy_limit`; 0 means from the profile, capped at `heavy_limit`). Ignored without `adaptive`. |
-| `scheduler.adaptive` | from the profile | Halve the limit under high pressure; raise it by one per 30s, up to `heavy_limit`, while the machine copes. |
+| `scheduler.adaptive` | from the profile | Halve the limit under high pressure; raise it by one per 30s, up to `heavy_limit`, while the machine copes, or at once for waiting jobs that fit in free memory. |
 | `scheduler.per_agent_limit` | `0` (no cap) | Most heavy workloads one agent may run, so one agent can't take every slot (0 to 64). |
 | `scheduler.resume_cooldown` | `10s` | Minimum spacing between resumes (and preemptions) while pressure is high, critical, or elevated by memory, swap or latency, and after a pressure pause; free slots are refilled at once at normal or CPU-only pressure, or when a job exited. At most `10m`. |
 | `scheduler.max_queue_wait` | `5m` | Work queued this long gets the next free slot even under high pressure, so the queue can't starve (at least 1s). |
