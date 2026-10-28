@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
@@ -114,6 +115,37 @@ func printStatus(w io.Writer, st app.StatusResult) {
 	fmt.Fprintf(w, "LOAD      %s\n", na(domain.MetricLoad, fmt.Sprintf("%.2f per CPU", h.Load1)))
 	fmt.Fprintf(w, "MEM       %s\n", na(domain.MetricMemory, fmt.Sprintf("%s used of %s", gib(h.MemTotal-min(h.MemAvailable, h.MemTotal)), gib(h.MemTotal))))
 	fmt.Fprintf(w, "SWAP      %s\n", na(domain.MetricSwap, fmt.Sprintf("%s used of %s", gib(h.SwapUsed), gib(h.SwapTotal))))
+
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "\nAGENTS\nAGENT\tPID\tCPU\tMEM\tCHILDREN")
+	if len(st.Agents) == 0 {
+		fmt.Fprintln(tw, "(none detected)")
+	}
+	const maxAgents = 15
+	for i, a := range st.Agents {
+		if i == maxAgents {
+			fmt.Fprintf(tw, "... and %d more\n", len(st.Agents)-maxAgents)
+			break
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%.0f%%\t%s\t%d\n", a.Agent, a.Key.PID, a.CPU*100, gib(a.RSS), a.Children)
+	}
+	fmt.Fprintln(tw, "\nHEAVY WORKLOADS\nOWNER\tPID\tPROCESS\tCLASS\tCPU\tMEM")
+	if len(st.Heavy) == 0 {
+		fmt.Fprintln(tw, "(none)")
+	}
+	for _, h := range st.Heavy {
+		owner := h.Owner
+		if owner == "" {
+			owner = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.0f%%\t%s\n", owner, h.Key.PID, h.Name, h.Class, h.CPU*100, gib(h.RSS))
+	}
+	tw.Flush()
 }
 
-func gib(b uint64) string { return fmt.Sprintf("%.1f GiB", float64(b)/(1<<30)) }
+func gib(b uint64) string {
+	if b < 1<<30 {
+		return fmt.Sprintf("%d MiB", b>>20)
+	}
+	return fmt.Sprintf("%.1f GiB", float64(b)/(1<<30))
+}
