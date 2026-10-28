@@ -1,6 +1,6 @@
 // Package e2e runs the shipped throtd and throt binaries against real
-// processes. It only runs with THROT_E2E=1 on Linux in a disposable
-// environment (CI, or a container), because an enforce-mode daemon pauses
+// processes. It only runs with THROT_E2E=1 in a disposable environment (CI
+// or a container on Linux, CI only on macOS), because an enforce-mode daemon pauses
 // the builds of every agent it recognizes, built-in ones such as claude
 // included. The test daemon's agent is a custom adapter for a stub with a
 // name no real agent has.
@@ -118,7 +118,7 @@ const (
 	// cliTimeout bounds one throt invocation.
 	cliTimeout = 30 * time.Second
 	// agentExe is the stub agent's executable; it fits the 15-byte Linux
-	// comm. agentLabel is its first instance, from the "e2e" adapter.
+	// comm and the 16-byte macOS one. agentLabel is its first instance, from the "e2e" adapter.
 	agentExe   = "throt-e2e-agent"
 	agentLabel = "e2e-1"
 	// baseConfig is shared by every test daemon: a short sample interval
@@ -132,11 +132,13 @@ var binDir string
 // gate is an opt-in switch for tests that run real enforce-mode daemons.
 type gate struct {
 	env, what, run string // variable, test description, example test flags
+	// linuxOnly gates tests that read /proc and container state directly.
+	linuxOnly bool
 }
 
 var (
-	e2eGate  = gate{"THROT_E2E", "the end-to-end tests", "-test.v"}
-	soakGate = gate{"THROT_SOAK", "the soak test", "-test.run=TestSoak -test.v -test.timeout=30m"}
+	e2eGate  = gate{"THROT_E2E", "the end-to-end tests", "-test.v", false}
+	soakGate = gate{"THROT_SOAK", "the soak test", "-test.run=TestSoak -test.v -test.timeout=30m", true}
 )
 
 func enabled() bool { return e2eGate.skipReason() == "" || soakGate.skipReason() == "" }
@@ -144,12 +146,22 @@ func enabled() bool { return e2eGate.skipReason() == "" || soakGate.skipReason()
 // skipReason says why the tests must not run here, or "" when they may.
 // The test daemons control real processes, so outside a disposable
 // environment they could stop the builds of the developer's own agents.
+// A Mac has no container to isolate them, so on macOS only CI qualifies
+// (hosted macOS runners are disposable VMs).
 func (g gate) skipReason() string {
 	switch {
 	case os.Getenv(g.env) != "1":
 		return "set " + g.env + "=1 to run " + g.what + " (CI or a container only)"
+	case runtime.GOOS == "darwin" && !g.linuxOnly:
+		if os.Getenv("CI") != "true" {
+			return g.env + " is set, but this is not CI (CI=true). The test daemons pause real " +
+				"processes, so on macOS run " + g.what + " only on a disposable CI runner"
+		}
+		return ""
+	case g.linuxOnly && runtime.GOOS != "linux":
+		return g.what + " only runs on Linux"
 	case runtime.GOOS != "linux":
-		return g.what + " only run on Linux"
+		return g.what + " only run on Linux and macOS"
 	case os.Getenv("CI") != "true" && !inContainer():
 		return g.env + " is set, but this is neither CI (CI=true) nor a container. The test daemons " +
 			"pause real processes, so run " + g.what + " only in a disposable environment, e.g. " +
@@ -292,7 +304,7 @@ func newEnv(t *testing.T, config string) *env {
 // setupEnv is newEnv without starting throtd.
 func setupEnv(t *testing.T, config string) *env {
 	t.Helper()
-	home := filepath.Join(t.TempDir(), "home")
+	home := filepath.Join(shortTempDir(t), "home")
 	e := &env{t: t, home: home, log: &lockedBuffer{}}
 	runDir, cfgDir := filepath.Join(home, "run"), filepath.Join(home, "config")
 	for _, d := range []string{runDir, cfgDir} {
@@ -318,6 +330,22 @@ func setupEnv(t *testing.T, config string) *env {
 		}
 	})
 	return e
+}
+
+// shortTempDir is t.TempDir, except on macOS: its socket paths are limited
+// to 104 bytes and $TMPDIR is long, so the daemon's socket under a test's
+// t.TempDir would not fit.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS != "darwin" {
+		return t.TempDir()
+	}
+	dir, err := os.MkdirTemp("/tmp", "throte2e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }
 
 func (e *env) configPath() string { return filepath.Join(e.home, "config", "throt", "config.json") }
@@ -498,20 +526,6 @@ func (e *env) waitStartable() {
 		st, ok := e.status()
 		return ok && (st.pressure == "NORMAL" || st.pressure == "ELEVATED")
 	})
-}
-
-// procState returns the state letter from /proc/PID/stat, or 0 if the
-// process is gone.
-func procState(pid int) byte {
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0
-	}
-	i := bytes.LastIndexByte(b, ')')
-	if i < 0 || i+2 >= len(b) {
-		return 0
-	}
-	return b[i+2]
 }
 
 // running reports whether pid is alive and not stopped.
@@ -808,8 +822,19 @@ func TestCtrlZJob(t *testing.T) {
 	if agentPID == 0 || agentPID == a.pid {
 		t.Fatalf("agent pid %d (shell %d), want the stub under the shell", agentPID, a.pid)
 	}
+	// The job, then the agent, is killed while its parent is alive to reap
+	// it. Killed together, they would be reparented to PID 1, and a
+	// container's PID 1 shell never reaps them: the agent's zombie would
+	// then be e2e-1 in every later test's daemon.
 	t.Cleanup(func() {
 		syscall.Kill(-agentPID, syscall.SIGCONT)
+		for _, pid := range []int{job, agentPID} {
+			syscall.Kill(pid, syscall.SIGKILL)
+			deadline := time.Now().Add(waitTimeout)
+			for procState(pid) != 0 && time.Now().Before(deadline) {
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
 		syscall.Kill(-agentPID, syscall.SIGKILL)
 	})
 	if err := syscall.Kill(-agentPID, syscall.SIGTSTP); err != nil {
@@ -926,15 +951,6 @@ func TestEnforceScheduler(t *testing.T) {
 		t.Errorf("reload output does not mention scheduler.mode:\n%s", out)
 	}
 	e.waitRunning(third)
-}
-
-// comm returns the command name of pid from /proc, or "" if it is gone.
-func comm(pid int) string {
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
 }
 
 // leaseEvents returns the lease events in the daemon's log, oldest first.
