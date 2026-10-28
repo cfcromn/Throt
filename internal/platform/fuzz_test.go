@@ -77,11 +77,12 @@ func FuzzPSName(f *testing.F) {
 // FuzzProcargsComm checks that a kern.procargs2 name is never empty, holds
 // no newline, and names the process exactly as its ps names line would.
 func FuzzProcargsComm(f *testing.F) {
-	f.Add(procargs(2, "/usr/local/go/bin/go", 3, "/usr/local/go/bin/go", "build"))
-	f.Add(procargs(1, "/opt/homebrew/bin/node", 5, "npm run build"))
-	f.Add(procargs(1, "/x", 0, "/tmp/evil\n    1 launchd"))
-	f.Add(procargs(1, "/x", 0, ""))
-	f.Add(procargs(0, "/x", 0))
+	f.Add(procargs(2, "/usr/local/go/bin/go", "/usr/local/go/bin/go", "build"))
+	f.Add(procargs(1, "/opt/homebrew/bin/node", "npm run build"))
+	f.Add(procargs(1, "/x", "/tmp/evil\n    1 launchd"))
+	f.Add(procargs(1, "/x", ""))
+	f.Add(procargs(1, "/bin/cat", "", "SECRET_TOKEN=hunter2"))
+	f.Add(procargs(0, "/x"))
 	f.Add([]byte{1, 0})
 	f.Fuzz(func(t *testing.T, b []byte) {
 		comm, err := procargsComm(b)
