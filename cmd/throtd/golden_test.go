@@ -93,6 +93,8 @@ func TestGolden(t *testing.T) {
 				"HOME=" + filepath.Join(dir, "home"),
 				"XDG_CONFIG_HOME=" + filepath.Join(dir, "xdg"),
 				"XDG_RUNTIME_DIR=" + filepath.Join(dir, "run"),
+				// Under -cover the child warns on stderr without it.
+				"GOCOVERDIR=" + t.TempDir(),
 			}
 			var stdout, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &stdout, &stderr

@@ -380,6 +380,12 @@ func runGolden(exe, dir string, tc goldenCase) (golden, error) {
 	if tc.down {
 		runtimeDir = filepath.Join(dir, "norun")
 	}
+	// Under -cover each child writes coverage data; parallel children
+	// sharing one directory race on its files.
+	covDir, err := os.MkdirTemp(dir, "cover")
+	if err != nil {
+		return golden{}, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, exe)
@@ -391,11 +397,12 @@ func runGolden(exe, dir string, tc goldenCase) (golden, error) {
 		"XDG_RUNTIME_DIR=" + runtimeDir,
 		"TMPDIR=" + dir,
 		"TZ=UTC",
+		"GOCOVERDIR=" + covDir,
 	}
 	cmd.Stdin = strings.NewReader(tc.stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	code := 0
 	var ee *exec.ExitError
 	switch {
