@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+## [0.5.0-rc.1] - 2026-10-28
+
+Accurate pressure everywhere: cgroup-aware Linux, the macOS kernel verdict, and a CPU policy driven by benchmark evidence. Also hardening: fuzzing, a patched toolchain, and a pinned supply chain.
+
 ### Added
 - Run-at-login (launchd, systemd) and upgrade/rollback instructions.
 - `make bench`: containerized real-kernel benchmark (baseline vs enforce), with results in `docs/ARCHITECTURE.md`.
