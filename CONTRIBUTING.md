@@ -29,7 +29,7 @@ docker run --rm --init -v "$PWD":/src -w /src golang:1.26.10-alpine sh -c \
   'go test -c -o /tmp/e2e.test ./internal/e2e && THROT_E2E=1 /tmp/e2e.test -test.v'
 ```
 
-The soak test (`internal/e2e/soak_test.go`) churns an enforce-mode `throtd` for 10 minutes (`THROT_SOAK_DURATION` to change it) and checks for stranded work, leaks, latency and the heavy limit. It is too long for CI; run it the same way with `docker run --rm --cpus=2 …` and `THROT_SOAK=1 /tmp/e2e.test -test.run=TestSoak -test.v -test.timeout=30m`.
+The soak test (`internal/e2e/soak_test.go`) churns an enforce-mode `throtd` for 10 minutes (`THROT_SOAK_DURATION` to change it) and checks for stranded work, leaks, latency and the heavy limit. It is too long for CI; run it the same way with `docker run --rm --init --cpus=2 …` and `THROT_SOAK=1 /tmp/e2e.test -test.run=TestSoak -test.v -test.timeout=30m`.
 
 Fuzz targets run their seeds in `go test`; to fuzz one, use `go test -run='^$' -fuzz='^FuzzParsePS$' -fuzztime=60s ./internal/platform`. Don't commit generated `testdata/fuzz` corpora: turn a crasher into a table test instead.
 

@@ -153,7 +153,7 @@ func (g gate) skipReason() string {
 	case os.Getenv("CI") != "true" && !inContainer():
 		return g.env + " is set, but this is neither CI (CI=true) nor a container. The test daemons " +
 			"pause real processes, so run " + g.what + " only in a disposable environment, e.g. " +
-			"docker run --rm -v \"$PWD\":/src -w /src golang:1.26.10-alpine sh -c " +
+			"docker run --rm --init -v \"$PWD\":/src -w /src golang:1.26.10-alpine sh -c " +
 			"'go test -c -o /tmp/e2e.test ./internal/e2e && " + g.env + "=1 /tmp/e2e.test " + g.run + "' " +
 			"(run the binary directly: under go test, the go process would own every job)"
 	}
