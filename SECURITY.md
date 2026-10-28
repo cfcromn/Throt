@@ -15,7 +15,7 @@ Extra review is required for local IPC, process signaling/control, privilege bou
 ## Design stance
 
 - Throt runs without elevated privileges and never silently broadens them.
-- The local socket is owner-only; process-control methods require the caller to own the target process.
+- The local socket lives in an owner-only directory and is mode 0600; client and daemon both verify the directory before use. Before any process-control method ships, the daemon will also verify the peer's uid.
 - Unknown or ambiguously attributed processes are observe-only.
 
 ## Privacy

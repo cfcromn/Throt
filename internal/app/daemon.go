@@ -4,11 +4,14 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/config"
@@ -26,6 +29,10 @@ type PingResult struct {
 	PID      int    `json:"pid"`
 	Uptime   string `json:"uptime"`
 }
+
+// MaxEventsPerCall caps one "events" response so it fits the protocol's
+// message size limit.
+const MaxEventsPerCall = 1000
 
 // EventsParams selects how many recent events the "events" method returns.
 type EventsParams struct {
@@ -48,11 +55,16 @@ func NewDaemon(cfg config.Config, log *slog.Logger) *Daemon {
 // Run listens on the configured socket and serves clients until ctx is
 // cancelled. It refuses to start if another daemon already owns the socket.
 func (d *Daemon) Run(ctx context.Context) error {
-	l, err := listen(ctx, d.cfg.SocketPath)
+	unlock, err := lockInstance(d.cfg.SocketPath)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(d.cfg.SocketPath)
+	defer unlock()
+	l, err := listen(d.cfg.SocketPath)
+	if err != nil {
+		return err
+	}
+	// Closing the listener (done by Serve) unlinks the socket.
 
 	d.started = time.Now()
 	d.emit(domain.EventDaemonStarted, "listening on "+d.cfg.SocketPath)
@@ -86,25 +98,43 @@ func (d *Daemon) recentEvents(_ context.Context, raw json.RawMessage) (any, erro
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
 	}
+	if p.Limit <= 0 || p.Limit > MaxEventsPerCall {
+		p.Limit = MaxEventsPerCall
+	}
 	return d.events.Recent(p.Limit), nil
 }
 
-// listen creates an owner-only socket at path. A stale socket left by a
-// crashed daemon is replaced; a live one is an error.
-func listen(ctx context.Context, path string) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+// lockInstance takes an exclusive lock next to the socket so only one daemon
+// can own it, even when two start at once. The lock dies with the process.
+func lockInstance(socket string) (unlock func(), err error) {
+	dir := filepath.Dir(socket)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create socket dir: %w", err)
 	}
-	if err := transport.CheckPrivateDir(filepath.Dir(path)); err != nil {
+	if err := transport.CheckPrivateDir(dir); err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(path); err == nil {
-		dctx, cancel := context.WithTimeout(ctx, time.Second)
-		conn, derr := (&net.Dialer{}).DialContext(dctx, "unix", path)
-		cancel()
-		if derr == nil {
-			conn.Close()
-			return nil, fmt.Errorf("throtd is already running on %s", path)
+	f, err := os.OpenFile(socket+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("throtd is already running on %s", socket)
+		}
+		return nil, fmt.Errorf("lock %s: %w", f.Name(), err)
+	}
+	return func() { f.Close() }, nil
+}
+
+// listen creates an owner-only socket at path. The caller holds the instance
+// lock, so an existing socket is stale. Only an actual socket is removed;
+// any other file at path is an error rather than collateral damage.
+func listen(path string) (net.Listener, error) {
+	if fi, err := os.Lstat(path); err == nil {
+		if fi.Mode().Type() != fs.ModeSocket {
+			return nil, fmt.Errorf("%s exists and is not a socket; refusing to replace it", path)
 		}
 		if err := os.Remove(path); err != nil {
 			return nil, fmt.Errorf("remove stale socket: %w", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,12 +93,31 @@ func TestDaemonRefusesSecondInstance(t *testing.T) {
 
 func TestDaemonReplacesStaleSocket(t *testing.T) {
 	sock := filepath.Join(shortTempDir(t), "throtd.sock")
-	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+	l, err := net.Listen("unix", sock)
+	if err != nil {
 		t.Fatal(err)
 	}
+	l.(*net.UnixListener).SetUnlinkOnClose(false)
+	l.Close() // leaves a stale socket file, as a crashed daemon would
 	stop := startDaemon(t, sock)
 	if err := stop(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDaemonKeepsNonSocketFile(t *testing.T) {
+	sock := filepath.Join(shortTempDir(t), "throtd.sock")
+	if err := os.WriteFile(sock, []byte("important"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.SocketPath = sock
+	err := NewDaemon(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "not a socket") {
+		t.Fatalf("err = %v", err)
+	}
+	if b, _ := os.ReadFile(sock); string(b) != "important" {
+		t.Fatal("non-socket file was modified")
 	}
 }
 

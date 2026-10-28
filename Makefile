@@ -1,4 +1,4 @@
-.PHONY: setup fmt lint vet test race build check ci snapshot run
+.PHONY: setup fmt lint vet test race build check ci run
 
 setup:
 	go mod download
@@ -7,7 +7,7 @@ fmt:
 	gofmt -w .
 
 lint:
-	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || echo "golangci-lint not installed; skipping"
+	@if command -v golangci-lint >/dev/null 2>&1; then golangci-lint run ./...; else echo "golangci-lint not installed; skipping"; fi
 
 vet:
 	go vet ./...
@@ -28,9 +28,6 @@ ci:
 	go vet ./...
 	go test -race ./...
 	go build ./...
-
-snapshot:
-	goreleaser release --snapshot --clean
 
 run:
 	go run ./cmd/throtd

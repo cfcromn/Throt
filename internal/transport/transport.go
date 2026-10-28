@@ -74,7 +74,12 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return fmt.Errorf("accept: %w", err)
+			if errors.Is(err, net.ErrClosed) {
+				return fmt.Errorf("accept: %w", err)
+			}
+			// ponytail: fixed backoff on transient errors (e.g. EMFILE); fail open rather than exit.
+			time.Sleep(50 * time.Millisecond)
+			continue
 		}
 		wg.Add(1)
 		go func() {
