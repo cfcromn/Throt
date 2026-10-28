@@ -63,7 +63,11 @@ func TestSampleHostDarwin(t *testing.T) {
 		if !slices.Equal(s.Missing, []domain.Metric{domain.MetricCPU}) {
 			t.Errorf("Missing = %v, want only cpu", s.Missing)
 		}
+		if !s.HasMemoryPressure() {
+			t.Errorf("MemoryPressure = %v, want a known kernel verdict", s.MemoryPressure)
+		}
 	}
+	t.Logf("kernel memory pressure: %v", second.MemoryPressure)
 }
 
 func TestSampleHostLinux(t *testing.T) {
@@ -76,10 +80,12 @@ func TestSampleHostLinux(t *testing.T) {
 	}
 	for _, s := range []domain.HostSample{first, second} {
 		checkRanges(t, s)
-		for _, m := range []domain.Metric{domain.MetricLoad, domain.MetricMemory} {
-			if !s.Has(m) {
-				t.Errorf("metric %s missing", m)
-			}
+		// Load is checked in host_linux_test.go: it is missing under a CPU quota.
+		if !s.Has(domain.MetricMemory) {
+			t.Errorf("metric %s missing", domain.MetricMemory)
+		}
+		if s.Has(domain.MetricMemoryPressure) {
+			t.Error("memory pressure present, want missing on linux")
 		}
 	}
 }
@@ -119,7 +125,7 @@ func TestSampleErrorsFinish(t *testing.T) {
 
 	var all sampleErrors
 	boom := errors.New("boom")
-	for _, m := range []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap} {
+	for _, m := range []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricMemory, domain.MetricSwap, domain.MetricMemoryPressure} {
 		all.fail(m, boom)
 	}
 	if err := all.finish(&s); !errors.Is(err, boom) {

@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"strconv"
 	"strings"
@@ -113,7 +114,7 @@ func parsePSStatLine(line string, loc *time.Location) (domain.ProcessSample, boo
 	rssKiB, err4 := strconv.ParseUint(fields[3], 10, 64)
 	cpu, err5 := parsePSTime(fields[4])
 	start, err6 := time.ParseInLocation(psLstartLayout, strings.Join(fields[5:10], " "), loc)
-	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil || err6 != nil || pid < 0 || ppid < 0 {
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil || err6 != nil || pid <= 0 || ppid < 0 {
 		return domain.ProcessSample{}, false
 	}
 	return domain.ProcessSample{
@@ -174,7 +175,19 @@ func parsePSTime(s string) (time.Duration, error) {
 	if err != nil {
 		return 0, fmt.Errorf("ps time %q: bad seconds", s)
 	}
-	total := time.Duration(sec) * time.Second
+	// add rejects a field whose product or running sum overflows.
+	var total time.Duration
+	add := func(v uint64, unit time.Duration) error {
+		d := time.Duration(v) * unit
+		if d/unit != time.Duration(v) || total > math.MaxInt64-d {
+			return fmt.Errorf("ps time %q: out of range", s)
+		}
+		total += d
+		return nil
+	}
+	if err := add(sec, time.Second); err != nil {
+		return 0, err
+	}
 	if frac != "" {
 		if len(frac) > 9 {
 			return 0, fmt.Errorf("ps time %q: bad fraction", s)
@@ -186,7 +199,9 @@ func parsePSTime(s string) (time.Duration, error) {
 		for range 9 - len(frac) {
 			f *= 10
 		}
-		total += time.Duration(f)
+		if err := add(f, 1); err != nil {
+			return 0, err
+		}
 	}
 	unit := time.Minute
 	for i := len(parts) - 2; i >= 0; i-- {
@@ -194,8 +209,13 @@ func parsePSTime(s string) (time.Duration, error) {
 		if err != nil {
 			return 0, fmt.Errorf("ps time %q: bad field", s)
 		}
-		total += time.Duration(v) * unit
+		if err := add(v, unit); err != nil {
+			return 0, err
+		}
 		unit = time.Hour
 	}
-	return total + time.Duration(days)*24*time.Hour, nil
+	if err := add(uint64(days), 24*time.Hour); err != nil {
+		return 0, err
+	}
+	return total, nil
 }

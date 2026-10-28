@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +20,11 @@ import (
 // it via sysconf needs cgo, and the auxv AT_CLKTCK route was not worth it yet.
 const clockTicks = 100
 
-// ticksToDuration converts clock ticks to a duration.
+// maxTicks is the largest tick count that converts to a time.Duration.
+const maxTicks = math.MaxInt64 / uint64(time.Second/clockTicks)
+
+// ticksToDuration converts clock ticks to a duration. ticks must not exceed
+// maxTicks; parsePIDStat guarantees that.
 func ticksToDuration(ticks uint64) time.Duration {
 	return time.Duration(ticks) * (time.Second / clockTicks)
 }
@@ -47,7 +52,10 @@ func parsePIDStat(b []byte) (pidStat, error) {
 	if err != nil {
 		return pidStat{}, fmt.Errorf("parse stat pid: %w", err)
 	}
-	s.PID, s.Comm = pid, string(b[open+1:end])
+	if pid <= 0 {
+		return pidStat{}, fmt.Errorf("parse stat: invalid pid %d", pid)
+	}
+	s.PID, s.Comm = pid, sanitizeComm(b[open+1:end])
 
 	// rest starts at field 3 (state); field n is rest[n-3].
 	rest := strings.Fields(string(b[end+1:]))
@@ -65,6 +73,9 @@ func parsePIDStat(b []byte) (pidStat, error) {
 	if err != nil {
 		return pidStat{}, err
 	}
+	if ppid > math.MaxInt32 { // pid_t is 32 bits
+		return pidStat{}, fmt.Errorf("parse stat: invalid ppid %d", ppid)
+	}
 	utime, err := field(14)
 	if err != nil {
 		return pidStat{}, err
@@ -75,6 +86,9 @@ func parsePIDStat(b []byte) (pidStat, error) {
 	}
 	if s.StartTime, err = field(22); err != nil {
 		return pidStat{}, err
+	}
+	if utime > maxTicks || stime > maxTicks-utime || s.StartTime > maxTicks {
+		return pidStat{}, errors.New("parse stat: times out of range")
 	}
 	// rss (field 24) is signed in the kernel; a negative value is malformed.
 	if s.RSSPages, err = field(24); err != nil {
@@ -129,4 +143,16 @@ func parseBootTime(r io.Reader) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("read /proc/stat: %w", err)
 	}
 	return time.Time{}, errors.New("parse /proc/stat: no btime line")
+}
+
+// sanitizeComm replaces control characters, which a process may put in its
+// own comm (e.g. a newline), with '?' as procps does, and keeps other bytes.
+func sanitizeComm(b []byte) string {
+	out := bytes.Clone(b)
+	for i, c := range out {
+		if c < 0x20 || c == 0x7f {
+			out[i] = '?'
+		}
+	}
+	return string(out)
 }

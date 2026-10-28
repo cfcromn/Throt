@@ -22,8 +22,9 @@ type HostSampler interface {
 	SampleHost(ctx context.Context) (domain.HostSample, error)
 }
 
-// metricCount is the number of metrics a HostSample can carry.
-const metricCount = 4
+// metricCount is the number of sampled metrics a HostSample can carry (cpu,
+// load, memory, swap, memory pressure; latency is probed by the daemon).
+const metricCount = 5
 
 // sampleErrors accumulates per-metric read failures for one sample.
 type sampleErrors struct {

@@ -195,6 +195,13 @@ func TestProtocolErrors(t *testing.T) {
 		{"wrong jsonrpc", `{"jsonrpc":"1.0","id":6,"method":"ping"}`, "6", codeInvalidRequest},
 		{"unknown tool", `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"throt_pause"}}`, "7", codeInvalidParams},
 		{"call params not object", `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":[1]}`, "8", codeInvalidParams},
+		// Found by FuzzServe: an id that is not a string, number, or null,
+		// or not valid UTF-8, is not echoed.
+		{"object id", `{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}`, "null", codeInvalidRequest},
+		{"bool id", `{"jsonrpc":"2.0","id":true,"method":"ping"}`, "null", codeInvalidRequest},
+		{"invalid UTF-8 id", "{\"jsonrpc\":\"2.0\",\"id\":\"\xff\",\"method\":\"ping\"}", "null", codeInvalidRequest},
+		{"method not a string", `{"jsonrpc":"2.0","id":11,"method":1}`, "null", codeInvalidRequest},
+		{"spaced id", `{"jsonrpc":"2.0", "id": -1.5 , "method":"nope"}`, "-1.5", codeMethodNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -212,6 +219,9 @@ func TestNoReply(t *testing.T) {
 		{"unknown notification", `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}`},
 		{"notification for a request method", `{"jsonrpc":"2.0","method":"tools/list"}`},
 		{"client response", `{"jsonrpc":"2.0","id":9,"result":{}}`},
+		// Found by FuzzServe: member names are case-sensitive, so "ID" is
+		// not an id and this is a notification.
+		{"case-folded id", `{"jsonrpc":"2.0","ID":14,"method":"ping"}`},
 		{"blank lines", "\n\r\n"},
 		{"empty input", ""},
 	}
