@@ -16,6 +16,10 @@ const (
 	EventDaemonStopped EventKind = "daemon_stopped"
 	EventDegraded      EventKind = "degraded"
 	EventRecovered     EventKind = "recovered"
+	// EventConfigReloaded records an applied config reload and the keys it
+	// changed; EventConfigReloadFailed records one that changed nothing.
+	EventConfigReloaded     EventKind = "config_reloaded"
+	EventConfigReloadFailed EventKind = "config_reload_failed"
 )
 
 // Event is the single structured record that feeds logs, diagnostics, and

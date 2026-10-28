@@ -98,6 +98,21 @@ type Daemon struct {
 
 	mu     sync.Mutex // guards status
 	status StatusResult
+
+	// cfgPath is the file Reload re-reads; empty disables reloading.
+	cfgPath string
+	// Reload handoff. The scheduler and engine belong to the sampling
+	// goroutine, so a reload never touches them: it leaves the new policy
+	// in policyCh (capacity 1), replacing one the tick has not taken yet,
+	// and the next tick applies it before scheduling. A channel instead of
+	// a lock keeps ticks from ever waiting on a reload. reloadMu serializes
+	// reloads, so after draining policyCh the send cannot block (the tick
+	// only receives). It also guards live, the latest accepted config, in
+	// which restart-only keys keep their running values. The graph is
+	// updated directly under graphMu.
+	reloadMu sync.Mutex
+	live     config.Config
+	policyCh chan scheduler.Policy
 }
 
 // NewDaemon returns a daemon for cfg using the given samplers and process
@@ -115,6 +130,8 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		sched:    newScheduler(cfg.Scheduler),
 		failing:  map[string]bool{},
 		failures: map[string]string{},
+		live:     cfg,
+		policyCh: make(chan scheduler.Policy, 1),
 	}
 	d.ctl = control.New(sig, uint32(os.Getuid()), time.Now, d.saveState)
 	return d
@@ -143,7 +160,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 		"status": d.currentStatus,
 		"pause":  d.pause,
 		"resume": d.resume,
-	}, transport.WithPrivileged("pause", "resume"))
+		"reload": d.reload,
+	}, transport.WithPrivileged(privilegedMethods()...))
 
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
@@ -159,6 +177,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.emit(domain.EventDaemonStopped, "shutdown", nil)
 	return err
 }
+
+// privilegedMethods may only be called by the user running the daemon: they
+// signal processes or change its configuration.
+func privilegedMethods() []string { return []string{"pause", "resume", "reload"} }
 
 // allMissing marks every host metric unavailable. A failed host sample still
 // reaches the pressure engine this way, so stale readings age out of the
@@ -229,6 +251,7 @@ func (d *Daemon) tick(parent context.Context) {
 		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
 			map[string]string{"from": from.String(), "to": level.String(), "reason": reason})
 	}
+	d.applyPolicy(parent)
 	if perr == nil {
 		// Only schedule on a fresh process snapshot: acting on stale data
 		// could queue a workload that already finished.

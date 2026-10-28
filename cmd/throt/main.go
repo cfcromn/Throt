@@ -35,6 +35,7 @@ Commands:
   events     print recent daemon events as JSON lines
   pause PID  pause a heavy workload (SIGSTOP) shown in 'status'
   resume PID resume a paused workload (SIGCONT)
+  reload     make throtd re-read its config file
   doctor     print a sanitized diagnostic report (safe to share)
   mcp        run a read-only MCP server on stdio for coding agents
   version    print the client version
@@ -76,7 +77,14 @@ func run(args []string) error {
 	}
 
 	cfg, err := config.Load(*cfgPath)
-	if err != nil {
+	switch {
+	case err != nil && cmd == "reload":
+		// throtd reports the invalid file itself and keeps its config, so
+		// reach it at the best socket path the file allows.
+		if cfg.SocketPath == "" {
+			cfg.SocketPath = config.DefaultSocketPath()
+		}
+	case err != nil:
 		return err
 	}
 	if cmd == "top" {
@@ -114,6 +122,12 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Printf("%sd pid %d\n", cmd, pid)
+	case "reload":
+		var r app.ReloadResult
+		if err := transport.Call(ctx, cfg.SocketPath, "reload", nil, &r); err != nil {
+			return err
+		}
+		printReload(os.Stdout, r)
 	case "events":
 		var events []domain.Event
 		if err := transport.Call(ctx, cfg.SocketPath, "events", app.EventsParams{Limit: *limit}, &events); err != nil {
@@ -143,6 +157,18 @@ func (c daemonClient) Events(ctx context.Context, limit int) ([]domain.Event, er
 	var events []domain.Event
 	err := transport.Call(ctx, c.socket, "events", app.EventsParams{Limit: limit}, &events)
 	return events, err
+}
+
+func printReload(w io.Writer, r app.ReloadResult) {
+	if len(r.Changed) == 0 {
+		fmt.Fprintln(w, "reloaded: no changes applied")
+	}
+	for _, c := range r.Changed {
+		fmt.Fprintln(w, "applied: "+c)
+	}
+	for _, c := range r.RequiresRestart {
+		fmt.Fprintln(w, "requires restart: "+c)
+	}
 }
 
 func printStatus(w io.Writer, st app.StatusResult) {

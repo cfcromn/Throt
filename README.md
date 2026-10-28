@@ -121,6 +121,7 @@ throt events    # recent daemon events as JSON lines
 throt doctor    # sanitized diagnostics to paste into a bug report
 throt pause PID # pause a heavy workload owned by one of your agents
 throt resume PID
+throt reload    # re-read the config without restarting (or send throtd SIGHUP)
 ```
 
 ## Use with coding agents (MCP)

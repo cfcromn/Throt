@@ -9,6 +9,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 ### Added
 - Run-at-login (launchd, systemd) and upgrade/rollback instructions.
 - `make bench`: containerized real-kernel benchmark (baseline vs enforce), with results in `docs/ARCHITECTURE.md`.
+- Hot config reload via `SIGHUP` or `throt reload` (privileged `reload` method): applies `scheduler.*`, `profile` and `agents` live, reports restart-only keys, and changes nothing on an invalid file.
 
 ### Changed
 - LICENSE copyright holder romanized.

@@ -40,5 +40,22 @@ func run() error {
 	defer stop()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	procs, ctl := platform.NewProcessTools()
-	return app.NewDaemon(cfg, platform.NewHostSampler(), procs, ctl, log).Run(ctx)
+	d := app.NewDaemon(cfg, platform.NewHostSampler(), procs, ctl, log)
+	d.SetConfigPath(*cfgPath)
+
+	// SIGHUP re-reads the config; the outcome is an event either way.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hup:
+				d.Reload()
+			}
+		}
+	}()
+	return d.Run(ctx)
 }
