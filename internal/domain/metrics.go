@@ -13,6 +13,10 @@ const (
 	// MetricLatency is foreground responsiveness: how late a short timer
 	// fires, which grows when the CPU scheduler is saturated.
 	MetricLatency Metric = "latency"
+	// MetricMemoryPressure is the kernel's own memory-pressure verdict
+	// (macOS kern.memorystatus_vm_pressure_level). Other platforms report
+	// it missing.
+	MetricMemoryPressure Metric = "memory_pressure"
 )
 
 // HostSample is one observation of host-wide resources. Fields for metrics
@@ -31,6 +35,10 @@ type HostSample struct {
 	SwapUsed     uint64 `json:"swap_used"`
 	// Latency is the timer-lateness probe result (see MetricLatency).
 	Latency time.Duration `json:"latency"`
+	// MemoryPressure is the kernel memory-pressure verdict (see
+	// MetricMemoryPressure). The zero value is unknown and counts as missing
+	// even when MetricMemoryPressure is not listed in Missing.
+	MemoryPressure MemoryPressure `json:"memory_pressure,omitempty"`
 	// Missing lists metrics the platform could not provide for this sample.
 	Missing []Metric `json:"missing,omitempty"`
 }
@@ -43,6 +51,50 @@ func (s HostSample) Has(m Metric) bool {
 		}
 	}
 	return true
+}
+
+// HasMemoryPressure reports whether the sample carries a known kernel
+// memory-pressure verdict.
+func (s HostSample) HasMemoryPressure() bool {
+	return s.Has(MetricMemoryPressure) && s.MemoryPressure.Known()
+}
+
+// MemoryPressure is a kernel memory-pressure verdict, ordered by severity.
+// The zero value is unknown.
+type MemoryPressure int
+
+const (
+	MemoryPressureUnknown MemoryPressure = iota
+	MemoryPressureNormal
+	MemoryPressureWarning
+	MemoryPressureCritical
+)
+
+var memoryPressureNames = [...]string{"unknown", "normal", "warning", "critical"}
+
+// Known reports whether p is a defined verdict other than unknown.
+func (p MemoryPressure) Known() bool {
+	return p > MemoryPressureUnknown && int(p) < len(memoryPressureNames)
+}
+
+func (p MemoryPressure) String() string {
+	if p < 0 || int(p) >= len(memoryPressureNames) {
+		return "invalid"
+	}
+	return memoryPressureNames[p]
+}
+
+func (p MemoryPressure) MarshalText() ([]byte, error) { return []byte(p.String()), nil }
+
+func (p *MemoryPressure) UnmarshalText(b []byte) error {
+	for i, n := range memoryPressureNames {
+		if n == string(b) {
+			*p = MemoryPressure(i)
+			return nil
+		}
+	}
+	*p = MemoryPressureUnknown
+	return nil
 }
 
 // PressureLevel is the stabilized host pressure state.

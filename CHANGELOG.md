@@ -9,10 +9,13 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 ### Added
 - Run-at-login (launchd, systemd) and upgrade/rollback instructions.
 - `make bench`: containerized real-kernel benchmark (baseline vs enforce), with results in `docs/ARCHITECTURE.md`.
+- macOS kernel memory-pressure verdict (`kern.memorystatus_vm_pressure_level`) as a pressure signal (warning → elevated, critical → high), shown in `throt status` and the TUI.
+- More heavy tools classified: ninja, cmake, swiftc, kotlinc, dotnet, msbuild, zig, ghc, scalac, sbt, bazelisk, buck2, turbo, nx, rollup, webpack-cli, next, nuxt, rspack (build); rspec, mocha, playwright, cypress, phpunit, ctest (test); buildctl, buildah, kaniko (container build).
 
 ### Changed
 - LICENSE copyright holder romanized.
 - Linux host pressure is cgroup v2-aware: CPU (including throttling), memory and swap are measured against the tightest `cpu.max`, `memory.max` and `memory.swap.max` limits of the daemon's cgroup and its ancestors, falling back to host-wide figures per metric; the host-wide load average is reported missing under a CPU quota.
+- On macOS, memory used no longer drives pressure while the kernel verdict is available; it sat at 80–90% on idle machines and held pressure at elevated.
 
 ### Security
 - Built with Go 1.26.10, which fixes 20 standard-library vulnerabilities present in 1.26.4 (none reachable from Throt's code according to govulncheck).
