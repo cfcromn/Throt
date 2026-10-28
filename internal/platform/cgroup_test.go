@@ -1,0 +1,407 @@
+package platform
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/cfcromn/Throt/internal/domain"
+)
+
+func TestParseProcSelfCgroup(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+		ok   bool
+	}{
+		{"v2 namespaced", "0::/\n", "/", true},
+		{"v2 nested", "0::/system.slice/throtd.service\n", "/system.slice/throtd.service", true},
+		{"v1 only", "12:cpu,cpuacct:/docker/abc\n11:memory:/docker/abc\n1:name=systemd:/docker/abc\n", "", false},
+		{
+			"hybrid",
+			"12:cpu,cpuacct:/user.slice\n1:name=systemd:/user.slice/session-1.scope\n0::/user.slice/session-1.scope\n",
+			"/user.slice/session-1.scope", true,
+		},
+		{"outside namespace", "0::/../../system.slice\n", "/../../system.slice", true},
+		{"empty", "", "", false},
+		{"v2 without path", "0::\n", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok, err := parseProcSelfCgroup(strings.NewReader(tt.in))
+			if err != nil || got != tt.want || ok != tt.ok {
+				t.Errorf("got %q, %v, %v; want %q, %v", got, ok, err, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestParseCgroup2Mount(t *testing.T) {
+	tests := []struct {
+		name             string
+		in               string
+		mountPoint, root string
+		ok               bool
+	}{
+		{
+			"docker",
+			"1205 1204 0:28 / / rw,relatime master:1 - overlay overlay rw\n" +
+				"1210 1205 0:30 / /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw,nsdelegate\n",
+			"/sys/fs/cgroup", "/", true,
+		},
+		{
+			"bind-mounted subtree",
+			"30 25 0:26 /kubepods/pod1 /sys/fs/cgroup rw,nosuid shared:4 master:2 - cgroup2 cgroup2 rw\n",
+			"/sys/fs/cgroup", "/kubepods/pod1", true,
+		},
+		{
+			"hybrid unified",
+			"31 25 0:27 / /sys/fs/cgroup/systemd rw - cgroup cgroup rw,name=systemd\n" +
+				"32 25 0:28 / /sys/fs/cgroup/unified rw shared:5 - cgroup2 cgroup2 rw\n",
+			"/sys/fs/cgroup/unified", "/", true,
+		},
+		{
+			"escaped space",
+			"32 25 0:28 / /mnt/cg\\040two rw - cgroup2 none rw\n",
+			"/mnt/cg two", "/", true,
+		},
+		{
+			"v1 only",
+			"31 25 0:27 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n",
+			"", "", false,
+		},
+		{"empty", "", "", "", false},
+		{"no separator", "32 25 0:28 / /sys/fs/cgroup rw cgroup2 none rw\n", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mp, root, ok, err := parseCgroup2Mount(strings.NewReader(tt.in))
+			if err != nil || mp != tt.mountPoint || root != tt.root || ok != tt.ok {
+				t.Errorf("got %q, %q, %v, %v; want %q, %q, %v", mp, root, ok, err, tt.mountPoint, tt.root, tt.ok)
+			}
+		})
+	}
+}
+
+func TestCgroupDirs(t *testing.T) {
+	tests := []struct {
+		name              string
+		mount, root, path string
+		want              []string
+	}{
+		{"namespaced root", "/sys/fs/cgroup", "/", "/", []string{"/sys/fs/cgroup"}},
+		{
+			"nested", "/sys/fs/cgroup", "/", "/system.slice/throtd.service",
+			[]string{"/sys/fs/cgroup/system.slice/throtd.service", "/sys/fs/cgroup/system.slice", "/sys/fs/cgroup"},
+		},
+		{
+			"mounted subtree", "/sys/fs/cgroup", "/kubepods/pod1", "/kubepods/pod1/ctr",
+			[]string{"/sys/fs/cgroup/ctr", "/sys/fs/cgroup"},
+		},
+		{"subtree root", "/sys/fs/cgroup", "/kubepods/pod1", "/kubepods/pod1", []string{"/sys/fs/cgroup"}},
+		{"outside subtree", "/sys/fs/cgroup", "/kubepods/pod1", "/kubepods/pod10", nil},
+		{"outside namespace", "/sys/fs/cgroup", "/", "/../../system.slice", nil},
+		{"relative", "/sys/fs/cgroup", "/", "system.slice", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := cgroupDirs(tt.mount, tt.root, tt.path)
+			if ok != (tt.want != nil) || !slices.Equal(got, tt.want) {
+				t.Errorf("got %q, %v; want %q", got, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseCPUMax(t *testing.T) {
+	tests := []struct {
+		in      string
+		cpus    float64
+		limited bool
+		err     bool
+	}{
+		{"max 100000\n", 0, false, false},
+		{"max\n", 0, false, false},
+		{"200000 100000\n", 2, true, false},
+		{"50000 100000", 0.5, true, false},
+		{"150000 100000", 1.5, true, false},
+		{"", 0, false, true},
+		{"200000\n", 0, false, true},
+		{"x 100000", 0, false, true},
+		{"200000 y", 0, false, true},
+		{"0 100000", 0, false, true},
+		{"200000 0", 0, false, true},
+		{"1 2 3", 0, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			cpus, limited, err := parseCPUMax(tt.in)
+			if (err != nil) != tt.err || cpus != tt.cpus || limited != tt.limited {
+				t.Errorf("got %v, %v, %v; want %v, %v, err=%v", cpus, limited, err, tt.cpus, tt.limited, tt.err)
+			}
+		})
+	}
+}
+
+func TestParseCPUStat(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want cgroupCPU
+		err  bool
+	}{
+		{
+			"full",
+			"usage_usec 8001234\nuser_usec 7000000\nsystem_usec 1001234\nnr_periods 120\nnr_throttled 30\nthrottled_usec 450000\nnr_bursts 0\nburst_usec 0\n",
+			cgroupCPU{Usage: 8001234, Throttled: 450000}, false,
+		},
+		{"no cpu controller", "usage_usec 42\nuser_usec 40\nsystem_usec 2\n", cgroupCPU{Usage: 42}, false},
+		{"no usage", "nr_periods 1\nthrottled_usec 5\n", cgroupCPU{}, true},
+		{"bad usage", "usage_usec many\n", cgroupCPU{}, true},
+		{"empty", "", cgroupCPU{}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseCPUStat(strings.NewReader(tt.in))
+			if (err != nil) != tt.err || got != tt.want {
+				t.Errorf("got %+v, %v; want %+v, err=%v", got, err, tt.want, tt.err)
+			}
+		})
+	}
+}
+
+func TestCgroupCPUBusy(t *testing.T) {
+	sec := time.Second
+	tests := []struct {
+		name      string
+		prev, cur cgroupCPU
+		wall      time.Duration
+		cpus      float64
+		want      float64
+		ok        bool
+	}{
+		{"idle", cgroupCPU{1000, 0}, cgroupCPU{1000, 0}, sec, 2, 0, true},
+		{"half of quota", cgroupCPU{0, 0}, cgroupCPU{1_000_000, 0}, sec, 2, 0.5, true},
+		{"full quota", cgroupCPU{0, 0}, cgroupCPU{2_000_000, 0}, sec, 2, 1, true},
+		{"over quota clamps", cgroupCPU{0, 0}, cgroupCPU{2_100_000, 0}, sec, 2, 1, true},
+		{"fractional quota", cgroupCPU{0, 0}, cgroupCPU{250_000, 0}, sec, 0.5, 0.5, true},
+		{"throttled with low usage", cgroupCPU{0, 100}, cgroupCPU{400_000, 101}, sec, 2, 1, true},
+		{"throttled earlier only", cgroupCPU{0, 500}, cgroupCPU{400_000, 500}, sec, 2, 0.2, true},
+		{"usage went backwards", cgroupCPU{5000, 0}, cgroupCPU{4000, 0}, sec, 2, 0, false},
+		{"throttled went backwards", cgroupCPU{0, 10}, cgroupCPU{1000, 5}, sec, 2, 0, false},
+		{"no wall time", cgroupCPU{0, 0}, cgroupCPU{1000, 0}, 0, 2, 0, false},
+		{"sub-microsecond wall", cgroupCPU{0, 0}, cgroupCPU{1000, 0}, time.Nanosecond, 2, 0, false},
+		{"no cpus", cgroupCPU{0, 0}, cgroupCPU{1000, 0}, sec, 0, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := cgroupCPUBusy(tt.prev, tt.cur, tt.wall, tt.cpus)
+			if got != tt.want || ok != tt.ok {
+				t.Errorf("got %v, %v; want %v, %v", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestLoadPerCPU(t *testing.T) {
+	tests := []struct {
+		name       string
+		load       float64
+		ncpu       int
+		quotaBinds bool
+		want       float64
+		ok         bool
+	}{
+		{"no quota", 5, 10, false, 0.5, true},
+		{"idle", 0, 4, false, 0, true},
+		{"quota binds", 5, 10, true, 0, false},
+		{"quota binds while idle", 0, 10, true, 0, false},
+		{"no cpu count", 5, 0, false, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := loadPerCPU(tt.load, tt.ncpu, tt.quotaBinds)
+			if got != tt.want || ok != tt.ok {
+				t.Errorf("got %v, %v; want %v, %v", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestParseCgroupLimit(t *testing.T) {
+	tests := []struct {
+		in      string
+		v       uint64
+		limited bool
+		err     bool
+	}{
+		{"max\n", 0, false, false},
+		{"1073741824\n", 1 << 30, true, false},
+		{"0", 0, true, false},
+		{"", 0, false, true},
+		{"-1", 0, false, true},
+		{"lots", 0, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			v, limited, err := parseCgroupLimit(tt.in)
+			if (err != nil) != tt.err || v != tt.v || limited != tt.limited {
+				t.Errorf("got %v, %v, %v", v, limited, err)
+			}
+		})
+	}
+}
+
+func TestParseMemoryStatInactiveFile(t *testing.T) {
+	const fixture = "anon 104857600\nfile 52428800\nkernel 1048576\nactive_anon 0\ninactive_anon 104857600\nactive_file 20971520\ninactive_file 31457280\nunevictable 0\n"
+	got, err := parseMemoryStatInactiveFile(strings.NewReader(fixture))
+	if err != nil || got != 31457280 {
+		t.Errorf("got %d, %v; want 31457280", got, err)
+	}
+	for name, in := range map[string]string{
+		"missing": "anon 1\nactive_file 2\n",
+		"bad":     "inactive_file x\n",
+		"empty":   "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseMemoryStatInactiveFile(strings.NewReader(in)); err == nil {
+				t.Error("want error")
+			}
+		})
+	}
+}
+
+func TestCgroupMemory(t *testing.T) {
+	const gib = 1 << 30
+	tests := []struct {
+		name                                         string
+		limit, current, inactive, hostTotal, hostAvl uint64
+		total, avail                                 uint64
+	}{
+		{"limit below host", gib, gib / 4, 0, 8 * gib, 6 * gib, gib, 3 * gib / 4},
+		{"inactive file is reclaimable", gib, gib / 2, gib / 4, 8 * gib, 6 * gib, gib, 3 * gib / 4},
+		{"limit above host", 16 * gib, gib, 0, 8 * gib, 6 * gib, 8 * gib, 6 * gib},
+		{"over limit floors at zero", gib, 2 * gib, 0, 8 * gib, 6 * gib, gib, 0},
+		{"inactive exceeds current", gib, gib / 4, gib / 2, 8 * gib, 6 * gib, gib, gib},
+		{"host has less available", gib, 0, 0, 8 * gib, gib / 8, gib, gib / 8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			total, avail := cgroupMemory(tt.limit, tt.current, tt.inactive, tt.hostTotal, tt.hostAvl)
+			if total != tt.total || avail != tt.avail {
+				t.Errorf("got %d, %d; want %d, %d", total, avail, tt.total, tt.avail)
+			}
+		})
+	}
+}
+
+// writeCgroup creates dir with the given files.
+func writeCgroup(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestCgroupCPULimit(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	writeCgroup(t, root, map[string]string{"cpu.max": "200000 100000\n"})
+	writeCgroup(t, child, map[string]string{"cpu.max": "max 100000\n"})
+	dirs := []string{child, root}
+
+	if dir, cpus, ok := cgroupCPULimit(dirs, 10); !ok || dir != root || cpus != 2 {
+		t.Errorf("ancestor limit: got %q, %v, %v", dir, cpus, ok)
+	}
+	if _, _, ok := cgroupCPULimit(dirs, 2); ok {
+		t.Error("quota equal to host CPUs should not bind")
+	}
+	writeCgroup(t, child, map[string]string{"cpu.max": "50000 100000\n"})
+	if dir, cpus, ok := cgroupCPULimit(dirs, 10); !ok || dir != child || cpus != 0.5 {
+		t.Errorf("tighter child: got %q, %v, %v", dir, cpus, ok)
+	}
+	if _, _, ok := cgroupCPULimit(nil, 10); ok {
+		t.Error("no cgroup should not bind")
+	}
+	if _, _, ok := cgroupCPULimit([]string{filepath.Join(root, "missing")}, 10); ok {
+		t.Error("missing cpu.max should not bind")
+	}
+}
+
+func TestCgroupCPUTracker(t *testing.T) {
+	a, b := filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")
+	writeCgroup(t, a, map[string]string{"cpu.stat": "usage_usec 0\nthrottled_usec 0\n"})
+	writeCgroup(t, b, map[string]string{"cpu.stat": "usage_usec 0\nthrottled_usec 0\n"})
+	var tr cgroupCPUTracker
+	t0 := time.Unix(1000, 0)
+
+	if _, ok, err := tr.sample(a, 2, t0); ok || err != nil {
+		t.Fatalf("first reading: ok=%v err=%v", ok, err)
+	}
+	writeCgroup(t, a, map[string]string{"cpu.stat": "usage_usec 1000000\nthrottled_usec 0\n"})
+	if busy, ok, err := tr.sample(a, 2, t0.Add(time.Second)); !ok || err != nil || busy != 0.5 {
+		t.Fatalf("second reading: %v, %v, %v", busy, ok, err)
+	}
+	writeCgroup(t, a, map[string]string{"cpu.stat": "usage_usec 1100000\nthrottled_usec 7\n"})
+	if busy, ok, _ := tr.sample(a, 2, t0.Add(2*time.Second)); !ok || busy != 1 {
+		t.Fatalf("throttled: %v, %v", busy, ok)
+	}
+	if _, ok, _ := tr.sample(b, 2, t0.Add(3*time.Second)); ok {
+		t.Fatal("changed cgroup should restart the delta")
+	}
+	if _, ok, err := tr.sample(filepath.Join(a, "missing"), 2, t0.Add(4*time.Second)); ok || err == nil {
+		t.Fatalf("missing cpu.stat: ok=%v err=%v", ok, err)
+	}
+	if _, ok, _ := tr.sample(b, 2, t0.Add(5*time.Second)); ok {
+		t.Fatal("a read error should restart the delta")
+	}
+}
+
+func TestApplyCgroupMemory(t *testing.T) {
+	const gib = 1 << 30
+	host := domain.HostSample{MemTotal: 8 * gib, MemAvailable: 6 * gib, SwapTotal: 2 * gib, SwapUsed: gib}
+	limited := map[string]string{
+		"memory.max":          "1073741824\n",
+		"memory.current":      "536870912\n",
+		"memory.stat":         "anon 268435456\ninactive_file 268435456\n",
+		"memory.swap.max":     "1073741824\n",
+		"memory.swap.current": "104857600\n",
+	}
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  domain.HostSample
+	}{
+		{"limited", limited, domain.HostSample{MemTotal: gib, MemAvailable: 3 * gib / 4, SwapTotal: gib, SwapUsed: 100 << 20}},
+		{"unlimited", map[string]string{"memory.max": "max\n", "memory.swap.max": "max\n"}, host},
+		{"no files", nil, host},
+		{"unreadable usage", map[string]string{"memory.max": "1073741824\n", "memory.swap.max": "1073741824\n"}, host},
+		{
+			"bad stat",
+			map[string]string{"memory.max": "1073741824\n", "memory.current": "1\n", "memory.stat": "anon 1\n"},
+			host,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeCgroup(t, dir, tt.files)
+			got := host
+			applyCgroupMemory(&got, []string{dir})
+			applyCgroupSwap(&got, []string{dir})
+			if got.MemTotal != tt.want.MemTotal || got.MemAvailable != tt.want.MemAvailable ||
+				got.SwapTotal != tt.want.SwapTotal || got.SwapUsed != tt.want.SwapUsed {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}

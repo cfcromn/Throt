@@ -12,6 +12,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ### Changed
 - LICENSE copyright holder romanized.
+- Linux host pressure is cgroup v2-aware: CPU (including throttling), memory and swap are measured against the tightest `cpu.max`, `memory.max` and `memory.swap.max` limits of the daemon's cgroup and its ancestors, falling back to host-wide figures per metric; the host-wide load average is reported missing under a CPU quota.
 
 ## [0.4.0-rc.2] - 2026-10-28
 
