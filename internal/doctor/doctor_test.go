@@ -45,8 +45,13 @@ func TestCollect(t *testing.T) {
 	if !r.Daemon.Reachable || r.Status == nil || r.Status.Agents != 1 || r.Status.Pressure != domain.PressureHigh {
 		t.Errorf("daemon/status = %+v %+v", r.Daemon, r.Status)
 	}
-	if !r.Host.OK || len(r.Host.Missing) != 1 || !r.Processes.OK || r.Processes.Count != 2 {
+	if !r.Host.OK || !r.Processes.OK || r.Processes.Count != 2 {
 		t.Errorf("checks = %+v %+v", r.Host, r.Processes)
+	}
+	// Without a host CPU counter, throtd derives CPU from the process
+	// table, so doctor must not list it as missing.
+	if len(r.Host.Missing) != 0 || r.Host.Derived[domain.MetricCPU] != "derived from process CPU by throtd" {
+		t.Errorf("host = %+v, want cpu derived, nothing missing", r.Host)
 	}
 	b, _ := json.Marshal(r)
 	for _, leak := range []string{"alice", "secret-tool", "claude"} {
@@ -153,5 +158,24 @@ func TestCollectNoOrphans(t *testing.T) {
 	b, _ := json.Marshal(r)
 	if r.Orphans.Count != 0 || !strings.Contains(string(b), `"orphans":{"source":"local","count":0}`) {
 		t.Errorf("report = %s", b)
+	}
+}
+
+type failingProcs struct{}
+
+func (failingProcs) SampleProcesses(context.Context) ([]domain.ProcessSample, error) {
+	return nil, errors.New("ps failed")
+}
+
+// TestCollectCPUMissingWithoutProcesses checks that CPU stays missing when
+// the process table cannot be read, since throtd derives CPU from it.
+func TestCollectCPUMissingWithoutProcesses(t *testing.T) {
+	r := Collect(context.Background(), Inputs{
+		Ping:      func(context.Context) (app.PingResult, error) { return app.PingResult{}, errors.New("down") },
+		Host:      fakeHost{},
+		Processes: failingProcs{},
+	})
+	if len(r.Host.Missing) != 1 || r.Host.Missing[0] != domain.MetricCPU || r.Host.Derived != nil {
+		t.Errorf("host = %+v, want cpu missing", r.Host)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -73,9 +74,15 @@ type Daemon struct {
 type Check struct {
 	OK      bool            `json:"ok"`
 	Missing []domain.Metric `json:"missing,omitempty"`
-	Count   int             `json:"count,omitempty"`
-	Error   string          `json:"error,omitempty"`
+	// Derived explains host metrics the sampler lacks but throtd computes
+	// another way, such as CPU from per-process CPU on macOS.
+	Derived map[domain.Metric]string `json:"derived,omitempty"`
+	Count   int                      `json:"count,omitempty"`
+	Error   string                   `json:"error,omitempty"`
 }
+
+// derivedCPU is how throtd fills host CPU without a host CPU counter.
+const derivedCPU = "derived from process CPU by throtd"
 
 // Status summarizes the daemon's view without naming any process.
 type Status struct {
@@ -148,6 +155,12 @@ func Collect(ctx context.Context, in Inputs) Report {
 		}
 	} else {
 		r.Processes = Check{OK: true, Count: len(procs)}
+		// Like the daemon (app.hostReading): without a host CPU counter,
+		// CPU is the sum of per-process CPU deltas.
+		if r.Host.OK && slices.Contains(r.Host.Missing, domain.MetricCPU) {
+			r.Host.Missing = slices.DeleteFunc(slices.Clone(r.Host.Missing), func(m domain.Metric) bool { return m == domain.MetricCPU })
+			r.Host.Derived = map[domain.Metric]string{domain.MetricCPU: derivedCPU}
+		}
 		if !orphansKnown {
 			g := process.NewGraph(in.Adapters, process.WithAgentUID(in.UID))
 			g.Update(now, procs)
