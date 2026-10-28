@@ -45,8 +45,9 @@ type AgentView struct {
 	RSS uint64 `json:"rss"`
 }
 
-// WorkloadView summarizes one heavy workload, after collapsing same-name
-// heavy descendants into their topmost ancestor.
+// WorkloadView summarizes one heavy workload, after collapsing heavy
+// descendants (e.g. go -> compile, make -> cc1) into their topmost heavy
+// ancestor with the same owner.
 type WorkloadView struct {
 	Key   domain.ProcessKey    `json:"process"`
 	Name  string               `json:"name"`
@@ -395,13 +396,13 @@ func (g *Graph) build(order []*proc, busy, dt float64, rates bool) Snapshot {
 }
 
 // collapseRoot returns the topmost ancestor of heavy process p (or p itself)
-// that is heavy, has p's name, and has p's owner. Intermediate processes may
-// differ (e.g. make -> sh -> make collapses), but a chain never crosses into
-// another agent's ownership.
+// that is heavy and has p's owner, so a build and the compilers it spawns
+// are one workload. Intermediate processes may be anything (make -> sh ->
+// cc1 collapses), but a chain never crosses into another agent's ownership.
 func collapseRoot(p *proc) *proc {
 	r := p
 	for q := p.parent; q != nil; q = q.parent {
-		if q.track == trackHeavy && q.s.Name == p.s.Name && q.owner == p.owner {
+		if q.track == trackHeavy && q.owner == p.owner {
 			r = q
 		}
 	}
@@ -439,7 +440,7 @@ type WorkloadTarget struct {
 
 // Workload returns the top-level heavy workload whose top process is key,
 // as of the latest Update. It reports false when key is not a live process,
-// is not heavy, or was collapsed into a same-name heavy ancestor. The result
+// is not heavy, or was collapsed into a heavy ancestor. The result
 // shares no memory with the graph.
 func (g *Graph) Workload(key domain.ProcessKey) (WorkloadTarget, bool) {
 	r := g.procs[key]

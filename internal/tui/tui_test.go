@@ -185,6 +185,10 @@ func TestPausedState(t *testing.T) {
 	st.Paused = []control.PausedWorkload{{Key: st.Heavy[0].Key}}
 	m := newModel(t, &fakeClient{status: st, events: sampleEvents()}, 120, 40)
 	assertContains(t, view(m), "PAUSED")
+
+	st.Scheduler.Queued = []domain.ProcessKey{st.Heavy[0].Key}
+	m = newModel(t, &fakeClient{status: st, events: sampleEvents()}, 120, 40)
+	assertContains(t, view(m), "QUEUED")
 }
 
 func TestTooSmall(t *testing.T) {

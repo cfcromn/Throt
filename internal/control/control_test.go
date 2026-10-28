@@ -147,7 +147,7 @@ func TestPauseAndResume(t *testing.T) {
 	if want := []string{"stop 10", "stop 11", "stop 12"}; !reflect.DeepEqual(sig.log(), want) {
 		t.Errorf("pause calls = %v, want %v", sig.log(), want)
 	}
-	want := []PausedWorkload{{Key: key(10), Name: "make", Owner: "claude-1", Members: keys(10, 11, 12), Since: clock(), State: StatePaused}}
+	want := []PausedWorkload{{Key: key(10), Name: "make", Owner: "claude-1", Members: keys(10, 11, 12), Since: clock(), State: StatePaused, By: OriginManual}}
 	if got := c.Paused(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Paused = %+v, want %+v", got, want)
 	}
@@ -454,7 +454,7 @@ func TestPauseFailedRollbackStaysRecorded(t *testing.T) {
 	if want := []string{"stop 10", "stop 11", "stop 12", "cont 11", "cont 10"}; !reflect.DeepEqual(sig.log(), want) {
 		t.Errorf("calls = %v, want %v", sig.log(), want)
 	}
-	want := []PausedWorkload{{Key: key(10), Name: "make", Owner: "claude-1", Members: keys(11), Since: clock(), State: StateResuming}}
+	want := []PausedWorkload{{Key: key(10), Name: "make", Owner: "claude-1", Members: keys(11), Since: clock(), State: StateResuming, By: OriginManual}}
 	if got := c.Paused(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Paused = %+v, want %+v", got, want)
 	}
@@ -576,7 +576,7 @@ func TestResume(t *testing.T) {
 				}
 				return
 			}
-			want := []PausedWorkload{{Key: key(10), Name: "make", Owner: "claude-1", Members: tt.wantLeft, Since: clock(), State: StateResuming}}
+			want := []PausedWorkload{{Key: key(10), Name: "make", Owner: "claude-1", Members: tt.wantLeft, Since: clock(), State: StateResuming, By: OriginManual}}
 			if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(rec.last(), want) {
 				t.Errorf("Paused = %+v, persisted %+v, want %+v", got, rec.last(), want)
 			}
@@ -652,7 +652,7 @@ func TestResumeAll(t *testing.T) {
 	}
 	// The failed workload is kept, and so is the state that will be left
 	// on disk for the next daemon.
-	want := []PausedWorkload{{Key: key(20), Name: "make", Owner: "claude-1", Members: keys(21), Since: clock(), State: StateResuming}}
+	want := []PausedWorkload{{Key: key(20), Name: "make", Owner: "claude-1", Members: keys(21), Since: clock(), State: StateResuming, By: OriginManual}}
 	if got := c.Paused(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Paused = %+v, want %+v", got, want)
 	}
@@ -817,8 +817,8 @@ func TestForget(t *testing.T) {
 	alive := map[domain.ProcessKey]bool{key(21): true}
 	c.Forget(context.Background(), func(k domain.ProcessKey) bool { return alive[k] })
 	want := []PausedWorkload{
-		{Key: key(20), Name: "make", Owner: "claude-1", Members: keys(21), Since: clock(), State: StatePaused},
-		{Key: key(30), Name: "make", Owner: "claude-1", Members: keys(30, 31), Since: clock(), State: StatePaused},
+		{Key: key(20), Name: "make", Owner: "claude-1", Members: keys(21), Since: clock(), State: StatePaused, By: OriginManual},
+		{Key: key(30), Name: "make", Owner: "claude-1", Members: keys(30, 31), Since: clock(), State: StatePaused, By: OriginManual},
 	}
 	if got := c.Paused(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Paused = %+v, want %+v", got, want)
@@ -895,7 +895,7 @@ func TestStateRoundTrip(t *testing.T) {
 		t.Errorf("errs = %v", errs)
 	}
 	// The failed member stays recorded: restore re-records on purpose.
-	want := []PausedWorkload{{Key: key(20), Name: "make", Owner: "claude-1", Members: keys(21), Since: clock(), State: StateResuming}}
+	want := []PausedWorkload{{Key: key(20), Name: "make", Owner: "claude-1", Members: keys(21), Since: clock(), State: StateResuming, By: OriginManual}}
 	if got := fresh.Paused(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Paused = %+v, want %+v", got, want)
 	}

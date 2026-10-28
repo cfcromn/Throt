@@ -11,4 +11,7 @@ const (
 	EventControlResumed EventKind = "control_resumed"
 	EventControlRefused EventKind = "control_refused"
 	EventControlFailed  EventKind = "control_failed"
+	// EventSchedulerDecision records every scheduler decision, including
+	// observe-only ones, with its reason code.
+	EventSchedulerDecision EventKind = "scheduler_decision"
 )

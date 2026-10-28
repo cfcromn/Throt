@@ -26,6 +26,7 @@ import (
 	"github.com/cfcromn/Throt/internal/monitor"
 	"github.com/cfcromn/Throt/internal/pressure"
 	"github.com/cfcromn/Throt/internal/process"
+	"github.com/cfcromn/Throt/internal/scheduler"
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
@@ -59,8 +60,9 @@ type StatusResult struct {
 	Heavy  []process.WorkloadView `json:"heavy"`
 	// Degraded describes failing samplers; empty when all succeed.
 	Degraded string `json:"degraded,omitempty"`
-	// Paused lists workloads paused by `throt pause`.
-	Paused []control.PausedWorkload `json:"paused"`
+	// Paused lists every paused workload, manual or scheduled.
+	Paused    []control.PausedWorkload `json:"paused"`
+	Scheduler SchedulerStatus          `json:"scheduler"`
 }
 
 // HostSampler reads host-wide metrics.
@@ -88,6 +90,7 @@ type Daemon struct {
 	graph   *process.Graph
 
 	// Owned by the sampling goroutine.
+	sched        *scheduler.Scheduler
 	engine       *pressure.Engine
 	failing      map[string]bool // sampler name -> currently failing
 	failures     map[string]string
@@ -109,6 +112,7 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		graph: process.NewGraph(agent.DefaultAdapters(),
 			process.WithCPUCount(runtime.NumCPU()), process.WithAgentUID(uint32(os.Getuid()))),
 		engine:   pressure.New(pressure.DefaultWindow, pressure.DefaultThresholds()),
+		sched:    newScheduler(cfg.Scheduler),
 		failing:  map[string]bool{},
 		failures: map[string]string{},
 	}
@@ -217,6 +221,15 @@ func (d *Daemon) tick(parent context.Context) {
 		d.emit(domain.EventPressureChanged, "pressure "+from.String()+" -> "+level.String(),
 			map[string]string{"from": from.String(), "to": level.String(), "reason": reason})
 	}
+	if perr == nil {
+		// Only schedule on a fresh process snapshot: acting on stale data
+		// could queue a workload that already finished.
+		d.schedule(parent, now, level, snap.Heavy)
+	}
+	sched := d.schedulerStatus()
+	d.mu.Lock()
+	d.status.Scheduler = sched
+	d.mu.Unlock()
 }
 
 // track records a sampler's result and emits an event on each transition

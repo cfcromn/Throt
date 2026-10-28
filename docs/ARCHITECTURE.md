@@ -31,7 +31,7 @@ Core scheduling logic must not import the TUI, OS-specific packages, or a partic
 - A process is identified by PID + start time, so a reused PID is a new process.
 - Adapters recognize agents by exact executable name, and only among the daemon user's own processes. Generic runtimes such as `node` never match on their own. Names are not authenticated (any program can be called `claude`), so attribution is a hint for observation; process control will need stronger ownership checks.
 - A process belongs to the nearest ancestor (or itself) an adapter matches. A nested agent owns its own subtree. Anything else stays unattributed: Throt never guesses.
-- Heavy workloads (build, test, container-build) are classified by executable name. A heavy process folds into its topmost same-name, same-owner heavy ancestor, so `go` → `go` shows once.
+- Heavy workloads (build, test, container-build) are classified by executable name. A heavy process folds into its topmost heavy ancestor with the same owner, so a build and the compilers and linkers it spawns are one workload.
 - Only executable base names are read, never arguments or environment. On macOS, `/bin/ps` runs twice. The first pass has no free-text columns and defines the process set. The second supplies names from argv[0], reduced to the executable's first word so process titles can't leak arguments. A PID with an ambiguous (forged) name line gets no name, which leaves it unattributed and observe-only.
 
 ## Control
@@ -91,6 +91,15 @@ One structured event model feeds logs, diagnostics, and the TUI timeline: proces
 5. Under critical pressure, pause an eligible background workload only if explicitly enabled.
 6. Queued work ages to prevent starvation.
 7. Resumes use cooldowns to avoid oscillation.
+
+**As implemented** (`internal/scheduler`, opt-in via `scheduler.mode`):
+- `off` (default) makes no decisions. `observe` emits every decision as a `scheduler_decision` event marked observed and never acts. `enforce` executes decisions through the same verified controller as `throt pause`.
+- Throt can only act on processes that already exist, so *queue* means a heavy workload that appears while no slot is free is paused within one sample interval and resumed when a slot opens. Workloads already running when the daemon starts, or when the policy changes, are never queued.
+- High pressure blocks new starts and resumes, except that work queued longer than `max_queue_wait` still gets a free slot, one per cooldown, so the queue can't starve. Critical pressure may *preempt* (pause) the youngest running workload when `pause_on_critical` is set, but never the last one. Resumes and preemptions are spaced by `resume_cooldown`.
+- Unknown pressure (degraded metrics) fails open: nothing new is queued, and work queued longer than `max_queue_wait` is resumed.
+- New arrivals queue behind already-waiting work, so short jobs can't starve a long queued one.
+- Unattributed workloads count toward the limit but are never controlled. The controller records whether a pause was manual or the scheduler's, and the scheduler never touches manual pauses.
+- If a queued workload's top process exits while stopped, its remaining members are resumed (`top_exited`). The scheduler only queues workloads of up to 256 processes.
 
 **Fairness:** priority combines user override, workload class, queue age, project fairness, and previous preemption count. No project may hold every heavy slot indefinitely.
 

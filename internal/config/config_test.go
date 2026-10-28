@@ -29,6 +29,13 @@ func TestLoad(t *testing.T) {
 		{name: "bad duration", body: `{"sample_interval":"soon"}`, wantErr: "invalid duration"},
 		{name: "interval too small", body: `{"sample_interval":"1ms"}`, wantErr: "at least 100ms"},
 		{name: "history out of range", body: `{"event_history":0}`, wantErr: "event_history"},
+		{name: "scheduler override", body: `{"scheduler":{"mode":"enforce","heavy_limit":3}}`, check: func(t *testing.T, c Config) {
+			if c.Scheduler.Mode != "enforce" || c.Scheduler.HeavyLimit != 3 || c.Scheduler.MaxQueueWait != Default().Scheduler.MaxQueueWait {
+				t.Errorf("got %+v", c.Scheduler)
+			}
+		}},
+		{name: "bad scheduler mode", body: `{"scheduler":{"mode":"auto"}}`, wantErr: "scheduler.mode"},
+		{name: "unknown scheduler key", body: `{"scheduler":{"limit":3}}`, wantErr: "unknown field"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
