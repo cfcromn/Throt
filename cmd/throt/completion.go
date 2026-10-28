@@ -30,7 +30,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status ping events explain pause resume run reload doctor mcp completion version -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status stats ping events explain pause resume run reload doctor mcp completion version -config -n" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -82,6 +82,7 @@ _throt() {
         'pause:pause a heavy workload'
         'resume:resume a paused workload'
         'run:wait for heavy-job capacity, then run a command'
+        'stats:per-agent resource usage since throtd started'
         'reload:make throtd re-read its config file'
         'doctor:print a sanitized diagnostic report'
         'mcp:run a read-only MCP server on stdio'
@@ -130,6 +131,7 @@ complete -c throt -n __fish_use_subcommand -a explain -d 'explain why a heavy wo
 complete -c throt -n __fish_use_subcommand -a pause -d 'pause a heavy workload'
 complete -c throt -n __fish_use_subcommand -a resume -d 'resume a paused workload'
 complete -c throt -n __fish_use_subcommand -a run -d 'wait for heavy-job capacity, then run a command'
+complete -c throt -n __fish_use_subcommand -a stats -d 'per-agent resource usage since throtd started'
 complete -c throt -n __fish_use_subcommand -a reload -d 'make throtd re-read its config file'
 complete -c throt -n __fish_use_subcommand -a doctor -d 'print a sanitized diagnostic report'
 complete -c throt -n __fish_use_subcommand -a mcp -d 'run a read-only MCP server on stdio'
