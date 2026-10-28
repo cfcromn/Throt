@@ -80,13 +80,14 @@ func TestEveryCommandHelp(t *testing.T) {
 
 // TestUsageErrorsAreOneLine checks that bad arguments end throt with exit 2
 // and a single line, without printing the usage or touching the config.
+// throt hook is the exception: Claude Code blocks on exit 2 (see runHook).
 func TestUsageErrorsAreOneLine(t *testing.T) {
 	for _, args := range [][]string{
 		{"bogus"}, {"bogus", "a"}, {"-bogus"}, {"ping", "x"}, {"top", "x"}, {"reload", "x"},
 		{"doctor", "x"}, {"mcp", "x"}, {"explain"}, {"explain", "1", "2"}, {"pause", "x"},
 		{"resume", "1", "2"}, {"events", "-bogus"}, {"events", "x"}, {"stats", "-bogus"},
 		{"run"}, {"run", "-bogus"}, {"update", "x"}, {"config", "check", "-bogus"},
-		{"completion"}, {"setup", "x"}, {"version", "x"}, {"hook"},
+		{"completion"}, {"setup", "x"}, {"version", "x"},
 	} {
 		var out, errw bytes.Buffer
 		err := run(context.Background(), append([]string{"-config", "/nonexistent/throt.json"}, args...), strings.NewReader(""), &out, &errw)

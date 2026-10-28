@@ -880,7 +880,7 @@ explain why a heavy workload is running, paused, or queued
 `, stderr: ""},
 		"help":      {code: 0, stdout: goldenUsage, stderr: ""},
 		"help long": {code: 0, stdout: goldenUsage, stderr: ""},
-		"hook": {code: 2, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
+		"hook": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
 `},
 		"hook -h": {code: 0, stdout: `usage: throt hook claude-code [--max-wait D]
 
@@ -910,7 +910,7 @@ Flags:
 		"hook claude-code heavy": {code: 0, stdout: `{"systemMessage":"throt: no heavy-job slot after 1s (all heavy slots are in use (2 running, limit 2)); running anyway"}
 `, stderr: ""},
 		"hook claude-code light": {code: 0, stdout: "", stderr: ""},
-		"hook codex": {code: 2, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
+		"hook codex": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
 `},
 		"hook invalid config": {code: 0, stdout: `{"systemMessage":"throt: no heavy-job slot after 1s (all heavy slots are in use (2 running, limit 2)); running anyway"}
 `, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
