@@ -381,3 +381,48 @@ func TestWouldQueueClearedOnFailedSample(t *testing.T) {
 		t.Errorf("would queue after a failed process sample = %v, want empty", got)
 	}
 }
+
+// TestQueuedWorkloadOfDeadAgentResumes checks that a queued build whose
+// agent exits (the build is reparented to init and becomes unattributed)
+// is not left stopped: it is resumed once a slot frees.
+func TestQueuedWorkloadOfDeadAgentResumes(t *testing.T) {
+	w := newWorld(
+		domain.ProcessSample{PID: 10, PPID: 1, Name: "claude"},
+		domain.ProcessSample{PID: 11, PPID: 10, Name: "go"},
+	)
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(shortTempDir(t), "throtd.sock")
+	cfg.SampleInterval = config.Duration(100 * time.Millisecond)
+	cfg.Scheduler.Mode, cfg.Scheduler.HeavyLimit, cfg.Scheduler.ResumeCooldown = "enforce", 1, 0
+	cfg.Scheduler.Adaptive = false
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewDaemon(cfg, w, w, w, slog.New(slog.DiscardHandler)).Run(ctx)
+	}()
+	defer func() { stop(); <-done }()
+	status := func() StatusResult {
+		var st StatusResult
+		transport.Call(context.Background(), cfg.SocketPath, "status", nil, &st)
+		return st
+	}
+	waitFor(t, "normal pressure", func() bool {
+		st := status()
+		return len(st.Heavy) == 1 && st.Pressure == domain.PressureNormal
+	})
+	w.add(domain.ProcessSample{PID: 12, PPID: 10, Name: "go"})
+	waitFor(t, "pid 12 queued", func() bool { return w.signals() == "stop:12" })
+
+	// The agent dies; both builds are reparented to init.
+	w.mu.Lock()
+	delete(w.procs, 10)
+	for _, pid := range []int{11, 12} {
+		p := w.procs[pid]
+		p.PPID = 1
+		w.procs[pid] = p
+	}
+	w.mu.Unlock()
+	waitFor(t, "agent gone", func() bool { return len(status().Agents) == 0 })
+	w.exit(11)
+	waitFor(t, "pid 12 resumed", func() bool { return w.signals() == "stop:12 cont:12" })
+}
