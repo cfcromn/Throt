@@ -6,7 +6,7 @@
 
 Include the affected version/commit, impact, reproduction steps, platform, and a suggested mitigation if known. Please don't access data that isn't yours while validating a report.
 
-Before 1.0, fixes target the latest released minor version. From 1.0, security fixes ship as a patch release of the latest minor version of the current major; older minors and majors get no fixes, and upgrading within a major is safe under the compatibility policy in `docs/ARCHITECTURE.md`.
+Security fixes ship as a patch release of the latest minor version of the current major; older minors and majors get no fixes, and upgrading within a major is safe under the compatibility policy in `docs/ARCHITECTURE.md`.
 
 ## Security-sensitive areas
 

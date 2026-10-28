@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] - 2026-10-29
+
+The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md#compatibility) now applies: the commands, config, local protocol v1, JSON output, events, reason codes, MCP tools and exit codes it lists do not break within 1.x, and tests pin them. The scheduler stays off by default; the benchmarks say when to turn it on.
+
 ### Added
 - Every `throt mcp` tool declares an `outputSchema` (MCP `2025-06-18` and later) describing its `structuredContent`; earlier clients ignore it. Error results still carry no structured content.
 - Benchmarks: `1 job alone` checks that Throt does not intervene in a single build, and `TestBenchMixed` runs long jobs with a stream of short ones and reports the short jobs' wait and the long jobs' makespan. The `Bench` workflow now also runs the memory scenarios on Linux, in a container with a 3 GiB limit on the runner. CI builds and tests on Intel macOS and arm64 Linux, the two release platforms it did not run before.
@@ -197,7 +201,8 @@ First observe-only release candidate. Throt does not control any process.
 - `throt doctor` sanitized diagnostics.
 - Release automation: macOS/Linux archives, checksums, and SBOMs via GoReleaser.
 
-[Unreleased]: https://github.com/cfcromn/Throt/compare/v0.9.0-rc.1...HEAD
+[Unreleased]: https://github.com/cfcromn/Throt/compare/v1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.9.0-rc.1...v1.0.0-rc.1
 [0.9.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.8.0-rc.1...v0.9.0-rc.1
 [0.8.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.7.0-rc.1...v0.8.0-rc.1
 [0.7.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.6.0-rc.1...v0.7.0-rc.1
