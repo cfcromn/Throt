@@ -380,7 +380,10 @@ func TestCooldownExemptions(t *testing.T) {
 					heavy = append(heavy, wv(pid, "a"+fmt.Sprint(pid)))
 				}
 			}
-			var held []domain.ProcessKey
+			var exited, held []domain.ProcessKey
+			for pid := 1; pid <= tt.exits; pid++ {
+				exited = append(exited, key(pid))
+			}
 			for pid := tt.exits + 1; pid <= tt.exits+tt.held; pid++ {
 				held = append(held, key(pid))
 			}
@@ -389,7 +392,7 @@ func TestCooldownExemptions(t *testing.T) {
 				s.seen[key(pid)] = &entry{firstSeen: at(i), queuedSince: at(i)}
 			}
 			got := s.Decide(Input{Now: at(100), Pressure: tt.pressure, ThroughputOnly: tt.throughput,
-				Heavy: heavy, Paused: keys(10, 11, 12, 13), Held: held})
+				Heavy: heavy, Paused: keys(10, 11, 12, 13), Held: held, Exited: exited})
 			expect(t, got, tt.want...)
 			for i, d := range got {
 				// Running counts the resumes before and including d.
@@ -450,7 +453,7 @@ func TestCooldownExemptionKeepsSafetyRules(t *testing.T) {
 		s.seen[key(1)] = &entry{running: true}
 		s.seen[key(2)] = &entry{running: true}
 		s.seen[key(3)] = &entry{running: true}
-		expect(t, s.Decide(Input{Now: at(10), Pressure: domain.PressureElevated, Heavy: heavy, Paused: keys(10, 11, 12), Reserved: []string{"d"}}),
+		expect(t, s.Decide(Input{Now: at(10), Pressure: domain.PressureElevated, Heavy: heavy, Paused: keys(10, 11, 12), Reserved: []string{"d"}, Exited: keys(1, 2, 3)}),
 			brief{ActionResume, 10, ReasonWorkloadExited}, brief{ActionResume, 11, ReasonWorkloadExited})
 	})
 	t.Run("critical resumes nothing", func(t *testing.T) {
@@ -459,6 +462,17 @@ func TestCooldownExemptionKeepsSafetyRules(t *testing.T) {
 		s.seen[key(1)] = &entry{running: true}
 		s.seen[key(10)] = &entry{queuedSince: t0}
 		expect(t, s.Decide(Input{Now: at(1), Pressure: domain.PressureCritical, Heavy: []process.WorkloadView{wv(10, "a")}, Paused: keys(10)}))
+	})
+	t.Run("left the heavy list without exiting", func(t *testing.T) {
+		// 1 was regrouped into another workload or reclassified as light:
+		// it still uses what it used, so its slot earns no exemption.
+		s := New(enforce(2))
+		s.baselined, s.lastSwitch = true, at(99)
+		s.seen[key(1)] = &entry{firstSeen: t0, running: true}
+		s.seen[key(2)] = &entry{firstSeen: t0, running: true}
+		s.seen[key(10)] = &entry{firstSeen: t0, queuedSince: t0}
+		heavy := []process.WorkloadView{wv(2, "a"), wv(10, "b")}
+		expect(t, s.Decide(Input{Now: at(100), Pressure: domain.PressureElevated, Heavy: heavy, Paused: keys(10)}))
 	})
 }
 

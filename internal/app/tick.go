@@ -61,6 +61,7 @@ func (d *Daemon) tick(parent context.Context) {
 			Pressure:       level,
 			ThroughputOnly: d.engine.ThroughputOnly(),
 			Heavy:          r.snap.Heavy,
+			Exited:         r.exited,
 			Reserved:       reserved,
 			Admitted:       admitted(ended),
 			Waiters:        waiters,
@@ -114,6 +115,9 @@ type processRound struct {
 	// stoppedOrphans holds the keys of all orphans, not only the MaxOrphans
 	// listed, for the scheduler to hold.
 	stoppedOrphans []domain.ProcessKey
+	// exited holds the heavy workloads whose top process exited since the
+	// previous sample, not those that are merely no longer heavy.
+	exited []domain.ProcessKey
 }
 
 // observeProcesses feeds a successful process sample to the graph, emits
@@ -123,11 +127,16 @@ func (d *Daemon) observeProcesses(ctx context.Context, s sample) processRound {
 	d.graphMu.Lock()
 	changes := d.graph.Update(s.now, s.procs)
 	snap := d.graph.Snapshot()
+	r := processRound{snap: snap}
+	for _, c := range changes {
+		if c.Kind == domain.EventProcessLost && !d.graph.Live(c.Process) {
+			r.exited = append(r.exited, c.Process)
+		}
+	}
 	d.graphMu.Unlock()
 	for _, c := range changes {
 		d.emitChange(c)
 	}
-	r := processRound{snap: snap}
 	// Before anything below resumes a record and drops it.
 	recorded := recordedKeys(s.pausedBefore, d.ctl.Paused())
 	r.orphans, r.orphanCount = process.FindOrphans(snap.Stopped, d.uid, func(k domain.ProcessKey) bool { return recorded[k] })

@@ -481,6 +481,9 @@ type WorkloadTarget struct {
 	Members []Member
 }
 
+// Live reports whether key was a live process as of the latest Update.
+func (g *Graph) Live(key domain.ProcessKey) bool { return g.procs[key] != nil }
+
 // Workload returns the top-level heavy workload whose top process is key,
 // as of the latest Update. It reports false when key is not a live process,
 // is not heavy, or was collapsed into a heavy ancestor. The result

@@ -193,6 +193,12 @@ type Input struct {
 	// round. They move into the slot the lease held, so they are never
 	// queued, not even behind workloads that queued meanwhile.
 	Admitted []domain.ProcessKey
+	// Exited lists heavy workloads whose top process exited since the
+	// previous snapshot. Only these free a slot for a cooldown exemption
+	// (ReasonWorkloadExited): a workload that leaves Heavy while its
+	// process lives on (regrouped, or reclassified as light) still uses
+	// what it used.
+	Exited []domain.ProcessKey
 	// Waiters are the `throt run` callers waiting for an admission lease.
 	// They share one FIFO with queued workloads (see Policy.FirstInLine):
 	// a queued workload is not resumed, and a newcomer not admitted, while a
@@ -605,7 +611,8 @@ func (s *Scheduler) Decide(in Input) []Decision {
 
 // observe updates per-workload state from the snapshot and returns this
 // round's candidates in snapshot order, and how many workloads the previous
-// round counted as running have exited since.
+// round counted as running have left the snapshot because they exited
+// (in.Exited).
 func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessKey]struct{}) ([]*cand, int) {
 	present := make(map[domain.ProcessKey]struct{}, len(in.Heavy))
 	cands := make([]*cand, 0, len(in.Heavy))
@@ -651,7 +658,7 @@ func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessK
 	exited := 0
 	for k, e := range s.seen {
 		if _, ok := present[k]; !ok {
-			if e.running {
+			if e.running && slices.Contains(in.Exited, k) {
 				exited++
 			}
 			delete(s.seen, k)

@@ -107,6 +107,9 @@ func runSim(t *testing.T, sc simScenario) simResult {
 			in.ThroughputOnly = sc.throughputOnly(tick)
 		}
 		for i, j := range sc.jobs {
+			if finish[i] == tick {
+				in.Exited = append(in.Exited, keyOf(i))
+			}
 			if j.arrive <= tick && finish[i] < 0 {
 				in.Heavy = append(in.Heavy, process.WorkloadView{Key: keyOf(i), Name: "build", Class: domain.ClassBuild, Owner: j.owner})
 				if paused[i] {
