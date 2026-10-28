@@ -66,6 +66,9 @@ func (d *Daemon) tick(parent context.Context) {
 			Waiters:        waiters,
 		}, r.stoppedOrphans)
 		d.account(s.now, r.snap)
+	} else {
+		// No round ran, so there is no current would_queue to show.
+		d.wouldQueue = d.wouldQueue[:0]
 	}
 	d.publishScheduler()
 }

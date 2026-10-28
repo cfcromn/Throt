@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -289,5 +290,39 @@ func TestObserveWouldQueue(t *testing.T) {
 	}
 	if st := d.schedulerStatus(); len(st.Queued) != 0 {
 		t.Errorf("observe mode queued %v", st.Queued)
+	}
+}
+
+// failingProcs is a process sampler that always fails.
+type failingProcs struct{}
+
+func (failingProcs) SampleProcesses(context.Context) ([]domain.ProcessSample, error) {
+	return nil, errors.New("ps: fork: resource temporarily unavailable")
+}
+
+// TestWouldQueueClearedOnFailedSample checks that a tick whose process
+// sample fails, and so skips the scheduler, does not keep showing the
+// previous round's would_queue.
+func TestWouldQueueClearedOnFailedSample(t *testing.T) {
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(t.TempDir(), "throtd.sock")
+	cfg.Scheduler.Mode, cfg.Scheduler.HeavyLimit, cfg.Scheduler.Adaptive = "observe", 1, false
+	d := NewDaemon(cfg, fakeSampler{}, failingProcs{}, &fakeSignaler{}, slog.New(slog.DiscardHandler))
+	a := process.WorkloadView{Key: domain.ProcessKey{PID: 11, Start: time.Unix(11, 0)}, Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	b := process.WorkloadView{Key: domain.ProcessKey{PID: 21, Start: time.Unix(21, 0)}, Name: "make", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	now := time.Now()
+	for _, heavy := range [][]process.WorkloadView{{a}, {a, b}} {
+		now = now.Add(time.Second)
+		d.schedule(context.Background(), scheduler.Input{Now: now, Pressure: domain.PressureNormal, Heavy: heavy}, nil)
+	}
+	if got := d.schedulerStatus().WouldQueue; len(got) != 1 {
+		t.Fatalf("would queue %v, want one workload", got)
+	}
+	d.tick(context.Background())
+	d.mu.Lock()
+	got := d.status.Scheduler.WouldQueue
+	d.mu.Unlock()
+	if len(got) != 0 {
+		t.Errorf("would queue after a failed process sample = %v, want empty", got)
 	}
 }
