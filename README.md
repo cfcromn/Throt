@@ -187,7 +187,7 @@ Outcomes, not dates.
 | v0.2 Control | Reduce overlapping heavy workloads without losing work | manual pause/resume, heavy-slot scheduler (opt-in), audit events, crash recovery | shipped |
 | v0.3 Adaptive | Keep the machine responsive automatically | latency signal, adaptive limit, per-agent budgets, profiles | shipped |
 | v0.4 Ecosystem | Integrate everywhere | Linux, documented local API, MCP server, custom agent adapters | shipped |
-| 1.0 | Safe to enable by default under a profile | real-machine benchmarks, package-manager distribution | next |
+| 1.0 | Safe to enable by default under a profile | real-machine benchmarks, scheduler default decided from evidence | next |
 
 **1.0** requires two supported OS families, a stable config/API policy, no known process-loss bug, reproducible benchmarks, and a security review of IPC and process-control boundaries.
 
