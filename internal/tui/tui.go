@@ -9,8 +9,11 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"os"
 	"slices"
+	"strings"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -42,6 +45,8 @@ const (
 	controlTimeout = 5 * time.Second
 	// noticeTTL is how long a control result stays in the status line.
 	noticeTTL = 5 * time.Second
+	// maxFilterLen bounds the timeline filter, in runes.
+	maxFilterLen = 32
 )
 
 // action is a pause or resume the user asked for, awaiting y/n.
@@ -151,16 +156,38 @@ type Model struct {
 
 	details bool
 	help    bool
+
+	// filter narrows the timeline to event kinds containing it (case
+	// insensitive); filtering is true while the user types it after /.
+	filter    string
+	filtering bool
+
+	// color is false under NO_COLOR or TERM=dumb; dark is the terminal
+	// background as last reported, assumed dark until then. st follows both.
+	color, dark bool
+	st          styles
 }
 
 // New returns a model that polls client. socket is shown in the
-// unreachable-daemon banner.
+// unreachable-daemon banner. NO_COLOR and TERM are read here.
 func New(client Client, socket string) Model {
-	return Model{client: client, socket: socket}
+	return newWithEnv(client, socket, os.Getenv)
 }
 
-// Init starts polling immediately.
-func (m Model) Init() tea.Cmd { return m.poll() }
+// newWithEnv is New reading the environment through getenv.
+func newWithEnv(client Client, socket string, getenv func(string) string) Model {
+	color := colorEnabled(getenv)
+	return Model{client: client, socket: socket, color: color, dark: true, st: newStyles(color, true)}
+}
+
+// Init starts polling immediately and, with color on, asks the terminal for
+// its background so the colors keep their contrast on light themes too.
+func (m Model) Init() tea.Cmd {
+	if !m.color {
+		return m.poll()
+	}
+	return tea.Batch(m.poll(), tea.RequestBackgroundColor)
+}
 
 // poll fetches status and events under a timeout so a stuck daemon never
 // blocks the UI. Only one poll is in flight at a time: the next tick is
@@ -213,7 +240,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
+		m.width, m.height = max(0, msg.Width), max(0, msg.Height)
+	case tea.BackgroundColorMsg:
+		m.dark = msg.IsDark()
+		m.st = newStyles(m.color, m.dark)
 	case tickMsg:
 		cmd = m.poll()
 	case pollMsg:
@@ -348,6 +378,13 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		}
 		return m.setNotice(a.verb + " cancelled")
 	}
+	if m.filtering {
+		if k.String() == "ctrl+c" {
+			return tea.Quit
+		}
+		m.filterKey(k)
+		return nil
+	}
 	switch k.String() {
 	case "q", "ctrl+c":
 		return tea.Quit
@@ -365,11 +402,18 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		m.confirm = &action{verb: verb, key: h.Key, name: h.Name}
 	case "?":
 		m.help = !m.help
+	case "/":
+		if !m.help && !m.drill {
+			m.filtering = true
+		}
 	case "esc":
-		if m.drill && !m.help {
+		switch {
+		case m.drill && !m.help:
 			m.drill = false
-		} else {
+		case m.help || m.details:
 			m.help, m.details = false, false
+		default:
+			m.filter = ""
 		}
 	case "tab", "shift+tab":
 		if !m.drill {
@@ -403,6 +447,47 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// filterKey edits the timeline filter: text is appended up to
+// maxFilterLen runes, backspace deletes, enter keeps the filter and esc
+// clears it. Other keys are ignored while typing.
+func (m *Model) filterKey(k tea.KeyPressMsg) {
+	switch k.String() {
+	case "enter":
+		m.filtering = false
+	case "esc":
+		m.filtering, m.filter = false, ""
+	case "backspace":
+		if r := []rune(m.filter); len(r) > 0 {
+			m.filter = string(r[:len(r)-1])
+		}
+	default:
+		for _, r := range k.Text {
+			if len([]rune(m.filter)) >= maxFilterLen {
+				break
+			}
+			if unicode.IsPrint(r) {
+				m.filter += string(r)
+			}
+		}
+	}
+}
+
+// shownEvents returns the events the timeline lists, oldest first: those
+// whose kind contains the filter, ignoring case.
+func (m Model) shownEvents() []domain.Event {
+	if m.filter == "" {
+		return m.events
+	}
+	f := strings.ToLower(m.filter)
+	var out []domain.Event
+	for _, e := range m.events {
+		if strings.Contains(strings.ToLower(string(e.Kind)), f) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // active is the pane j/k, s, p and r act on.

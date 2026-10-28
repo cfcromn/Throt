@@ -30,23 +30,6 @@ const (
 	barDetailWidth = 21
 )
 
-// Read-only styles.
-var (
-	titleStyle    = lipgloss.NewStyle().Bold(true)
-	headerStyle   = lipgloss.NewStyle().Faint(true)
-	selectedStyle = lipgloss.NewStyle().Reverse(true)
-	bannerStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Red)
-	degradedStyle = lipgloss.NewStyle().Foreground(lipgloss.Yellow)
-	footerStyle   = lipgloss.NewStyle().Faint(true)
-	pressureStyle = [...]lipgloss.Style{
-		domain.PressureUnknown:  lipgloss.NewStyle().Bold(true).Foreground(lipgloss.BrightBlack),
-		domain.PressureNormal:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Green),
-		domain.PressureElevated: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Yellow),
-		domain.PressureHigh:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("208")),
-		domain.PressureCritical: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Red),
-	}
-)
-
 // View renders the whole screen.
 func (m Model) View() tea.View {
 	v := tea.NewView(m.render())
@@ -60,8 +43,12 @@ func (m Model) render() string {
 		return "starting…"
 	}
 	if m.width < minWidth || m.height < minHeight {
-		return lipgloss.Wrap(fmt.Sprintf("terminal too small (%dx%d); throt needs at least %dx%d. Press q to quit.",
-			m.width, m.height, minWidth, minHeight), m.width, "")
+		lines := splitLines(lipgloss.Wrap(fmt.Sprintf("terminal too small (%dx%d); throt needs at least %dx%d. Press q to quit.",
+			m.width, m.height, minWidth, minHeight), m.width, ""))
+		for i, l := range lines {
+			lines[i] = truncate(l, m.width)
+		}
+		return strings.Join(lines[:min(len(lines), m.height)], "\n")
 	}
 	l := m.layout()
 	lines := append([]string{}, l.top...)
@@ -160,7 +147,7 @@ func (m Model) topLines() []string {
 		lines = append(lines, truncate("connecting to throtd at "+m.socket+"…", w))
 	case !m.connected:
 		msg := fmt.Sprintf("cannot reach throtd at %s: start it with `throtd`", m.socket)
-		lines = append(lines, splitLines(bannerStyle.Render(lipgloss.Wrap(msg, w, "/")))...)
+		lines = append(lines, splitLines(m.st.banner.Render(lipgloss.Wrap(msg, w, "/")))...)
 		lines = append(lines, truncate(fmt.Sprintf("retrying every %s; last error: %v", pollInterval, m.err), w))
 	}
 
@@ -168,13 +155,10 @@ func (m Model) topLines() []string {
 	if m.connected {
 		p := m.status.Pressure
 		name := strings.ToUpper(p.String())
-		if int(p) >= 0 && int(p) < len(pressureStyle) {
-			name = pressureStyle[p].Render(name)
+		if int(p) >= 0 && int(p) < len(m.st.pressure) {
+			name = m.st.pressure[p].Render(name)
 		}
 		pressure = name
-		if sc := m.status.Scheduler; sc.Mode != "" && sc.Mode != "off" {
-			pressure += fmt.Sprintf("  scheduler %s %d", sc.Mode, sc.HeavyLimit)
-		}
 		if h := m.status.Host; h != nil && h.Has(domain.MetricLatency) {
 			pressure += "  latency " + h.Latency.Round(time.Millisecond).String()
 		}
@@ -182,7 +166,7 @@ func (m Model) topLines() []string {
 			pressure += psiSummary(*h)
 		}
 	}
-	header := titleStyle.Render("SYSTEM") + "  pressure " + pressure
+	header := m.st.title.Render("SYSTEM") + "  pressure " + pressure
 	// The latency sparkline ends the header and only takes the room left.
 	if h := m.status.Host; m.connected && h != nil && h.Has(domain.MetricLatency) {
 		if sw := min(m.sparkWidth(), w-lipgloss.Width(header)-1); sw >= minSparkWidth/2 {
@@ -195,11 +179,41 @@ func (m Model) topLines() []string {
 		lines = append(lines, m.reasonLine())
 	}
 	lines = append(lines, m.metricLines()...)
+	if s := m.schedulerLine(); s != "" {
+		lines = append(lines, s)
+	}
+	if n := m.status.OrphanCount; m.connected && n > 0 {
+		noun := "processes"
+		if n == 1 {
+			noun = "process"
+		}
+		lines = append(lines, truncate(m.st.degraded.Render(
+			fmt.Sprintf("STOPPED  %d %s not paused by throtd (see throt doctor)", n, noun)), w))
+	}
 
 	if m.connected && m.status.Degraded != "" {
-		lines = append(lines, splitLines(degradedStyle.Render(lipgloss.Wrap("DEGRADED  "+m.status.Degraded, w, "")))...)
+		lines = append(lines, splitLines(m.st.degraded.Render(lipgloss.Wrap("DEGRADED  "+m.status.Degraded, w, "")))...)
 	}
 	return lines
+}
+
+// schedulerLine summarizes the scheduler, or returns "" when it is off:
+// mode, the heavy limit (for an adaptive scheduler with its start and
+// ceiling), the per-agent cap, queued workloads and reserved leases.
+func (m Model) schedulerLine() string {
+	sc := m.status.Scheduler
+	if !m.connected || sc.Mode == "" || sc.Mode == "off" {
+		return ""
+	}
+	line := fmt.Sprintf("%s  %s  limit %d", m.st.title.Render("SCHEDULER"), sc.Mode, sc.HeavyLimit)
+	if sc.Adaptive {
+		line += fmt.Sprintf(" adaptive (start %d, max %d)", sc.StartLimit, sc.MaxLimit)
+	}
+	if sc.PerAgentLimit > 0 {
+		line += fmt.Sprintf("  per-agent %d", sc.PerAgentLimit)
+	}
+	line += fmt.Sprintf("  queued %d  leases %d", len(sc.Queued), len(sc.Leases))
+	return truncate(line, m.width)
 }
 
 // psiSummary renders the Linux PSI "some" shares the sample carries as
@@ -226,7 +240,7 @@ func (m Model) reasonLine() string {
 	text, ok := explainReason(m.status.Reason)
 	line := "  why: " + text
 	if raw := "  (" + m.status.Reason + ")"; ok && lipgloss.Width(line+raw) <= m.width {
-		line += headerStyle.Render(raw)
+		line += m.st.header.Render(raw)
 	}
 	return truncate(line, m.width)
 }
@@ -381,7 +395,7 @@ func (m Model) drillInfoLines() []string {
 	title := "AGENT " + m.drillLabel + "  (esc back)"
 	a, ok := m.drillAgent()
 	if !ok {
-		return []string{truncate(titleStyle.Render(title), m.width),
+		return []string{truncate(m.st.title.Render(title), m.width),
 			truncate(fmt.Sprintf("  pid %d is no longer reported by throtd", m.drillKey.PID), m.width)}
 	}
 	return m.fieldLines(title, agentFields(a))
@@ -437,8 +451,8 @@ func (m Model) table(p pane, title, empty string, cols []column, cells [][]strin
 			}
 		}
 	}
-	lines := []string{truncate(titleStyle.Render(head), m.width),
-		headerStyle.Render(strings.Repeat(" ", markerWidth) + formatRow(cols, widths, header))}
+	lines := []string{truncate(m.st.title.Render(head), m.width),
+		m.st.header.Render(strings.Repeat(" ", markerWidth) + formatRow(cols, widths, header))}
 	if len(cells) == 0 {
 		msg := empty
 		if !m.connected {
@@ -449,7 +463,7 @@ func (m Model) table(p pane, title, empty string, cols []column, cells [][]strin
 	for i := m.off[p]; i < len(cells) && i < m.off[p]+rows; i++ {
 		row := formatRow(cols, widths, cells[i])
 		if focused && i == m.sel[p] {
-			lines = append(lines, selectedStyle.Render("> "+row))
+			lines = append(lines, m.st.selected.Render("> "+row))
 		} else {
 			lines = append(lines, "  "+row)
 		}
@@ -482,7 +496,7 @@ func (m Model) detailsLines() []string {
 			{"owner", owner(h.Owner)}, {"owner pid", ownerPID}, {"cpu", cores(h.CPU)}, {"mem", formatBytes(h.RSS)},
 		}
 	default:
-		return []string{titleStyle.Render("DETAILS"), "  nothing selected"}
+		return []string{m.st.title.Render("DETAILS"), "  nothing selected"}
 	}
 	return m.fieldLines(title, fields)
 }
@@ -496,10 +510,10 @@ func agentFields(a process.AgentView) [][2]string {
 
 // fieldLines renders a title and "name value" fields wrapped to the width.
 func (m Model) fieldLines(title string, fields [][2]string) []string {
-	lines := []string{truncate(titleStyle.Render(title), m.width)}
+	lines := []string{truncate(m.st.title.Render(title), m.width)}
 	line := " "
 	for _, f := range fields {
-		item := " " + headerStyle.Render(f[0]) + " " + f[1]
+		item := " " + m.st.header.Render(f[0]) + " " + f[1]
 		if lipgloss.Width(line)+lipgloss.Width(item) > m.width && line != " " {
 			lines = append(lines, line)
 			line = " "
@@ -509,33 +523,54 @@ func (m Model) fieldLines(title string, fields [][2]string) []string {
 	return append(lines, truncate(line, m.width))
 }
 
-// timeline renders the newest events first, one per line.
+// timeline renders the newest events first, one per line. Control,
+// scheduler and failure events carry a tag (CTL, SCHED, FAIL) as well as a
+// color. With a filter only matching kinds are listed.
 func (m Model) timeline(rows int) []string {
-	title := "TIMELINE"
+	events := m.shownEvents()
+	title := m.st.title.Render("TIMELINE")
+	if m.filter != "" || m.filtering {
+		cursor := ""
+		if m.filtering {
+			cursor = "_"
+		}
+		title += fmt.Sprintf("  filter: %s%s (%d of %d)", m.filter, cursor, len(events), len(m.events))
+	}
 	if m.eventsErr != nil {
 		title += "  (events unavailable: " + m.eventsErr.Error() + ")"
 	}
-	lines := []string{truncate(titleStyle.Render(title), m.width)}
+	lines := []string{truncate(title, m.width)}
 	kindWidth := min(18, m.width/3)
-	for i := len(m.events) - 1; i >= 0 && len(lines) <= rows; i-- {
-		e := m.events[i]
-		line := fmt.Sprintf("  %s  %s  %s", e.Time.Local().Format("15:04:05"), pad(truncate(string(e.Kind), kindWidth), kindWidth, false), e.Message)
-		lines = append(lines, truncate(line, m.width))
+	// time, tag and kind columns with their gaps
+	msgWidth := m.width - (2 + 8 + 2 + eventTagWidth + 2 + kindWidth + 2)
+	for i := len(events) - 1; i >= 0 && len(lines) <= rows; i-- {
+		e := events[i]
+		st := m.st.event[classify(e.Kind)]
+		line := fmt.Sprintf("  %s  %s  %s  %s", e.Time.Local().Format("15:04:05"),
+			st.Render(eventTags[classify(e.Kind)]),
+			st.Render(pad(truncate(string(e.Kind), kindWidth), kindWidth, false)),
+			truncate(e.Message, max(0, msgWidth)))
+		lines = append(lines, truncate(strings.TrimRight(line, " "), m.width))
 	}
-	if len(m.events) == 0 {
+	switch {
+	case len(m.events) == 0:
 		lines = append(lines, "  (no events)")
+	case len(events) == 0:
+		lines = append(lines, truncate("  (no event kind matches the filter; esc clears it)", m.width))
 	}
 	return lines
 }
 
 func (m Model) helpLines() []string {
 	lines := []string{
-		titleStyle.Render("HELP"),
+		m.st.title.Render("HELP"),
 		"  q, ctrl+c   quit (throtd keeps running)",
 		"  tab         switch focus: agents / heavy workloads",
 		"  j/k, ↑/↓    move the selection",
 		"  enter       agents: open the agent drilldown; heavy: details",
-		"  esc         leave the drilldown; close details and help",
+		"  esc         leave the drilldown; close details and help;",
+		"              else clear the timeline filter",
+		"  /           filter the timeline by event kind (enter keeps, esc clears)",
 		"  p / r       pause / resume the selected heavy workload (asks y/n)",
 		"  s           sort the table: cpu, mem, name, daemon order",
 		"  ?           toggle this help",
@@ -555,16 +590,19 @@ func (m Model) helpLines() []string {
 // the key hints.
 func (m Model) footer() string {
 	if a := m.confirm; a != nil {
-		return titleStyle.Render(truncate(fmt.Sprintf("%s %s (pid %d)? y/n", a.verb, a.name, a.key.PID), m.width))
+		return m.st.title.Render(truncate(fmt.Sprintf("%s %s (pid %d)? y/n", a.verb, a.name, a.key.PID), m.width))
 	}
 	if m.notice != "" {
 		return truncate(m.notice, m.width)
 	}
-	hints := "q quit  tab focus  j/k move  enter open  s sort  ? help"
+	if m.filtering {
+		return m.st.footer.Render(truncate("filter by kind: type text  backspace delete  enter keep  esc clear", m.width))
+	}
+	hints := "q quit  tab focus  j/k move  enter open  s sort  / filter  ? help"
 	if m.drill {
 		hints = "esc back  j/k move  p/r pause/resume  s sort  ? help"
 	}
-	return footerStyle.Render(truncate(hints, m.width))
+	return m.st.footer.Render(truncate(hints, m.width))
 }
 
 // column describes one table column. A column with width 0 is flexible and

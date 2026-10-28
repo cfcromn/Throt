@@ -45,6 +45,7 @@ SYSTEM  pressure HIGH  latency 4ms ▁▁▂▁▁▃▂▁▁▁▂▁▁▁▂
 CPU   ██████████████████████████████░░░░░░░░░░   74%  ▃▄▄▅▆▆▇▆▅▆▆▇▆▅▆▆  load 1.12/cpu
 MEM   ██████████████████████████████████████░░   95%  ▆▆▆▆▇▇▇▇▇▇▇▇▇███  30.5 GiB / 32.0 GiB
 SWAP  ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░   35%  ▁▁▁▁▁▂▅█▃▁▁▁▁▁▁▁  1.4 GiB / 4.0 GiB
+SCHEDULER  enforce  limit 3 adaptive (start 2, max 8)  queued 0  leases 0
 ▸ AGENTS (3)
   AGENT                                 PID    CPU▼        MEM  CHILDREN
 > codex-1                              4120    231%    2.8 GiB         5
@@ -55,14 +56,15 @@ SWAP  ██████████████░░░░░░░░░░�
   codex-1            4312  java              build              190%    2.3 GiB
   claude-1           4471  buildkitd         container-build     60%    420 MiB
 TIMELINE
-  14:02:52  pressure_changed    pressure elevated -> high
-  14:02:13  agent_discovered    agent_discovered codex-1
-  14:02:11  daemon_started      listening on /run/user/501/throt/throtd.sock
+  14:02:53  SCHED  scheduler_limit     heavy limit 2 -> 3
+  14:02:52         pressure_changed    pressure elevated -> high
+  14:02:13         agent_discovered    agent_discovered codex-1
+  14:02:11         daemon_started      listening on /run/user/501/throt/throtd.sock
 
-q quit  tab focus  j/k move  enter open  s sort  ? help
+q quit  tab focus  j/k move  enter open  s sort  / filter  ? help
 ```
 
-CPU is a percentage of one core, so a process using two cores shows 200%. The line under `SYSTEM` says in plain words which signal drives the pressure level. Sparklines show the last 60 polls of CPU, memory used, swap growth (on the `SWAP` line) and foreground latency (in the header); the TUI keeps this history itself and loses it when it exits or loses `throtd`.
+CPU is a percentage of one core, so a process using two cores shows 200%. The line under `SYSTEM` says in plain words which signal drives the pressure level. When the scheduler is on, the `SCHEDULER` line shows its mode, the current heavy limit (for an adaptive scheduler also its start and ceiling), the per-agent cap, the queued workloads and the slots reserved by `throt run` leases. `STOPPED` counts stopped processes throtd did not pause; `throt doctor` lists them. Sparklines show the last 60 polls of CPU, memory used, swap growth (on the `SWAP` line) and foreground latency (in the header); the TUI keeps this history itself and loses it when it exits or loses `throtd`.
 
 Keys:
 
@@ -70,7 +72,10 @@ Keys:
 - `enter` on an agent opens its drilldown: the agent's PID, CPU, memory and children, and every heavy workload it owns with its state (running, `PAUSED`, `QUEUED`). `esc` goes back. On a heavy workload, `enter` toggles its details.
 - `p`/`r` pause or resume the selected heavy workload, in the heavy table or a drilldown, after a `y/n` confirmation.
 - `s` cycles the table's sort column: CPU, memory, name, then throtd's order. The sorted column is marked `▼` (descending) or `▲` (ascending).
+- `/` filters the timeline by event kind (a case-insensitive substring, at most 32 characters); `enter` keeps the filter, `esc` clears it. Control, scheduler and failure events are tagged `CTL`, `SCHED` and `FAIL`.
 - `?` shows help, `q` quits.
+
+Every state is shown in text as well as color (`PAUSED`, `QUEUED`, `DEGRADED`, the pressure level, the `>` selection marker, the event tags), and colors are picked for both light and dark backgrounds. With `NO_COLOR` set, or `TERM=dumb`, the TUI uses no ANSI styling at all.
 
 Metrics the platform cannot provide show as `n/a`, and if `throtd` is not running the TUI says so and reconnects when it starts. Narrow terminals drop the sparklines first (below 55 columns), then shrink the bars, drop low-value columns and truncate names; below 40×12 the TUI asks for a larger window.
 
