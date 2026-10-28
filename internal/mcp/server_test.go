@@ -85,10 +85,10 @@ func TestInitializeVersionNegotiation(t *testing.T) {
 		{"echo 2025-06-18", `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"c","version":"1"}}`, "2025-06-18"},
 		{"echo 2024-11-05", `{"protocolVersion":"2024-11-05"}`, "2024-11-05"},
 		{"echo latest", `{"protocolVersion":"2025-11-25"}`, "2025-11-25"},
-		{"unknown future", `{"protocolVersion":"2099-01-01"}`, latestVersion},
-		{"handshake-free revision", `{"protocolVersion":"2026-07-28"}`, latestVersion},
-		{"missing", `{}`, latestVersion},
-		{"no params", ``, latestVersion},
+		{"unknown future", `{"protocolVersion":"2099-01-01"}`, latestLegacy},
+		{"handshake-free revision", `{"protocolVersion":"2026-07-28"}`, latestLegacy},
+		{"missing", `{}`, latestLegacy},
+		{"no params", ``, latestLegacy},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -182,9 +182,20 @@ func TestToolsList(t *testing.T) {
 				t.Errorf("tool %s must not exist: control stays with the CLI", tl.Name)
 			}
 		}
+		// Every description tells the model when to call the tool.
+		if !strings.Contains(tl.Description, "Call it ") {
+			t.Errorf("%s: description lacks guidance on when to call it", tl.Name)
+		}
 	}
-	if len(r.Tools) != 4 || !names["throt_status"] || !names["throt_capacity"] || !names["throt_events"] || !names["throt_stats"] {
+	want := []string{"throt_status", "throt_capacity", "throt_wait_for_capacity", "throt_explain", "throt_events", "throt_stats"}
+	if len(r.Tools) != len(want) {
 		t.Fatalf("tools = %v", names)
+	}
+	for i, w := range want {
+		// A deterministic order lets clients cache the list.
+		if r.Tools[i].Name != w {
+			t.Errorf("tool %d = %s, want %s", i, r.Tools[i].Name, w)
+		}
 	}
 }
 

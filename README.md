@@ -224,7 +224,7 @@ When the scheduler is on, a `SCHEDULER` line shows its mode, the current adaptiv
 
 ### Coding agents: MCP, Claude Code hook, Codex
 
-**MCP.** `throt mcp` is a read-only [MCP](https://modelcontextprotocol.io) server on stdio, so agents can check pressure and capacity before starting a big build. Its tools: `throt_status` (pressure, resources, agents, heavy workloads), `throt_capacity` (an advisory `ok_to_start` with a reason and suggestion, for the agent that launched the server by default), `throt_events`, and `throt_stats`. None of them pauses, resumes or changes configuration. `throtd` must be running. Tool output, process names and PIDs included, goes into the agent's context and so reaches your model provider.
+**MCP.** `throt mcp` is a read-only [MCP](https://modelcontextprotocol.io) server on stdio, so agents can check pressure and capacity before starting a big build. Its tools: `throt_status` (pressure, resources, agents, heavy workloads), `throt_capacity` (an advisory `ok_to_start` with a reason and suggestion, for the agent that launched the server by default), `throt_events`, `throt_stats`, `throt_explain` (why a PID is running, paused or queued), and `throt_wait_for_capacity` (polls the capacity verdict once a second for up to `max_wait_seconds`, 1–600, default 60; cancellable). None of them pauses, resumes or changes configuration. `throtd` must be running. Tool output, process names and PIDs included, goes into the agent's context and so reaches your model provider. The server speaks MCP `2026-07-28` (per-request version in `_meta`, `server/discover`) as well as the `initialize` revisions `2025-11-25`, `2025-06-18` and `2024-11-05`; it has tools only.
 
 ```bash
 claude mcp add --scope user throt -- throt mcp

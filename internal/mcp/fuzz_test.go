@@ -73,6 +73,25 @@ func FuzzServe(f *testing.F) {
 		"{\"jsonrpc\":\"2.0\",\"id\":\"\xff\",\"method\":\"ping\"}",
 		`{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}`,
 		"\n\r\n",
+		// The modern, stateless revision.
+		`{"jsonrpc":"2.0","id":"d","method":"server/discover","params":{` + modernMeta + `}}`,
+		`{"jsonrpc":"2.0","id":16,"method":"server/discover"}`,
+		`{"jsonrpc":"2.0","id":17,"method":"tools/list","params":{` + modernMeta + `}}`,
+		`{"jsonrpc":"2.0","id":18,"method":"tools/call","params":{"name":"throt_capacity",` + modernMeta + `}}`,
+		`{"jsonrpc":"2.0","id":19,"method":"ping","params":{` + modernMeta + `}}`,
+		`{"jsonrpc":"2.0","id":20,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"1900-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}`,
+		`{"jsonrpc":"2.0","id":21,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}`,
+		`{"jsonrpc":"2.0","id":22,"method":"tools/list","params":{"_meta":[]}}`,
+		`{"jsonrpc":"2.0","id":23,"method":"initialize","params":{"protocolVersion":"2026-07-28",` + modernMeta + `}}`,
+		// The new tools, and cancelling a wait in flight.
+		`{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"throt_explain","arguments":{"pid":101}}}`,
+		`{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"throt_explain","arguments":{"pid":0}}}`,
+		`{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"name":"throt_wait_for_capacity","arguments":{"max_wait_seconds":601}}}`,
+		`{"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"throt_wait_for_capacity","arguments":{"max_wait_seconds":1}}}` + "\n" +
+			`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":27}}`,
+		`{"jsonrpc":"2.0","id":"w","method":"tools/call","params":{"name":"throt_wait_for_capacity"}}` + "\n" +
+			`{"jsonrpc":"2.0","id":"w","method":"tools/call","params":{"name":"throt_wait_for_capacity"}}`,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":{"x":1}}}`,
 	} {
 		f.Add([]byte(s + "\n"))
 	}
@@ -109,6 +128,9 @@ func FuzzNotification(f *testing.F) {
 	f.Add("notifications/cancelled", `{"requestId":1}`)
 	f.Add("tools/call", `{"name":"throt_status"}`)
 	f.Add("initialize", `[]`)
+	f.Add("server/discover", `{`+modernMeta+`}`)
+	f.Add("notifications/cancelled", `{"requestId":null,"reason":"x"}`)
+	f.Add("tools/call", `{"name":"throt_wait_for_capacity","arguments":{"max_wait_seconds":1}}`)
 	f.Fuzz(func(t *testing.T, method, params string) {
 		msg := map[string]any{"jsonrpc": "2.0", "method": method}
 		if json.Valid([]byte(params)) {
