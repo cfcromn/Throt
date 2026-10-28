@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -215,6 +216,43 @@ func TestDaemonKeepsNonSocketFile(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(sock); string(b) != "important" {
 		t.Fatal("non-socket file was modified")
+	}
+}
+
+func TestListenSocketNeverOpenToOthers(t *testing.T) {
+	// A traversable socket dir passes the directory check; under a lax
+	// umask the socket must still never exist with group/other bits.
+	dir := filepath.Join(shortTempDir(t), "shared")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := syscall.Umask(0)
+	defer syscall.Umask(old)
+	var created os.FileMode
+	orig := listenUnix
+	defer func() { listenUnix = orig }()
+	listenUnix = func(path string) (net.Listener, error) {
+		l, err := orig(path)
+		if err == nil {
+			fi, serr := os.Lstat(path)
+			if serr != nil {
+				t.Error(serr)
+			} else {
+				created = fi.Mode().Perm()
+			}
+		}
+		return l, err
+	}
+	l, err := listen(filepath.Join(dir, "throtd.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if created&0o077 != 0 {
+		t.Fatalf("socket created with mode %v, open to other users until chmod", created)
+	}
+	if cur := syscall.Umask(0); cur != 0 {
+		t.Fatalf("umask left at %#o, want it restored", cur)
 	}
 }
 

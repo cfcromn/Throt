@@ -523,6 +523,10 @@ func lockInstance(socket string) (unlock func(), err error) {
 	return func() { f.Close() }, nil
 }
 
+// listenUnix creates the socket; tests replace it to inspect the socket as
+// soon as it exists.
+var listenUnix = func(path string) (net.Listener, error) { return net.Listen("unix", path) }
+
 // listen creates an owner-only socket at path. The caller holds the instance
 // lock, so an existing socket is stale. Only an actual socket is removed;
 // any other file at path is an error rather than collateral damage.
@@ -535,7 +539,14 @@ func listen(path string) (net.Listener, error) {
 			return nil, fmt.Errorf("remove stale socket: %w", err)
 		}
 	}
-	l, err := net.Listen("unix", path)
+	// The socket is created with the process umask and only restricted by
+	// the Chmod below. The directory check allows group/other traversal,
+	// so under a lax umask (e.g. 002) another user could connect in
+	// between. Mask group and other while the socket is created: no other
+	// goroutine creates files yet, and the mask only removes permissions.
+	old := syscall.Umask(0o077)
+	l, err := listenUnix(path)
+	syscall.Umask(old)
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", path, err)
 	}
