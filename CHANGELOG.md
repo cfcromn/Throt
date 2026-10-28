@@ -15,10 +15,15 @@ Admission leases make `throt run` race-free, and stopped processes Throt did not
 - `status` reports `scheduler.leases`; `throt status` shows `N reserved` and each reserved PID; the capacity verdict has `reserved`, which the `throt_capacity` text mentions.
 - Report stopped processes throtd did not pause (no paused record), such as work left stopped by a throtd killed before it wrote `paused.json`, or a Ctrl-Z shell job. They are reported, never resumed automatically: `throt status` prints a `STOPPED` line, `throt doctor` gains an `orphans` section (count, plus PID, base name, owner, time observed stopped and a hint for up to 50), and throtd logs one `orphan_stopped` event per newly found heavy workload of an agent (not for shell jobs). `throt resume PID` resumes such a workload after verifying identity; `throt resume --force PID` resumes any other stopped process of yours.
 - Process samples carry the process state (`ps state` on macOS, `/proc/<pid>/stat` on Linux).
+- `throt config check [--config PATH]` validates the config file with the same loader as throtd, prints `ok` and what it changes from the defaults (each marked `file` or `profile`), and exits 1 on an invalid or missing file. It warns, without failing, about `enforce` with `heavy_limit` at least the CPU count, `pause_on_critical` with mode `off`, and custom agent executables that shadow a built-in adapter.
+- `throt config show [--json]` prints the effective config (defaults, then profile, then file), the profile applied, and the source of each value (`default`, `profile`, or `file`).
+- `throt version --json` prints the client version, protocol version, Go version, and throtd's ping result when it is reachable (`daemon` is null with a `daemon_error` otherwise).
+- `throtd -log-format text|json` (default `text`) and `-log-level debug|info|warn|error` (default `info`), documented in `throtd -h`.
 
 ### Changed
 - `throt run` against a `throtd` without `acquire` falls back to the previous advisory check; the other fail-open rules (daemon down runs at once, 5m default timeout, `--no-wait`) are unchanged.
 - The scheduler holds stopped processes it did not pause, like manual pauses, so it never queues one and resumes it later.
+- throtd logs each event at a level that fits it, with its attributes: heavy workloads starting and exiting and admission leases are now `debug` (they come and go with every build), failures, refusals and processes left stopped are `warn`, and the rest stays `info`. The event log is unchanged.
 
 ## [0.6.0-rc.1] - 2026-10-28
 

@@ -137,6 +137,9 @@ throt pause PID # pause a heavy workload owned by one of your agents
 throt resume PID          # resume it; also an agent's job left stopped (see below)
 throt resume --force PID  # resume any other stopped process of yours, e.g. a Ctrl-Z job
 throt reload    # re-read the config without restarting (or send throtd SIGHUP)
+throt config check        # validate the config file, show what it changes, warn about risky settings
+throt config show         # effective config and where each value came from (--json)
+throt version --json      # client, protocol, Go, and throtd versions
 throt run -- npm run build    # wait for a free heavy slot, then run the command
 throt completion zsh          # shell completion script (bash, zsh, fish)
 ```
@@ -223,6 +226,10 @@ A profile never turns the scheduler on.
 - `per_agent_limit` caps heavy workloads per agent, so one agent can't take every slot.
 
 `scheduler.mode` is `off` (default), `observe` (log what it would do as `scheduler_decision` events), or `enforce` (queue new agent-owned heavy workloads with SIGSTOP when `heavy_limit` heavy workloads are already running, and resume them as slots free up). Try `observe` first and watch `throt events`.
+
+Check a file before `throt reload` or a restart with `throt config check [--config PATH]`. It loads the file exactly as throtd does, prints `ok` and each value that differs from the defaults (marked `file` or `profile`), and exits 1 with the error for an invalid or missing file. It also warns, without failing, about `enforce` with a `heavy_limit` of at least the CPU count, `pause_on_critical` with mode `off` (no effect), and a custom agent executable that shadows a built-in adapter. `throt config show [--json]` prints the effective config (defaults, then the profile, then the file), the profile applied, and the source of every value: `default`, `profile`, or `file`.
+
+throtd logs to stderr. `-log-format text|json` (default `text`) and `-log-level debug|info|warn|error` (default `info`) control it. `info` stays quiet in steady state: daemon lifecycle, agents appearing and leaving, pressure changes, scheduler decisions and control actions. `debug` adds each heavy workload start and exit and each admission lease; failures and processes left stopped are `warn`. The event log (`throt events`) records everything regardless of the log level.
 
 ## Roadmap
 

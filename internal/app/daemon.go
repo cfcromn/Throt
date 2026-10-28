@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -399,7 +400,30 @@ func (d *Daemon) currentStats(context.Context, json.RawMessage) (any, error) {
 
 func (d *Daemon) emit(kind domain.EventKind, msg string, attrs map[string]string) {
 	d.events.Append(domain.Event{Time: time.Now(), Kind: kind, Message: msg, Attrs: attrs})
-	d.log.Info(msg, "event", kind)
+	if !d.log.Enabled(context.Background(), eventLevel(kind)) {
+		return
+	}
+	args := make([]any, 0, 2+2*len(attrs))
+	args = append(args, "event", kind)
+	for _, k := range slices.Sorted(maps.Keys(attrs)) {
+		args = append(args, k, attrs[k])
+	}
+	d.log.Log(context.Background(), eventLevel(kind), msg, args...)
+}
+
+// eventLevel is the log level of an event. Every event is in the event log;
+// info stays quiet in steady state, so heavy workloads starting and exiting
+// and admission leases, which come and go with every build, are debug.
+func eventLevel(kind domain.EventKind) slog.Level {
+	switch kind {
+	case domain.EventProcessDiscovered, domain.EventProcessLost,
+		domain.EventLeaseGranted, domain.EventLeaseReleased:
+		return slog.LevelDebug
+	case domain.EventDegraded, domain.EventControlFailed, domain.EventControlRefused,
+		domain.EventConfigReloadFailed, domain.EventOrphanStopped:
+		return slog.LevelWarn
+	}
+	return slog.LevelInfo
 }
 
 func (d *Daemon) ping(context.Context, json.RawMessage) (any, error) {

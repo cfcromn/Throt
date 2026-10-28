@@ -30,7 +30,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status stats ping events explain pause resume run reload doctor mcp completion version -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status stats ping events explain pause resume run reload config doctor mcp completion version -config -n" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -38,6 +38,8 @@ _throt() {
         events) COMPREPLY=($(compgen -W "-f -n" -- "$cur")) ;;
         pause|resume|explain) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "$(_throt_pids)" -- "$cur")) ;;
         completion) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
+        config) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "check show" -- "$cur")) || COMPREPLY=($(compgen -W "--config --json" -- "$cur")) ;;
+        version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
         run)
             local j
             for ((j = i + 1; j < COMP_CWORD; j++)); do
@@ -84,6 +86,7 @@ _throt() {
         'run:wait for heavy-job capacity, then run a command'
         'stats:per-agent resource usage since throtd started'
         'reload:make throtd re-read its config file'
+        'config:check or show the config file'
         'doctor:print a sanitized diagnostic report'
         'mcp:run a read-only MCP server on stdio'
         'completion:print a shell completion script'
@@ -102,6 +105,8 @@ _throt() {
                 events) _arguments '-f[keep printing new events]' '-n[number of recent events]:count:' ;;
                 pause|resume|explain) (( CURRENT == 2 )) && _throt_pids ;;
                 completion) (( CURRENT == 2 )) && compadd bash zsh fish ;;
+                config) (( CURRENT == 2 )) && compadd check show || _arguments '--config[path to config file]:file:_files' '--json[print JSON]' ;;
+                version) _arguments '--json[print JSON]' ;;
                 run) _arguments -S '--timeout[run anyway after this long]:duration:' '--no-wait[check once and run regardless]' '*::command:_normal' ;;
             esac
             ;;
@@ -133,6 +138,7 @@ complete -c throt -n __fish_use_subcommand -a resume -d 'resume a paused workloa
 complete -c throt -n __fish_use_subcommand -a run -d 'wait for heavy-job capacity, then run a command'
 complete -c throt -n __fish_use_subcommand -a stats -d 'per-agent resource usage since throtd started'
 complete -c throt -n __fish_use_subcommand -a reload -d 'make throtd re-read its config file'
+complete -c throt -n __fish_use_subcommand -a config -d 'check or show the config file'
 complete -c throt -n __fish_use_subcommand -a doctor -d 'print a sanitized diagnostic report'
 complete -c throt -n __fish_use_subcommand -a mcp -d 'run a read-only MCP server on stdio'
 complete -c throt -n __fish_use_subcommand -a completion -d 'print a shell completion script'
@@ -141,6 +147,9 @@ complete -c throt -n '__fish_seen_subcommand_from events' -o f -d 'keep printing
 complete -c throt -n '__fish_seen_subcommand_from events' -o n -x -d 'number of recent events'
 complete -c throt -n '__fish_seen_subcommand_from pause resume explain' -x -a '(__throt_pids)'
 complete -c throt -n '__fish_seen_subcommand_from completion' -x -a 'bash zsh fish'
+complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show' -x -a 'check show'
+complete -c throt -n '__fish_seen_subcommand_from config' -l config -r -F -d 'path to config file'
+complete -c throt -n '__fish_seen_subcommand_from config version' -l json -d 'print JSON'
 complete -c throt -n '__fish_seen_subcommand_from run' -l timeout -x -d 'run anyway after this long'
 complete -c throt -n '__fish_seen_subcommand_from run' -l no-wait -d 'check once and run regardless'
 complete -c throt -n '__fish_seen_subcommand_from run' -a '(__fish_complete_command)'

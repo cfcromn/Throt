@@ -52,9 +52,16 @@ Commands:
   reload     make throtd re-read its config file
   doctor     print a sanitized diagnostic report (safe to share)
   mcp        run a read-only MCP server on stdio for coding agents
+  config check|show
+             'check' validates the config file as throtd would, lists what
+             it changes from the defaults, and warns about risky settings;
+             'show [--json]' prints the effective config and the source
+             (default, profile, or file) of each value. Both take --config
   completion bash|zsh|fish
              print a shell completion script
-  version    print the client version
+  version [--json]
+             print the client version; --json adds the protocol and Go
+             versions, and throtd's version when it is reachable
 
 Flags:
 `
@@ -86,6 +93,12 @@ func run(args []string) error {
 	// 'run' takes its own flags and passes everything else to the command.
 	if cmd == "run" {
 		return runCommand(fs.Args()[1:], *cfgPath)
+	}
+	if cmd == "config" {
+		return runConfig(fs.Args()[1:], *cfgPath, os.Stdout)
+	}
+	if cmd == "version" {
+		return runVersion(fs.Args()[1:], *cfgPath, os.Stdout)
 	}
 	// 'events' takes its own flags after the command: throt events -f.
 	followEvents, statsJSON, resumeForce := false, false, false
@@ -119,11 +132,6 @@ func run(args []string) error {
 		fs.Usage()
 		return fmt.Errorf("too many arguments")
 	}
-	if cmd == "version" {
-		fmt.Println(app.Version)
-		return nil
-	}
-
 	if cmd == "doctor" {
 		return runDoctor(*cfgPath)
 	}
