@@ -26,6 +26,14 @@ func TestParsePIDStat(t *testing.T) {
 	}
 }
 
+func TestParsePIDStatControlCharsInComm(t *testing.T) {
+	// A process can put a newline in its own comm (found by FuzzParsePIDStat).
+	got, err := parsePIDStat([]byte(statLine("a\nb\x7fc\td")))
+	if err != nil || got.Comm != "a?b?c?d" {
+		t.Fatalf("got %+v, %v; want comm %q", got, err, "a?b?c?d")
+	}
+}
+
 func TestParsePIDStatErrors(t *testing.T) {
 	tests := map[string]string{
 		"empty":        "",
@@ -35,6 +43,13 @@ func TestParsePIDStatErrors(t *testing.T) {
 		"bad ppid":     strings.Replace(statLine("bash"), "S 1 ", "S x ", 1),
 		"negative rss": strings.Replace(statLine("bash"), " 300 ", " -1 ", 1),
 		"only close":   "42 bash) S 1",
+		// Found by FuzzParsePIDStat.
+		"pid 0":          strings.Replace(statLine("bash"), "42 ", "0 ", 1),
+		"negative pid":   strings.Replace(statLine("bash"), "42 ", "-42 ", 1),
+		"huge ppid":      strings.Replace(statLine("bash"), "S 1 ", "S 18446744073709551615 ", 1),
+		"huge utime":     strings.Replace(statLine("bash"), " 250 50 ", " 92233720368547759 50 ", 1),
+		"cpu overflow":   strings.Replace(statLine("bash"), " 250 50 ", " 922337203685 50 ", 1),
+		"huge starttime": strings.Replace(statLine("bash"), " 12345 ", " 18446744073709551615 ", 1),
 	}
 	for name, in := range tests {
 		if got, err := parsePIDStat([]byte(in)); err == nil {
