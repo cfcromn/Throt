@@ -126,6 +126,9 @@ func derivedStart(profile string, ncpu, heavyLimit int) int {
 	return min(c.Scheduler.StartLimit, heavyLimit)
 }
 
+// defaultProfile is the profile used when none is set.
+const defaultProfile = "balanced"
+
 // Duration is a time.Duration that reads and writes strings like "2s".
 type Duration time.Duration
 
@@ -158,7 +161,7 @@ func Default() Config {
 			ResumeCooldown: Duration(10 * time.Second),
 			MaxQueueWait:   Duration(5 * time.Minute),
 		},
-		Profile: "balanced",
+		Profile: defaultProfile,
 	}
 	profiles[c.Profile](&c, runtime.NumCPU())
 	return c
@@ -227,6 +230,10 @@ func load(path string, ncpu int) (Config, error) {
 	}
 	if cfg.SocketPath == "" {
 		cfg.SocketPath = DefaultSocketPath()
+	}
+	if cfg.Profile == "" {
+		// An explicit "" is the default profile, whose presets apply.
+		cfg.Profile = defaultProfile
 	}
 	if head.Scheduler.StartLimit == nil || *head.Scheduler.StartLimit == 0 {
 		// An explicit heavy_limit below the profile's start caps it, so a

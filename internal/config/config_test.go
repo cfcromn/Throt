@@ -63,6 +63,11 @@ func TestLoad(t *testing.T) {
 		{name: "custom agent path", body: `{"agents":[{"name":"x","executables":["/usr/bin/x"]}]}`, wantErr: "bare base name"},
 		{name: "custom agent bad name", body: `{"agents":[{"name":"My Agent","executables":["x"]}]}`, wantErr: "lowercase"},
 		{name: "unknown profile", body: `{"profile":"turbo"}`, wantErr: "profile must be"},
+		{name: "empty profile is the default", body: `{"profile":""}`, check: func(t *testing.T, c Config) {
+			if !reflect.DeepEqual(c, Default()) {
+				t.Errorf("got %+v, want defaults", c)
+			}
+		}},
 		{name: "bad scheduler mode", body: `{"scheduler":{"mode":"auto"}}`, wantErr: "scheduler.mode"},
 		{name: "unknown scheduler key", body: `{"scheduler":{"limit":3}}`, wantErr: "unknown field"},
 	}
