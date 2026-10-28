@@ -18,7 +18,13 @@ import (
 func parseError(path string, b []byte, err error) error {
 	var syn *json.SyntaxError
 	var typ *json.UnmarshalTypeError
+	var dur *durationError
 	switch {
+	case errors.As(err, &dur):
+		if key, off, ok := badDuration(b, 0, ""); ok {
+			line, col := position(b, off)
+			return fmt.Errorf("parse config %s: line %d, column %d: %s: %w", path, line, col, key, err)
+		}
 	case errors.As(err, &syn):
 		line, col := position(b, syn.Offset)
 		return fmt.Errorf("parse config %s: line %d, column %d: %w", path, line, col, err)
@@ -112,6 +118,12 @@ func walkKeys(b []byte, t reflect.Type, section string, bad func(badKey)) {
 	}
 	for _, k := range slices.Sorted(maps.Keys(obj)) {
 		ft, ok := fields[k]
+		for tag, typ := range fields {
+			// The decoder matches keys case-insensitively.
+			if !ok && strings.EqualFold(tag, k) {
+				ft, ok = typ, true
+			}
+		}
 		if !ok {
 			bad(badKey{section: section, key: k, known: known})
 			continue
@@ -166,4 +178,49 @@ func editDistance(a, b string) int {
 		prev, cur = cur, prev
 	}
 	return prev[len(b)]
+}
+
+// durationKeys are the dotted keys of the Duration fields, in lower case:
+// encoding/json matches keys case-insensitively.
+var durationKeys = map[string]bool{
+	"sample_interval":           true,
+	"scheduler.resume_cooldown": true,
+	"scheduler.max_queue_wait":  true,
+}
+
+// badDuration returns the dotted key of the first Duration in the JSON
+// object b, in document order (where the decoder stops), that does not
+// decode, and the offset of its value in the file, where b starts at base.
+func badDuration(b []byte, base int64, path string) (key string, offset int64, ok bool) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return "", 0, false
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		name, isKey := tok.(string)
+		if err != nil || !isKey {
+			return "", 0, false
+		}
+		var raw json.RawMessage
+		if dec.Decode(&raw) != nil || len(raw) == 0 {
+			return "", 0, false
+		}
+		if path != "" {
+			name = path + "." + name
+		}
+		start := base + dec.InputOffset() - int64(len(raw))
+		var d Duration
+		switch {
+		case durationKeys[strings.ToLower(name)]:
+			if d.UnmarshalJSON(raw) != nil {
+				return name, start + 1, true // position reports the byte before
+			}
+		case raw[0] == '{':
+			if key, off, ok := badDuration(raw, start, name); ok {
+				return key, off, true
+			}
+		}
+	}
+	return "", 0, false
 }

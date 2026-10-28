@@ -114,6 +114,14 @@ func TestLoadErrorLocation(t *testing.T) {
 		{"scheduler typo", `{"scheduler":{"mode":"enforce","heavy_limt":3}}`, `unknown key "heavy_limt" in scheduler; did you mean "heavy_limit"?`},
 		{"agents typo", `{"agents":[{"name":"x","executable":["x"]}]}`, `unknown key "executable" in agents[0]; did you mean "executables"?`},
 		{"no suggestion", `{"scheduler":{"turbo":true}}`, `unknown key "turbo" in scheduler`},
+		// A bad duration used to carry no location, and a non-string one
+		// the offset of its own value (always line 1).
+		{"bad duration", "{\n\n  \"sample_interval\": \"soon\"}", `line 3, column 22: sample_interval: time: invalid duration "soon"`},
+		{"duration not a string", "{\n\n\n  \"scheduler\": {\"resume_cooldown\": 5}}", `line 4, column 36: scheduler.resume_cooldown: duration must be a string like "2s"`},
+		{"duration key case", "{\"scheduler\": {\"max_queue_wait\": \"1s\"},\n\"Sample_Interval\": null}", `line 2, column 20: Sample_Interval: time: invalid duration ""`},
+		// The decoder accepts "Scheduler"; the unknown key is inside it.
+		{"key case", `{"Scheduler":{"zz":1}}`, `unknown key "zz" in Scheduler`},
+		{"duration object", `{"scheduler":{"max_queue_wait":{"a":[1]}}}`, `line 1, column 32: scheduler.max_queue_wait: duration must be`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

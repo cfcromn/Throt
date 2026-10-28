@@ -143,16 +143,23 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 
 func (d *Duration) UnmarshalJSON(b []byte) error {
 	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return fmt.Errorf("duration must be a string like \"2s\": %w", err)
+	if json.Unmarshal(b, &s) != nil {
+		// Not wrapped: the inner error's offset is into b, not the file.
+		return &durationError{`duration must be a string like "2s"`}
 	}
 	v, err := time.ParseDuration(s)
 	if err != nil {
-		return err
+		return &durationError{err.Error()}
 	}
 	*d = Duration(v)
 	return nil
 }
+
+// durationError is a Duration that does not decode. encoding/json returns
+// it without a position, so parseError looks for the key in the file.
+type durationError struct{ msg string }
+
+func (e *durationError) Error() string { return e.msg }
 
 // Default returns the configuration used when no file exists.
 func Default() Config {
