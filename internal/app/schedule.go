@@ -9,7 +9,6 @@ import (
 	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
-	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
 )
 
@@ -58,34 +57,32 @@ const maxQueueMembers = 256
 // schedule runs one scheduler round on the sampling goroutine and, in
 // enforce mode, executes its decisions through the verified controller.
 // Every decision is an event, so nothing the scheduler does is hidden.
-// reserved holds the agent of each active admission lease, and admitted the
-// workloads that took over a lease this round. Orphans (stopped processes
-// no record explains) are held like manual pauses: the scheduler must never
-// queue one and later resume it, since Throt only reports orphans.
-// throughputOnly is pressure.Engine.ThroughputOnly for level.
-func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.PressureLevel, throughputOnly bool, heavy []process.WorkloadView, reserved []string, admitted []domain.ProcessKey, waiters []scheduler.Waiter, orphans []domain.ProcessKey) {
+// in carries everything but Paused and Held, which schedule fills from the
+// controller's records. Orphans (stopped processes no record explains) are
+// held like manual pauses: the scheduler must never queue one and later
+// resume it, since Throt only reports orphans.
+func (d *Daemon) schedule(parent context.Context, in scheduler.Input, orphans []domain.ProcessKey) {
 	// The controller records who paused what, so a manual hold is never
 	// mistaken for scheduler queueing, even across restarts.
-	inSnapshot := make(map[domain.ProcessKey]bool, len(heavy))
-	for _, h := range heavy {
+	inSnapshot := make(map[domain.ProcessKey]bool, len(in.Heavy))
+	for _, h := range in.Heavy {
 		inSnapshot[h.Key] = true
 	}
-	var ours []domain.ProcessKey
-	held := orphans
+	in.Held = orphans
 	for _, p := range d.ctl.Paused() {
 		switch {
 		case p.By != control.OriginScheduler:
-			held = append(held, p.Key)
+			in.Held = append(in.Held, p.Key)
 		case !inSnapshot[p.Key]:
 			// The top process exited (e.g. killed while stopped); its
 			// children would otherwise stay stopped with nobody to resume them.
 			d.schedulerResume(parent, p.Key, p.Name, p.Owner, "top_exited")
 		default:
-			ours = append(ours, p.Key)
+			in.Paused = append(in.Paused, p.Key)
 		}
 	}
 
-	decisions := d.sched.Decide(scheduler.Input{Now: now, Pressure: level, ThroughputOnly: throughputOnly, Heavy: heavy, Paused: ours, Held: held, Reserved: reserved, Admitted: admitted, Waiters: waiters})
+	decisions := d.sched.Decide(in)
 	for _, c := range d.sched.Changes() {
 		d.emit(domain.EventSchedulerLimit, fmt.Sprintf("heavy limit %d -> %d: %s", c.From, c.To, c.Reason),
 			map[string]string{"from": strconv.Itoa(c.From), "to": strconv.Itoa(c.To), "reason": c.Reason})
@@ -143,14 +140,13 @@ func (d *Daemon) emitDecision(dec scheduler.Decision) {
 	if dec.Observed {
 		prefix = "[observe] "
 	}
-	owner := dec.Owner
 	msg := fmt.Sprintf("%s%s %s (%s): %s, %d/%d heavy running, pressure %s",
-		prefix, dec.Action, dec.Name, owner, dec.Reason, dec.RunningHeavy, dec.HeavyLimit, dec.Pressure)
+		prefix, dec.Action, dec.Name, dec.Owner, dec.Reason, dec.RunningHeavy, dec.HeavyLimit, dec.Pressure)
 	d.emit(domain.EventSchedulerDecision, msg, map[string]string{
 		"decision": string(dec.Action),
 		"pid":      strconv.Itoa(dec.Key.PID),
 		"name":     dec.Name,
-		"owner":    owner,
+		"owner":    dec.Owner,
 		"reason":   dec.Reason,
 		"pressure": dec.Pressure.String(),
 		"running":  strconv.Itoa(dec.RunningHeavy),
@@ -159,15 +155,22 @@ func (d *Daemon) emitDecision(dec scheduler.Decision) {
 	})
 }
 
-func (d *Daemon) schedulerStatus() SchedulerStatus {
+// schedulerQueued returns the workloads the scheduler paused, never nil.
+func (d *Daemon) schedulerQueued() []domain.ProcessKey {
 	queued := []domain.ProcessKey{}
 	for _, p := range d.ctl.Paused() {
 		if p.By == control.OriginScheduler {
 			queued = append(queued, p.Key)
 		}
 	}
+	return queued
+}
+
+// schedulerStatus returns the scheduler part of the status, with Leases
+// empty: the status handlers fill them in under d.mu.
+func (d *Daemon) schedulerStatus() SchedulerStatus {
 	p := d.sched.Policy()
-	st := SchedulerStatus{Mode: p.Mode, HeavyLimit: d.sched.Limit(), PerAgentLimit: p.PerOwnerLimit, Queued: queued, Leases: []Lease{}}
+	st := SchedulerStatus{Mode: p.Mode, HeavyLimit: d.sched.Limit(), PerAgentLimit: p.PerOwnerLimit, Queued: d.schedulerQueued(), Leases: []Lease{}}
 	if p.Adaptive {
 		st.Adaptive, st.StartLimit, st.MaxLimit = true, p.StartLimit, p.HeavyLimit
 	}

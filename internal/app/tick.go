@@ -56,7 +56,15 @@ func (d *Daemon) tick(parent context.Context) {
 	if s.perr == nil {
 		// Only schedule on a fresh process snapshot: acting on stale data
 		// could queue a workload that already finished.
-		d.schedule(parent, s.now, level, d.engine.ThroughputOnly(), r.snap.Heavy, reserved, admitted(ended), waiters, r.stoppedOrphans)
+		d.schedule(parent, scheduler.Input{
+			Now:            s.now,
+			Pressure:       level,
+			ThroughputOnly: d.engine.ThroughputOnly(),
+			Heavy:          r.snap.Heavy,
+			Reserved:       reserved,
+			Admitted:       admitted(ended),
+			Waiters:        waiters,
+		}, r.stoppedOrphans)
 		d.account(s.now, r.snap)
 	}
 	d.publishScheduler()
@@ -212,12 +220,7 @@ func (d *Daemon) degradedSummary() string {
 // account adds a fresh snapshot to the per-agent usage. Workloads the
 // scheduler holds after this round are charged queue time until the next.
 func (d *Daemon) account(now time.Time, snap process.Snapshot) {
-	var queued []domain.ProcessKey
-	for _, p := range d.ctl.Paused() {
-		if p.By == control.OriginScheduler {
-			queued = append(queued, p.Key)
-		}
-	}
+	queued := d.schedulerQueued()
 	d.statsMu.Lock()
 	d.acct.Observe(now, snap, queued)
 	d.statsMu.Unlock()
