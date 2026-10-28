@@ -52,7 +52,7 @@ SWAP  ██████████████░░░░░░░░░░�
   HEAVY WORKLOADS (2)
   OWNER               PID  PROCESS           CLASS               CPU        MEM
   codex-1            4312  java              build              190%    2.3 GiB
-  claude-1           4471  docker            container-build     60%    420 MiB
+  claude-1           4471  buildkitd         container-build     60%    420 MiB
 TIMELINE
   14:02:52  pressure_changed    pressure elevated -> high
   14:02:13  agent_discovered    agent_discovered codex-1
