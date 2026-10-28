@@ -62,7 +62,7 @@ func TestDefaultPolicyAndNormalize(t *testing.T) {
 		t.Fatalf("DefaultPolicy = %+v", d)
 	}
 	got := New(Policy{Mode: "bogus", HeavyLimit: 0, ResumeCooldown: -time.Second}).Policy()
-	want := Policy{Mode: ModeOff, HeavyLimit: 1, ResumeCooldown: 0, MaxQueueWait: DefaultMaxQueueWait}
+	want := Policy{Mode: ModeOff, HeavyLimit: 1, ResumeCooldown: 0, MaxQueueWait: DefaultMaxQueueWait, AdaptInterval: DefaultAdaptInterval}
 	if got != want {
 		t.Fatalf("normalized = %+v, want %+v", got, want)
 	}
