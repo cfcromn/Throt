@@ -20,6 +20,7 @@ type PingResult struct {
 	Uptime   string `json:"uptime"`
 }
 
+// ping handles the "ping" method.
 func (d *Daemon) ping(context.Context, json.RawMessage) (any, error) {
 	return PingResult{
 		Version:  Version,
@@ -43,6 +44,7 @@ type EventsParams struct {
 	Since uint64 `json:"since,omitempty"`
 }
 
+// recentEvents handles the "events" method.
 func (d *Daemon) recentEvents(_ context.Context, raw json.RawMessage) (any, error) {
 	var p EventsParams
 	if len(raw) > 0 {
@@ -65,6 +67,7 @@ func (d *Daemon) recentEvents(_ context.Context, raw json.RawMessage) (any, erro
 	return []domain.Event{}, nil
 }
 
+// currentStatus handles the "status" method.
 func (d *Daemon) currentStatus(context.Context, json.RawMessage) (any, error) {
 	d.mu.Lock()
 	st := d.statusWithLeases()
@@ -81,6 +84,7 @@ func (d *Daemon) statusWithLeases() StatusResult {
 	return st
 }
 
+// currentStats handles the "stats" method.
 func (d *Daemon) currentStats(context.Context, json.RawMessage) (any, error) {
 	d.statsMu.Lock()
 	defer d.statsMu.Unlock()

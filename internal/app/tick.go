@@ -207,6 +207,7 @@ func (d *Daemon) track(name string, err error) {
 	}
 }
 
+// degradedSummary describes the failing samplers for StatusResult.Degraded.
 func (d *Daemon) degradedSummary() string {
 	var parts []string
 	for _, name := range []string{"host", "processes"} {

@@ -90,6 +90,7 @@ func (t *leaseTable) holds(pid int) bool {
 	return slices.ContainsFunc(t.leases, func(l Lease) bool { return l.Process.PID == pid })
 }
 
+// grant adds a lease for key with the next ID.
 func (t *leaseTable) grant(key domain.ProcessKey, agent string, now time.Time) Lease {
 	t.lastID++
 	l := Lease{ID: strconv.FormatUint(t.lastID, 10), Process: key, Agent: agent, Granted: now}
@@ -191,6 +192,7 @@ func (t *leaseTable) nested(chain []int, heavy []process.WorkloadView) bool {
 	return false
 }
 
+// emitLeaseEnds emits a lease_released event per ended lease.
 func (d *Daemon) emitLeaseEnds(ended []leaseEnd) {
 	for _, e := range ended {
 		d.emit(domain.EventLeaseReleased, fmt.Sprintf("lease %s of pid %d (%s) released: %s", e.ID, e.Process.PID, ownerLabel(e.Agent), e.reason),

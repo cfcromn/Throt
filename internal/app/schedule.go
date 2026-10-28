@@ -101,6 +101,7 @@ func (d *Daemon) schedule(parent context.Context, in scheduler.Input, orphans []
 	}
 }
 
+// schedulerPause queues or preempts the workload of a decision.
 func (d *Daemon) schedulerPause(parent context.Context, dec scheduler.Decision) {
 	target, ok := d.workload(dec.Key)
 	if !ok {
@@ -135,6 +136,8 @@ func (d *Daemon) schedulerResume(parent context.Context, key domain.ProcessKey, 
 	}
 }
 
+// emitDecision emits a scheduler decision, prefixed with [observe] when
+// it was only observed.
 func (d *Daemon) emitDecision(dec scheduler.Decision) {
 	prefix := ""
 	if dec.Observed {

@@ -12,9 +12,12 @@ import (
 	"github.com/cfcromn/Throt/internal/process"
 )
 
+// emit appends an event to the event log and logs it at its eventLevel,
+// with its attrs sorted by key.
 func (d *Daemon) emit(kind domain.EventKind, msg string, attrs map[string]string) {
 	d.events.Append(domain.Event{Time: time.Now(), Kind: kind, Message: msg, Attrs: attrs})
-	if !d.log.Enabled(context.Background(), eventLevel(kind)) {
+	level := eventLevel(kind)
+	if !d.log.Enabled(context.Background(), level) {
 		return
 	}
 	args := make([]any, 0, 2+2*len(attrs))
@@ -22,7 +25,7 @@ func (d *Daemon) emit(kind domain.EventKind, msg string, attrs map[string]string
 	for _, k := range slices.Sorted(maps.Keys(attrs)) {
 		args = append(args, k, attrs[k])
 	}
-	d.log.Log(context.Background(), eventLevel(kind), msg, args...)
+	d.log.Log(context.Background(), level, msg, args...)
 }
 
 // eventLevel is the log level of an event. Every event is in the event log;
@@ -40,6 +43,8 @@ func eventLevel(kind domain.EventKind) slog.Level {
 	return slog.LevelInfo
 }
 
+// emitChange emits a process graph change, named after its agent when it
+// has one.
 func (d *Daemon) emitChange(c process.Change) {
 	attrs := map[string]string{"pid": strconv.Itoa(c.Process.PID), "name": c.Name}
 	msg := string(c.Kind) + " " + c.Name

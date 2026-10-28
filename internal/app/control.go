@@ -26,6 +26,8 @@ type ControlParams struct {
 	Force bool `json:"force,omitempty"`
 }
 
+// pause handles the "pause" method: it stops the heavy workload the latest
+// status shows at params.PID.
 func (d *Daemon) pause(ctx context.Context, raw json.RawMessage) (any, error) {
 	params, err := controlParams(raw)
 	if err != nil {
@@ -51,6 +53,8 @@ func (d *Daemon) pause(ctx context.Context, raw json.RawMessage) (any, error) {
 	return nil, nil
 }
 
+// resume handles the "resume" method: it continues a paused workload by the
+// PID of its top process, or else an orphan (see resumeOrphan).
 func (d *Daemon) resume(ctx context.Context, raw json.RawMessage) (any, error) {
 	params, err := controlParams(raw)
 	if err != nil {
@@ -75,6 +79,7 @@ func (d *Daemon) resume(ctx context.Context, raw json.RawMessage) (any, error) {
 	return nil, nil
 }
 
+// controlParams decodes and checks the params of pause and resume.
 func controlParams(raw json.RawMessage) (ControlParams, error) {
 	var p ControlParams
 	if err := decodeParams(raw, &p); err != nil {
@@ -101,19 +106,25 @@ func (d *Daemon) heavyKey(pid int) (domain.ProcessKey, bool) {
 	return domain.ProcessKey{}, false
 }
 
+// refused emits a control_refused event for action on pid and returns the
+// error the client sees.
 func (d *Daemon) refused(action string, pid int, reason string) error {
-	d.emit(domain.EventControlRefused, action+" pid "+strconv.Itoa(pid)+" refused: "+reason,
-		map[string]string{"action": action, "pid": strconv.Itoa(pid), "reason": reason})
+	p := strconv.Itoa(pid)
+	d.emit(domain.EventControlRefused, action+" pid "+p+" refused: "+reason,
+		map[string]string{"action": action, "pid": p, "reason": reason})
 	return fmt.Errorf("%s refused: %s", action, reason)
 }
 
+// controlError reports a failed action on pid: a refusal by the controller
+// as refused, anything else as a control_failed event.
 func (d *Daemon) controlError(action string, pid int, err error) error {
 	var r *control.RefusedError
 	if errors.As(err, &r) {
 		return d.refused(action, pid, r.Reason)
 	}
-	d.emit(domain.EventControlFailed, action+" pid "+strconv.Itoa(pid)+" failed: "+err.Error(),
-		map[string]string{"action": action, "pid": strconv.Itoa(pid)})
+	p := strconv.Itoa(pid)
+	d.emit(domain.EventControlFailed, action+" pid "+p+" failed: "+err.Error(),
+		map[string]string{"action": action, "pid": p})
 	return fmt.Errorf("%s failed: %w", action, err)
 }
 
