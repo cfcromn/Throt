@@ -60,7 +60,6 @@ sboms:
 release:
   prerelease: auto
 
-# Release notes come from CHANGELOG.md (see .github/workflows/release.yml,
-# which passes the tag's section with --release-notes).
-changelog:
-  disable: true
+# Release notes come from CHANGELOG.md: .github/workflows/release.yml passes
+# the tag's section with --release-notes, which replaces the generated
+# changelog. Do not set changelog.disable: it also drops --release-notes.
