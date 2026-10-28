@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"io"
@@ -51,6 +52,28 @@ func TestHelpGoesToStdout(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), tt.want) {
 			t.Errorf("%s: stdout %q, want %q", tt.name, out.String(), tt.want)
+		}
+	}
+}
+
+// TestEveryCommandHelp checks that -h and --help after every command print
+// its usage to stdout and return flag.ErrHelp, without running it: the
+// config file and socket do not exist, so contacting the daemon or
+// starting anything would fail or block.
+func TestEveryCommandHelp(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	for _, c := range commands() {
+		for _, h := range []string{"-h", "--help"} {
+			var out, errw bytes.Buffer
+			args := []string{"-config", dir + "/none.json", c.name, h}
+			err := run(context.Background(), args, strings.NewReader(""), &out, &errw)
+			if !errors.Is(err, flag.ErrHelp) {
+				t.Errorf("throt %s %s: err = %v, want flag.ErrHelp", c.name, h, err)
+			}
+			if !strings.Contains(strings.ToLower(out.String()), "usage: throt "+c.name) || errw.Len() != 0 {
+				t.Errorf("throt %s %s: stdout %q, stderr %q", c.name, h, out.String(), errw.String())
+			}
 		}
 	}
 }

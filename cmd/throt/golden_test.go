@@ -157,6 +157,9 @@ func goldenCases() []goldenCase {
 
 		{name: "mcp", args: []string{"mcp"}},
 		{name: "mcp -h", args: []string{"mcp", "-h"}},
+		{name: "mcp --help", args: []string{"mcp", "--help"}},
+		{name: "top -h", args: []string{"top", "-h"}},
+		{name: "doctor -h", args: []string{"doctor", "-h"}},
 		{name: "mcp too many", args: []string{"mcp", "a", "b"}},
 		{name: "top too many", args: []string{"top", "a", "b"}},
 		{name: "doctor too many", args: []string{"doctor", "a", "b"}},
@@ -511,8 +514,10 @@ func goldenWant() map[string]golden {
 `},
 		"completion": {code: 1, stdout: "", stderr: `throt: usage: throt completion bash|zsh|fish
 `},
-		"completion -h": {code: 1, stdout: "", stderr: `throt: usage: throt completion bash|zsh|fish
-`},
+		"completion -h": {code: 0, stdout: `usage: throt completion bash|zsh|fish
+
+print a shell completion script
+`, stderr: ""},
 		"completion bash": {code: 0, stdout: `# bash completion for throt. Load with: source <(throt completion bash)
 _throt_pids() {
     throt status 2>/dev/null | awk '/^HEAVY WORKLOADS/ {f = 1; next} f && $2 ~ /^[0-9]+$/ {print $2}'
@@ -813,6 +818,10 @@ agents                       []                        default
   ]
 }
 `, stderr: ""},
+		"doctor -h": {code: 0, stdout: `usage: throt doctor
+
+print a sanitized diagnostic report (safe to share)
+`, stderr: ""},
 		"doctor too many": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
 `},
 		"events": {code: 0, stdout: `{"seq":1,"time":"2026-10-28T14:00:01Z","kind":"process_discovered","attrs":{"name":"make","pid":"4312"}}
@@ -849,8 +858,10 @@ TIME      KIND                ACTION  REASON                 PRESSURE  SLOTS
 
 Running; at 14:00:02 the scheduler would have admit it (heavy slots exhausted), but observe mode never acts.
 `, stderr: ""},
-		"explain -h": {code: 1, stdout: "", stderr: `throt: usage: throt explain PID
-`},
+		"explain -h": {code: 0, stdout: `usage: throt explain PID
+
+explain why a heavy workload is running, paused, or queued
+`, stderr: ""},
 		"explain missing": {code: 1, stdout: "", stderr: `throt: usage: throt explain PID
 `},
 		"explain not a pid": {code: 1, stdout: "", stderr: `throt: usage: throt explain PID
@@ -868,8 +879,12 @@ Running; at 14:00:02 the scheduler would have admit it (heavy slots exhausted), 
 		"help long": {code: 0, stdout: goldenUsage, stderr: ""},
 		"hook": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
 `},
-		"hook -h": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
-`},
+		"hook -h": {code: 0, stdout: `usage: throt hook claude-code [--max-wait D]
+
+Claude Code PreToolUse hook: before a lone heavy Bash command,
+wait up to D (default 50s) for heavy-job capacity; never
+changes or blocks the command (advisory; fails open)
+`, stderr: ""},
 		"hook claude-code -h": {code: 0, stdout: `Usage: throt hook claude-code [--max-wait D]
 
 Claude Code PreToolUse hook for the Bash tool. When the command is a heavy
@@ -908,8 +923,15 @@ throt hook: bad arguments; not waiting
 `},
 		"invalid config": {code: 1, stdout: "", stderr: `throt: config $DIR/bad.json: scheduler.mode must be off, observe, or enforce, not "sometimes"
 `},
-		"mcp":    {code: 0, stdout: "", stderr: ""},
-		"mcp -h": {code: 0, stdout: "", stderr: ""},
+		"mcp": {code: 0, stdout: "", stderr: ""},
+		"mcp --help": {code: 0, stdout: `usage: throt mcp
+
+run a read-only MCP server on stdio for coding agents
+`, stderr: ""},
+		"mcp -h": {code: 0, stdout: `usage: throt mcp
+
+run a read-only MCP server on stdio for coding agents
+`, stderr: ""},
 		"mcp initialize": {code: 0, stdout: `{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}},"instructions":"Throt reports local machine pressure and heavy-workload capacity. Call throt_capacity before starting a heavy build, test suite, or container build; if ok_to_start is false, wait or run a lighter task. All tools are read-only and advisory.","protocolVersion":"2025-06-18","serverInfo":{"name":"throt","version":"dev"}}}
 `, stderr: ""},
 		"mcp too many": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
@@ -918,15 +940,19 @@ throt hook: bad arguments; not waiting
 `, stderr: ""},
 		"pause --force": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
 `},
-		"pause -h": {code: 1, stdout: "", stderr: `throt: usage: throt pause PID
-`},
+		"pause -h": {code: 0, stdout: `usage: throt pause PID
+
+pause a heavy workload (SIGSTOP) shown in 'status'
+`, stderr: ""},
 		"pause missing": {code: 1, stdout: "", stderr: `throt: usage: throt pause PID
 `},
 		"pause refused": {code: 1, stdout: "", stderr: `throt: pid 13 is not a heavy workload
 `},
 		"ping": {code: 0, stdout: `throtd v9.9.9 (protocol v1, pid 77, up 1h2m3s)
 `, stderr: ""},
-		"ping -h": {code: 0, stdout: `throtd v9.9.9 (protocol v1, pid 77, up 1h2m3s)
+		"ping -h": {code: 0, stdout: `usage: throt ping
+
+check that throtd is reachable
 `, stderr: ""},
 		"ping down": {code: 1, stdout: "", stderr: `throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
 `},
@@ -935,8 +961,9 @@ throt hook: bad arguments; not waiting
 		"reload": {code: 0, stdout: `applied: scheduler.mode off -> observe
 requires restart: socket_path
 `, stderr: ""},
-		"reload -h": {code: 0, stdout: `applied: scheduler.mode off -> observe
-requires restart: socket_path
+		"reload -h": {code: 0, stdout: `usage: throt reload
+
+make throtd re-read its config file
 `, stderr: ""},
 		"reload invalid config": {code: 0, stdout: `applied: scheduler.mode off -> observe
 requires restart: socket_path
@@ -949,8 +976,14 @@ requires restart: socket_path
 `, stderr: ""},
 		"resume -force": {code: 0, stdout: `resumed pid 4312
 `, stderr: ""},
-		"resume -h": {code: 1, stdout: "", stderr: `throt: usage: throt resume [--force] PID
-`},
+		"resume -h": {code: 0, stdout: `usage: throt resume [--force] PID
+
+resume a paused workload (SIGCONT). Also resumes a stopped
+process throtd did not pause (listed by 'doctor', e.g. one an
+earlier throtd left paused) when it is a heavy workload of an
+agent; --force resumes any other such process of yours too,
+such as a shell job suspended with Ctrl-Z (prefer fg there)
+`, stderr: ""},
 		"resume missing": {code: 1, stdout: "", stderr: `throt: usage: throt resume [--force] PID
 `},
 		"resume not a pid": {code: 1, stdout: "", stderr: `throt: usage: throt resume PID
@@ -1031,8 +1064,10 @@ throt: run: missing command
 `},
 		"setup": {code: 1, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
 `},
-		"setup -h": {code: 1, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
-`},
+		"setup -h": {code: 0, stdout: `usage: throt setup claude-code|codex
+
+print the configuration to paste into a coding agent
+`, stderr: ""},
 		"setup bogus": {code: 1, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
 `},
 		"setup claude-code": {code: 0, stdout: `Claude Code setup (nothing is written; paste these yourself).
@@ -1234,22 +1269,9 @@ OWNER     PID   PROCESS  CLASS  CPU   MEM      STATE
 claude-1  4312  make     build  150%  2.0 GiB  running
 -         4400  gradle   build  25%   700 MiB  running
 `, stderr: ""},
-		"status -h": {code: 0, stdout: `PRESSURE  ELEVATED (load 1.20 per CPU)
-CPU       42%
-LOAD      1.20 per CPU
-MEM       10.0 GiB used of 16.0 GiB
-LATENCY   3ms
-SWAP      512 MiB used of 2.0 GiB
+		"status -h": {code: 0, stdout: `usage: throt status
 
-AGENTS
-SCHEDULER observe (heavy limit 2, 0 queued, 0 reserved)
-AGENT     PID   CPU  MEM      CHILDREN
-claude-1  1000  5%   300 MiB  2
-
-HEAVY WORKLOADS
-OWNER     PID   PROCESS  CLASS  CPU   MEM      STATE
-claude-1  4312  make     build  150%  2.0 GiB  running
--         4400  gradle   build  25%   700 MiB  running
+show host resources and pressure
 `, stderr: ""},
 		"status down": {code: 1, stdout: "", stderr: `throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socket dir: lstat $DIR/norun/throt: no such file or directory
 `},
@@ -1257,6 +1279,10 @@ claude-1  4312  make     build  150%  2.0 GiB  running
 `},
 		"too many arguments": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
 `},
+		"top -h": {code: 0, stdout: `usage: throt top
+
+open the terminal UI (the default with no command)
+`, stderr: ""},
 		"top too many": {code: 1, stdout: "", stderr: goldenUsage + `throt: too many arguments
 `},
 		"unknown command": {code: 1, stdout: "", stderr: goldenUsage + `throt: unknown command "frob"
@@ -1370,8 +1396,11 @@ throt: update: unexpected arguments
   }
 }
 `, stderr: ""},
-		"version -h": {code: 1, stdout: "", stderr: `throt: usage: throt version [--json]
-`},
+		"version -h": {code: 0, stdout: `usage: throt version [--json]
+
+print the client version; --json adds the protocol and Go
+versions, and throtd's version when it is reachable
+`, stderr: ""},
 		"version -json down": {code: 0, stdout: `{
   "version": "dev",
   "protocol": 1,

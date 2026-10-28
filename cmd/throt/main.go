@@ -77,6 +77,11 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if !ok {
 		return unknownCommand(e, name, rest)
 	}
+	// -h right after the command never runs it.
+	if !c.flags && len(rest) > 0 && isHelp(rest[0]) {
+		fmt.Fprint(stdout, c.commandUsage())
+		return flag.ErrHelp
+	}
 	return c.run(ctx, e, rest)
 }
 
