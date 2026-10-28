@@ -69,12 +69,34 @@ func (d *Daemon) tick(parent context.Context) {
 		}, r.stoppedOrphans)
 		d.account(s.now, r.snap)
 		d.watch = d.refillWatch(r.snap.Heavy, len(waiters))
+		d.procsFailingSince = time.Time{}
 	} else {
 		// No round ran, so there is no current would_queue to show.
 		d.wouldQueue = d.wouldQueue[:0]
 		d.watch = nil
+		d.failOpenQueued(parent, s.now)
 	}
 	d.publishScheduler()
+}
+
+// failOpenQueued resumes the scheduler's queued work once process sampling
+// has failed for max_queue_wait. Without a snapshot no round runs, so no
+// round could resume it either, and queued work must not stay stopped
+// while Throt cannot see the processes.
+func (d *Daemon) failOpenQueued(ctx context.Context, now time.Time) {
+	if d.procsFailingSince.IsZero() {
+		d.procsFailingSince = now
+		return
+	}
+	if now.Sub(d.procsFailingSince) < d.sched.Policy().MaxQueueWait {
+		return
+	}
+	for _, w := range d.ctl.Paused() {
+		// A resuming record is already retried by retryResumes.
+		if w.By == control.OriginScheduler && w.State == control.StatePaused {
+			d.schedulerResume(ctx, w.Key, w.Name, w.Owner, ReasonProcessesUnavailable)
+		}
+	}
 }
 
 // sample is one tick's raw readings.

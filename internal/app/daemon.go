@@ -94,6 +94,9 @@ type Daemon struct {
 	// watch holds the running heavy workloads whose exit the loop polls
 	// for while work waits for a slot (see refillWatch); nil otherwise.
 	watch []domain.ProcessKey
+	// procsFailingSince is when the current run of failed process samples
+	// began; zero while sampling works.
+	procsFailingSince time.Time
 
 	// mu guards status, leases, and stopped together, so an acquire checks
 	// and grants against one consistent view, and a tick replaces the heavy

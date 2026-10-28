@@ -30,9 +30,13 @@ const ReasonEnforceDisabled = "enforce_disabled"
 // top process exited, so its children are not left stopped.
 const ReasonTopExited = "top_exited"
 
+// ReasonProcessesUnavailable is the reason code for resuming queued work
+// after process sampling has failed for max_queue_wait.
+const ReasonProcessesUnavailable = "processes_unavailable"
+
 // DecisionReasons lists every reason code of scheduler_decision events:
 // the scheduler's, and those of resumes the daemon decides itself.
-var DecisionReasons = append(slices.Clone(scheduler.DecisionReasons), ReasonEnforceDisabled, ReasonTopExited)
+var DecisionReasons = append(slices.Clone(scheduler.DecisionReasons), ReasonEnforceDisabled, ReasonTopExited, ReasonProcessesUnavailable)
 
 // restartOnly reports keys fixed for the daemon's lifetime: the socket and
 // its lock, the sampling ticker, and the event ring's capacity.

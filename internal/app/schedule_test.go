@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,6 +28,8 @@ type world struct {
 	mu    sync.Mutex
 	procs map[int]domain.ProcessSample
 	sent  []string
+	// failProcs makes process sampling fail.
+	failProcs bool
 }
 
 func newWorld(procs ...domain.ProcessSample) *world {
@@ -57,6 +60,9 @@ func (w *world) SampleHost(context.Context) (domain.HostSample, error) {
 func (w *world) SampleProcesses(context.Context) ([]domain.ProcessSample, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.failProcs {
+		return nil, errors.New("ps: fork: resource temporarily unavailable")
+	}
 	out := make([]domain.ProcessSample, 0, len(w.procs))
 	for _, p := range w.procs {
 		out = append(out, p)
@@ -290,6 +296,55 @@ func TestObserveWouldQueue(t *testing.T) {
 	}
 	if st := d.schedulerStatus(); len(st.Queued) != 0 {
 		t.Errorf("observe mode queued %v", st.Queued)
+	}
+}
+
+// TestQueuedResumedWhenSamplingFails checks that queued work does not stay
+// stopped while process sampling keeps failing: no scheduler round runs
+// then, so after max_queue_wait the daemon resumes it itself.
+func TestQueuedResumedWhenSamplingFails(t *testing.T) {
+	w := newWorld(
+		domain.ProcessSample{PID: 10, PPID: 1, Name: "claude"},
+		domain.ProcessSample{PID: 11, PPID: 10, Name: "go"},
+	)
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(shortTempDir(t), "throtd.sock")
+	cfg.SampleInterval = config.Duration(100 * time.Millisecond)
+	cfg.Scheduler.Mode, cfg.Scheduler.HeavyLimit, cfg.Scheduler.ResumeCooldown = "enforce", 1, 0
+	cfg.Scheduler.Adaptive = false
+	cfg.Scheduler.MaxQueueWait = config.Duration(time.Second)
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewDaemon(cfg, w, w, w, slog.New(slog.DiscardHandler)).Run(ctx)
+	}()
+	defer func() { stop(); <-done }()
+	status := func() StatusResult {
+		var st StatusResult
+		transport.Call(context.Background(), cfg.SocketPath, "status", nil, &st)
+		return st
+	}
+	waitFor(t, "normal pressure", func() bool {
+		st := status()
+		return len(st.Heavy) == 1 && st.Pressure == domain.PressureNormal
+	})
+	w.add(domain.ProcessSample{PID: 12, PPID: 10, Name: "go"})
+	waitFor(t, "pid 12 queued", func() bool { return w.signals() == "stop:12" })
+
+	w.mu.Lock()
+	w.failProcs = true
+	w.mu.Unlock()
+	start := time.Now()
+	waitFor(t, "pid 12 resumed", func() bool { return w.signals() == "stop:12 cont:12" })
+	if waited := time.Since(start); waited < 900*time.Millisecond {
+		t.Errorf("resumed after %v, want at least max_queue_wait (1s)", waited)
+	}
+	var events []domain.Event
+	transport.Call(context.Background(), cfg.SocketPath, "events", nil, &events)
+	if !slices.ContainsFunc(events, func(e domain.Event) bool {
+		return e.Kind == domain.EventSchedulerDecision && e.Attrs["reason"] == ReasonProcessesUnavailable
+	}) {
+		t.Errorf("no scheduler_decision with reason %s", ReasonProcessesUnavailable)
 	}
 }
 

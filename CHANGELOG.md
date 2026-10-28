@@ -17,6 +17,9 @@ The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md
 ### Changed
 - The `reason` attr of every `control_refused` event is now a stable code. Refusals throtd decides itself used to put a sentence there; they now use `start_mismatch`, `gone`, `peer_mismatch`, `unidentified`, `paused_member`, `needs_force`, `job_control` or `not_stopped` (or the controller's `not_heavy`, `foreign_uid`, `not_paused`). The sentence stays in the event message and the error the client sees.
 
+### Fixed
+- Work the scheduler queued no longer stays stopped while process sampling keeps failing (on macOS, `ps` failing to fork under memory pressure): no scheduler round runs then, so after `max_queue_wait` of failed samples throtd resumes it (reason `processes_unavailable`).
+
 ### Security
 - macOS process names replace control characters with `?`, as on Linux, so a process cannot put terminal escapes into names that `throt doctor`, `throt status` or events print.
 
