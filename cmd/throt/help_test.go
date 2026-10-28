@@ -100,6 +100,22 @@ func TestUsageErrorsAreOneLine(t *testing.T) {
 	}
 }
 
+// TestTopNeedsTerminal checks that top, the default command, refuses
+// without a terminal instead of failing inside the TUI library.
+func TestTopNeedsTerminal(t *testing.T) {
+	for _, args := range [][]string{nil, {"top"}} {
+		var out, errw bytes.Buffer
+		err := run(context.Background(), args, strings.NewReader(""), &out, &errw)
+		var ee exitError
+		if !errors.As(err, &ee) || ee.code != 1 || ee.msg != "" {
+			t.Errorf("%q: err %#v", args, err)
+		}
+		if out.Len() != 0 || errw.String() != "throt top needs a terminal; try 'throt status'\n" {
+			t.Errorf("%q: stdout %q, stderr %q", args, out.String(), errw.String())
+		}
+	}
+}
+
 // TestBadFlagIsNotHelp checks that an unknown flag is still an error: one
 // line naming the flag and -h, exit 2, and nothing printed.
 func TestBadFlagIsNotHelp(t *testing.T) {

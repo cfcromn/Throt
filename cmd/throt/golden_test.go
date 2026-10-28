@@ -166,6 +166,8 @@ func goldenCases() []goldenCase {
 		{name: "doctor -h", args: []string{"doctor", "-h"}},
 		{name: "mcp too many", args: []string{"mcp", "a", "b"}},
 		{name: "top too many", args: []string{"top", "a", "b"}},
+		{name: "top no terminal", args: []string{"top"}},
+		{name: "no command no terminal", args: []string{}},
 		{name: "doctor too many", args: []string{"doctor", "a", "b"}},
 		{name: "mcp initialize", args: []string{"mcp"}, stdin: `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}` + "\n"},
 
@@ -945,6 +947,8 @@ run a read-only MCP server on stdio for coding agents
 `, stderr: ""},
 		"mcp too many": {code: 2, stdout: "", stderr: `throt: unexpected argument "a"; see 'throt mcp -h'
 `},
+		"no command no terminal": {code: 1, stdout: "", stderr: `throt top needs a terminal; try 'throt status'
+`},
 		"pause": {code: 0, stdout: `paused pid 4312
 `, stderr: ""},
 		"pause --force": {code: 2, stdout: "", stderr: `throt: usage: throt pause PID
@@ -1305,6 +1309,8 @@ throt: connect to throtd at $DIR/norun/throt/throtd.sock (is it running?): socke
 
 open the terminal UI (the default with no command)
 `, stderr: ""},
+		"top no terminal": {code: 1, stdout: "", stderr: `throt top needs a terminal; try 'throt status'
+`},
 		"top too many": {code: 2, stdout: "", stderr: `throt: unexpected argument "a"; see 'throt top -h'
 `},
 		"unknown command": {code: 2, stdout: "", stderr: `throt: unknown command "frob"; see 'throt -h'
