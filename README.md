@@ -34,29 +34,34 @@ The result is CPU saturation, memory pressure, swap growth, thermal throttling, 
 6. **Measure outcomes.** Scheduler changes require responsiveness and throughput benchmarks.
 7. **Small daemon, rich clients.** Scheduling lives in `throtd`; TUI/CLI/MCP are clients.
 
-## Planned UX
+## UX
+
+`throt` (or `throt top`) opens a terminal UI that refreshes every second. It only observes: quitting it never affects `throtd`.
 
 ```text
 $ throt
+SYSTEM  pressure HIGH  memory_used>=0.9
+CPU   ██████████████████████████████░░░░░░░░░░   74%  load 1.12/cpu
+MEM   ██████████████████████████████████████░░   95%  30.5 GiB / 32.0 GiB
+SWAP  ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░   35%  1.4 GiB / 4.0 GiB
+▸ AGENTS (3)
+  AGENT                                 PID     CPU        MEM  CHILDREN
+> codex-1                              4120    231%    2.8 GiB         5
+  claude-1                             3988    104%    1.8 GiB         7
+  claude-2                             5310     12%    921 MiB         2
+  HEAVY WORKLOADS (2)
+  OWNER               PID  PROCESS           CLASS               CPU        MEM
+  codex-1            4312  java              build              190%    2.3 GiB
+  claude-1           4471  docker            container-build     60%    420 MiB
+TIMELINE
+  14:02:52  pressure_changed    pressure elevated -> high
+  14:02:13  agent_discovered    agent_discovered codex-1
+  14:02:11  daemon_started      listening on /run/user/501/throt/throtd.sock
 
-SYSTEM
-CPU    ███████████████░░░  74%
-MEM    █████████████████░░  82%
-SWAP   ███░░░░░░░░░░░░░░  1.4 GB
-PRESSURE: HIGH
-
-AGENTS
-AGENT       CPU     MEM      CHILDREN   STATE
-orca-1      4.1%    1.1 GB   7          RUN
-codex-1     7.8%    0.9 GB   5          RUN
-claude-1    2.2%    1.0 GB   4          RUN
-
-HEAVY WORKLOADS
-OWNER       PROCESS          STATE       REASON
-codex-1     gradle test      RUNNING
-orca-1      docker build     RUNNING
-claude-1    npm build        QUEUED      memory pressure
+q quit  tab focus  j/k move  enter details  ? help
 ```
+
+CPU is a percentage of one core, so a process using two cores shows 200%. Keys: `tab` switches between the agents and heavy-workload tables, `j`/`k` or the arrow keys move the selection, `enter` shows details for the selected row, `?` shows help, `q` quits. Metrics the platform cannot provide show as `n/a`, and if `throtd` is not running the TUI says so and reconnects when it starts. Narrow terminals (down to 40×12) drop low-value columns and truncate names.
 
 ## Usage
 
@@ -67,6 +72,7 @@ go install github.com/cfcromn/Throt/cmd/throt@latest
 go install github.com/cfcromn/Throt/cmd/throtd@latest
 
 throtd &        # start the daemon
+throt           # terminal UI (same as `throt top`)
 throt ping      # check that the client can reach it
 throt status    # pressure, host resources, agents, heavy workloads
 throt events    # recent daemon events as JSON lines
