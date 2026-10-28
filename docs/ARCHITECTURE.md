@@ -184,18 +184,20 @@ gh run watch    # then read the job summary, or download the bench-<os> artifact
 
 Outside a container the benchmark runs only with `CI=true`, and sizes the contention to the runner, since there is no CPU limit: the burst launches 4× `runtime.NumCPU()` jobs at once, and the staggered stream launches as many at intervals of 5 s / (2 × CPUs), so its arrival rate asks for about twice the machine. Throt runs the shipped defaults (the `balanced` profile: adaptive, start CPUs/4 but at least 2, ceiling the CPU count; 2 s sampling; 10 s cooldown). On macOS, peak running comes from `ps -o state=,comm=` instead of `/proc`. Each row is still the median of three runs, and the table header gives the OS, kernel, CPU count and limits. `THROT_BENCH_JOBS` and `THROT_BENCH_REPS` shrink a run for a quick check. `THROT_BENCH_DEFAULTS=1` sizes a container the same way, with the shipped defaults; give it a cpuset (`--cpuset-cpus`) so that `NumCPU`, and so the profile, matches its CPUs.
 
-CI results with the shipped defaults ([workflow run 40753939145](https://github.com/cfcromn/Throt/actions/runs/40753939145), GitHub-hosted runners, medians of 3 runs; the earlier [run 40737311908](https://github.com/cfcromn/Throt/actions/runs/40737311908) is in parentheses, before the at-once growth and the early refill described under Scheduler):
+CI results with the shipped defaults ([workflow run 40770079966](https://github.com/cfcromn/Throt/actions/runs/40770079966), GitHub-hosted runners, medians of 3 runs; the CPU rows of the earlier [run 40753939145](https://github.com/cfcromn/Throt/actions/runs/40753939145) were within 1 s of these):
 
 | Runner | Scenario | Baseline makespan | Throt makespan | Probe p95 baseline → Throt |
 |---|---|---|---|---|
-| ubuntu, 2 CPUs (start 2, ceiling 2) | 8 × 5 s at once | 20.7s | 21.6s (24.7s) | 3.0 → 1.1ms |
-| ubuntu | 8 staggered 1.25s | 21.4s | 22.2s (24.3s) | 2.3 → 0.8ms |
-| macOS, 5 CPUs (start 2, ceiling 5) | 20 × 5 s at once | 24.3s | 26.1s (41s) | 1.1 → 2.4ms |
-| macOS | 20 staggered 500ms | 25.2s | 27.2s (41.3s) | 2.0 → 2.8ms |
-| macOS memory | burst, 8 × 3 GiB | 3m1s, 8/8 capped, +5.5 GiB swap | 3m34s (range 1m34s–6m8s), 0 capped, +5.1 GiB swap | 3.2 → 3.5ms |
-| macOS memory | staggered | 3m9s, 8/8 capped, +13 GiB swap | 3m22s (range 1m46s–4m18s), 0 capped, +1.7 GiB swap | 3.4 → 4.8ms |
+| ubuntu, 2 CPUs (start 2, ceiling 2) | 8 × 5 s at once | 20.6s | 21.2s | 3.0 → 1.2ms |
+| ubuntu | 8 staggered 1.25s | 21.3s | 22.9s | 2.2 → 1.0ms |
+| macOS, 5 CPUs (start 2, ceiling 5) | 20 × 5 s at once | 23.6s | 26.2s | 1.1 → 2.8ms |
+| macOS | 20 staggered 500ms | 24.8s | 28s | 2.1 → 3.0ms |
+| macOS memory | burst, 8 × 3 GiB | 3m1s, 8/8 capped, +7.5 GiB swap | 3m15s (range 2m33s–3m34s), 0 capped, +4.2 GiB swap | 3.1 → 8.1ms |
+| macOS memory | staggered | 3m8s, 7/8 capped, +14.8 GiB swap | 33s (range 30s–3m29s), 0 capped, no swap growth | 3.3 → 8.0ms |
+| ubuntu memory, container (3 GiB + 1 GiB swap, 2 CPUs) | burst, 8 × 675 MiB | 3m0s, 5 capped, 3 OOM-killed | 3m25s (range 59s–3m25s), none capped or killed | 0.8 → 0.2ms |
+| ubuntu memory, container | staggered | 28s, 4 OOM-killed | 40s, none killed | 2.0 → 0.4ms |
 
-Memory is where Throt pays off: on the macOS runner the baseline thrashed until every job hit its 3-minute cap, so its makespan is the cap, not completion; with Throt every job finished, though how long it took varied widely between runs (and in run 40737311908 the burst grew no swap at all). CPU-only contention is the cost, now small: Throt adds 4–8% makespan. On Linux it also cuts the probe tail; on macOS the p95 still rises by about 1 ms. That is not the daemon's own CPU (a sample costs 3–4% of one core at 2 s, see Platforms, under 1% of 5 CPUs); it is more likely the wake-up latency of SIGCONT and of cores left idle between handoffs.
+Memory is where Throt pays off. On the macOS runner the baseline thrashed until the jobs hit their 3-minute cap, so its makespan is the cap, not completion; with Throt every job finished, though how long it took varied widely between runs. In the Linux container the baseline lost jobs to the OOM killer in both scenarios (in the burst, the rest hit the cap); with Throt none was killed, at the cost of more wall time in the staggered case. CPU-only contention is the cost, now small: Throt adds 3–13% makespan. On Linux it also cuts the probe tail; on macOS the p95 rises by 1–2 ms with CPU jobs and about 5 ms with memory jobs. That is not the daemon's own CPU (a sample costs 3–4% of one core at 2 s, see Platforms, under 1% of 5 CPUs); it is more likely the wake-up latency of SIGCONT and, with memory jobs, of resuming a job whose pages were swapped out.
 
 The two changes behind the CPU numbers, measured in a container with `THROT_BENCH_DEFAULTS=1` (`docker run --init --cpus 4 --cpuset-cpus 0-3`, same Docker Desktop VM as above, start 2, ceiling 4):
 
@@ -206,14 +208,29 @@ The two changes behind the CPU numbers, measured in a container with `THROT_BENC
 
 Before, the limit went 2 → 3 in the first calm round and 3 → 4 at 28 s; with the at-once growth it reaches the ceiling 4 s after the burst starts. The rest of the gap was the one-sample handoff delay at every exit, which the early refill removes. Probe p95 did not change in either step. The memory scenarios in a container (`--cpus 2 --memory 3g --memory-swap 4g`) never took the at-once path, because the queued jobs' working sets left less headroom than one job.
 
-This keeps the default decision: the scheduler stays off. CPU-only contention on a bare-metal kernel is not a reason to enable it; memory contention is.
+This keeps the default decision: the scheduler stays off.
+
+**When to turn it on:** when agents' builds together can exceed RAM (several Gradle, Docker or test-suite runs on a laptop), enable `enforce` with the default `balanced` profile; that is the case where the baseline swapped until jobs hit their cap or were OOM-killed and Throt finished every job. When contention is CPU-only, leave it off or in `observe`: it costs 3–13% makespan for a lower probe tail on Linux and a slightly higher one on macOS. With long and short jobs mixed, expect long jobs to finish sooner and short ones to wait longer (below). A lone build is unaffected either way.
 
 ### One build, and long jobs mixed with short ones
 
-Two more scenarios use the same helpers, sizing and modes; their CI results will be added here once the `Bench` workflow has run them.
+Two more scenarios use the same helpers, sizing and modes.
 
 - **1 job alone** (in `TestBench`): one agent starts one 5 s build. Nothing contends, so Throt must not intervene: the test fails if an enforce run records any scheduler decision, and its makespan should match the baseline within noise. It measures what enabling the scheduler costs a machine that does not need it.
 - **Long + short** (`TestBenchMixed`): max(1, CPUs/2) long jobs of 30 s of CPU each start at once, and from the same moment the staggered stream of 5 s jobs arrives (its count and interval as in the staggered scenario). It checks starvation and fairness. A short job's *wait* is its turnaround (launch to exit) minus the 5 s it takes alone, so it counts time queued and time sharing a CPU alike; the table reports its p50, p95 and maximum. The *long makespan* runs from the long jobs' launch to the last one's exit. Short jobs starved behind the long ones would show as a wait near 30 s, long jobs starved by the stream as a long makespan well above baseline.
+
+Results from the same run 40770079966:
+
+| Runner | Scenario | Mode | Makespan | Long makespan | Short wait p50 | p95 | Probe p95 |
+|---|---|---|---|---|---|---|---|
+| ubuntu | 1 job alone | baseline / Throt | 5s / 5s | – | – | – | 0.2 / 0.2ms |
+| macOS | 1 job alone | baseline / Throt | 6s / 6.1s | – | – | – | 3.6 / 3.5ms |
+| ubuntu | 1 long + 8 short | baseline | 46.3s | 46.3s | 13s | 13.9s | 2.0ms |
+| ubuntu | 1 long + 8 short | Throt | 37.6s | 33.1s | 16.4s | 24.1s | 1.0ms |
+| macOS | 2 long + 20 short | baseline | 42.4s | 42.4s | 10.7s | 11.5s | 2.1ms |
+| macOS | 2 long + 20 short | Throt | 34.3s | 31.5s | 11.6s | 20s | 3.0ms |
+
+A lone build saw no scheduler decision and the same makespan. Mixed, nothing starved: long jobs finished about 25% sooner, because they no longer share CPUs with the whole stream, and total makespan fell by about 19%; the price is the short jobs' tail, whose p95 wait went from 12–14 s to 20–24 s, still below the 30 s a short job queued behind a long one would show.
 
 ### Memory pressure
 

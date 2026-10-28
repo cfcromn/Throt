@@ -287,6 +287,8 @@ The config file is optional: `~/.config/throt/config.json`, or `$XDG_CONFIG_HOME
 
 `profile` presets the scheduler limits; keys you set explicitly win. A profile never turns the scheduler on.
 
+Turn on `enforce` (with `balanced`) when agents' builds together can run out of memory: in the [benchmarks](docs/ARCHITECTURE.md#benchmarks) that is where it finished every job while the baseline swapped until jobs hit their cap or the OOM killer took them. For CPU-only contention, `observe` is enough; enforcing costs a few percent of build time there.
+
 | Profile | Heavy limit | Adaptive |
 |---|---|---|
 | `performance` | Fixed at CPUs/2 (at least 2). | No |
