@@ -93,6 +93,10 @@ type runner struct {
 	// is nil, or the daemon does not know the method, the runner only asks
 	// for advice through status.
 	acquire func(ctx context.Context) (app.AcquireResult, error)
+	// overdue asks throtd for a lease past the limit when --timeout runs
+	// the command anyway, so the scheduler does not queue it right after;
+	// nil to skip.
+	overdue func(ctx context.Context) (app.AcquireResult, error)
 	// status fetches a daemon snapshot.
 	status func(ctx context.Context) (app.StatusResult, error)
 	// ppid is the parent of this process.
@@ -145,6 +149,13 @@ func (r runner) run(ctx context.Context, o runOptions) error {
 		elapsed := r.now().Sub(start)
 		if o.timeout > 0 && elapsed >= o.timeout {
 			fmt.Fprintf(r.stderr, "throt: still no capacity after %s (%s); running anyway (--timeout)\n", o.timeout, v.Reason)
+			if r.overdue != nil {
+				// Best effort: without the lease the command still runs, and
+				// may be queued.
+				octx, cancel := context.WithTimeout(ctx, runCallTimeout)
+				r.overdue(octx)
+				cancel()
+			}
 			return r.execute(o.argv)
 		}
 		if !waited || r.now().Sub(lastNotice) >= runNoticeInterval {
@@ -335,6 +346,8 @@ func cmdRun(ctx context.Context, e env, args []string) error {
 	// throtd resolves this process's identity and parent itself.
 	self := app.AcquireParams{PID: os.Getpid()}
 	r.acquire = func(ctx context.Context) (app.AcquireResult, error) { return c.Acquire(ctx, self) }
+	overdue := app.AcquireParams{PID: self.PID, Overdue: true}
+	r.overdue = func(ctx context.Context) (app.AcquireResult, error) { return c.Acquire(ctx, overdue) }
 	return r.run(ctx, o)
 }
 

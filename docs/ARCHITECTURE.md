@@ -274,7 +274,7 @@ A request for any other protocol version is rejected with an error naming both v
 | `pause` | `pid`; optional `start` (RFC 3339), refused if the process now has a different start time | `null` | yes |
 | `resume` | `pid`; optional `start`, as for `pause`; optional `force`, to continue a stopped process throtd did not pause that is not an attributed heavy workload | `null` | yes |
 | `reload` | – | `changed`, `requires_restart` (each `"key old -> new"`) | yes |
-| `acquire` | `pid`: the caller's own PID. throtd checks it against the peer PID and resolves the caller's start time and parent from the OS; `start` and `ppid`, sent by earlier clients, are ignored | `granted`, `reason` (`nested` for a caller below a heavy workload or a lease holder, granted without a lease; `too_many_leases` when 256 leases exist), `lease_id`, `verdict` (as `throt_capacity`). Granting records an admission lease, shown in `status` as `scheduler.leases` (`id`, `process`, `agent`, `granted`); a repeated call by a holder returns its lease. Refused when the caller cannot be identified, has no start time, or belongs to another user | yes |
+| `acquire` | `pid`: the caller's own PID; `overdue` (optional): the caller waited its whole `--timeout` and runs anyway, so it is granted a lease even past the limit or out of line, and is not queued after it starts. throtd checks it against the peer PID and resolves the caller's start time and parent from the OS; `start` and `ppid`, sent by earlier clients, are ignored | `granted`, `reason` (`nested` for a caller below a heavy workload or a lease holder, granted without a lease; `too_many_leases` when 256 leases exist; `overdue` for a caller that sent `overdue`, granted a lease past the limit), `lease_id`, `verdict` (as `throt_capacity`). Granting records an admission lease, shown in `status` as `scheduler.leases` (`id`, `process`, `agent`, `granted`); a repeated call by a holder returns its lease. Refused when the caller cannot be identified, has no start time, or belongs to another user | yes |
 
 Privileged methods also require the caller's uid (from peer credentials) to match the daemon's. For them the server also reads the caller's PID from the kernel (`SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS) and `acquire` refuses a `pid` other than the caller's own, so a client cannot reserve a slot for another process. Where no PID is available (other platforms, or a peer in another PID namespace, which Linux reports as 0) that check is skipped and the client-sent `pid` is resolved instead, which must name a live process of the daemon's user; the uid check still applies. Refused and failed calls return `error`, a sentence. The table lists every field; `internal/app/compat_test.go` pins them. `throt mcp` exposes the read-only methods to coding agents.
 
@@ -335,7 +335,7 @@ From 1.0.0 (and its release candidates), the stable surface is everything below.
 | `lease_granted` | `lease_id`, `pid`, `agent` (empty when unattributed) |
 | `lease_released` | `lease_id`, `pid`, `agent`, `reason`: `exited`, `became_workload`, `expired` |
 
-**Reason codes.** The `acquire` result's `reason` is a sentence except `nested` and `too_many_leases`.
+**Reason codes.** The `acquire` result's `reason` is a sentence except `nested`, `overdue` and `too_many_leases`.
 
 | Decision reason | Meaning |
 |---|---|

@@ -28,6 +28,9 @@ type AcquireParams struct {
 	// must match; elsewhere (a peer in another PID namespace) it is the
 	// process whose identity the daemon resolves.
 	PID int `json:"pid"`
+	// Overdue asks for a lease even past the limit: the caller waited its
+	// whole timeout and runs anyway, and must not be queued after it starts.
+	Overdue bool `json:"overdue,omitempty"`
 }
 
 // AcquireResult is returned by the "acquire" method.
@@ -42,6 +45,10 @@ type AcquireResult struct {
 // ReasonNested grants a caller below a running heavy workload or a lease
 // holder without reserving a slot: its work is part of one already counted.
 const ReasonNested = "nested"
+
+// ReasonOverdue grants a lease past the limit to a caller that waited its
+// whole timeout and runs anyway.
+const ReasonOverdue = "overdue"
 
 // ProcessIdentifier looks up one live process with exactly the start time,
 // uid and parent the daemon's process sampler reports. The platform process
@@ -75,7 +82,7 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 	chain := d.ancestry(ctx, self.PPID)
 	paused := d.ctl.Paused()
 	now := time.Now()
-	res, l := d.admit(self.Key(), chain, paused, now)
+	res, l := d.admit(self.Key(), chain, paused, now, p.Overdue)
 	if l.ID != "" {
 		d.emit(domain.EventLeaseGranted, fmt.Sprintf("lease %s granted to pid %d (%s): %s", l.ID, p.PID, ownerLabel(l.Agent), res.Verdict.Reason),
 			map[string]string{"lease_id": l.ID, "pid": strconv.Itoa(p.PID), "agent": l.Agent})
@@ -110,7 +117,7 @@ func (d *Daemon) acquireCaller(ctx context.Context, pid int) (domain.ProcessSamp
 // admit decides an acquire by key, whose ancestors are chain, and grants
 // the lease it returns. The check and the grant happen under d.mu. A zero
 // Lease means none was granted now, also when key already holds one.
-func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.PausedWorkload, now time.Time) (AcquireResult, Lease) {
+func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.PausedWorkload, now time.Time, overdue bool) (AcquireResult, Lease) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if l, ok := d.leases.find(key); ok {
@@ -127,6 +134,9 @@ func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.Paus
 		res.Granted, res.Reason = true, ReasonNested
 	case len(d.leases.leases) >= maxLeases:
 		res.Reason = ReasonTooManyLeases
+	case overdue:
+		l = d.leases.grant(key, agent, now)
+		res.Granted, res.LeaseID, res.Reason = true, l.ID, ReasonOverdue
 	case !v.OKToStart:
 	case st.Scheduler.Mode != scheduler.ModeOff && !d.firstInLine(key, agent, st, now):
 		// A slot is free, but older work waits for it.

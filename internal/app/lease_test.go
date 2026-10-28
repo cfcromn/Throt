@@ -420,3 +420,22 @@ func TestAcquireBoundsIdentify(t *testing.T) {
 		t.Fatalf("Identify without a per-call deadline for pids %v", ident.unbounded)
 	}
 }
+
+// TestAcquireOverdue checks that a caller that waited its whole timeout
+// gets a lease past the limit, so its command is admitted when it appears
+// instead of queued right after it starts.
+func TestAcquireOverdue(t *testing.T) {
+	running := process.WorkloadView{Key: domain.ProcessKey{PID: 50}, Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	d, ident := leaseDaemon(t, oneSlot(1, running))
+	ident.procs[100] = child(10)
+	if r, _ := acquireAs(t, d, context.Background(), AcquireParams{PID: 100}); r.Granted {
+		t.Fatalf("acquire with the only slot taken granted: %+v", r)
+	}
+	r, _ := acquireAs(t, d, context.Background(), AcquireParams{PID: 100, Overdue: true})
+	if !r.Granted || r.Reason != ReasonOverdue || r.LeaseID == "" {
+		t.Fatalf("overdue acquire = %+v, want a lease with reason %s", r, ReasonOverdue)
+	}
+	if n := len(eventsOf(d, domain.EventLeaseGranted)); n != 1 {
+		t.Fatalf("%d lease_granted events, want 1", n)
+	}
+}

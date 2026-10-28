@@ -29,6 +29,7 @@ var protocolWant = map[string]struct {
 }{
 	"acquire": {
 		params: []string{
+			"overdue",
 			"pid",
 		},
 		result: []string{

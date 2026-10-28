@@ -233,15 +233,23 @@ func TestRunLease(t *testing.T) {
 				f.replies = []statusReply{{err: errors.New("status must not be called")}}
 			}
 			r := f.runner()
-			acquires := 0
+			acquires, overdue := 0, 0
 			r.acquire = func(context.Context) (app.AcquireResult, error) {
 				a := tt.acquires[min(acquires, len(tt.acquires)-1)]
 				acquires++
 				return a.res, a.err
 			}
+			r.overdue = func(context.Context) (app.AcquireResult, error) {
+				overdue++
+				return app.AcquireResult{Granted: true, Reason: app.ReasonOverdue}, nil
+			}
 			tt.opts.argv = argv
 			if err := r.run(context.Background(), tt.opts); err != nil {
 				t.Fatalf("run: %v", err)
+			}
+			// Only a timed-out wait asks for the over-limit lease.
+			if want := strings.HasPrefix(tt.name, "timeout"); (overdue == 1) != want || overdue > 1 {
+				t.Errorf("overdue calls = %d, want %v", overdue, want)
 			}
 			if f.execPath != "/usr/bin/make" || !reflect.DeepEqual(f.execArgv, argv) {
 				t.Errorf("exec %q %q", f.execPath, f.execArgv)
