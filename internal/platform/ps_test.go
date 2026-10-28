@@ -144,19 +144,24 @@ func TestParsePSReadError(t *testing.T) {
 
 func TestParsePSIdentify(t *testing.T) {
 	loc := time.FixedZone("test", 9*3600)
-	p, err := parsePSIdentify([]byte("  501   77 Sun Oct  4 11:06:02 2026    \n"), loc)
+	p, err := parsePSIdentify([]byte("  501   77 T    Sun Oct  4 11:06:02 2026    \n"), loc)
 	want := time.Date(2026, 10, 4, 11, 6, 2, 0, loc)
-	if err != nil || p.UID != 501 || p.PPID != 77 || !p.Start.Equal(want) {
-		t.Fatalf("got %+v err %v, want uid 501 ppid 77 start %v", p, err, want)
+	if err != nil || p.UID != 501 || p.PPID != 77 || !p.Start.Equal(want) || p.State != domain.StateStopped {
+		t.Fatalf("got %+v err %v, want uid 501 ppid 77 state stopped start %v", p, err, want)
+	}
+	if p, err := parsePSIdentify([]byte("501 77 Ss+ Sun Oct 4 11:06:02 2026"), loc); err != nil || p.State != domain.StateSleeping {
+		t.Fatalf("got %+v err %v, want state sleeping", p, err)
 	}
 	for _, bad := range []string{
 		"",
 		"501 77",
+		"501 77 Sun Oct 4 11:06:02 2026",
 		"501 Sun Oct 4 11:06:02 2026",
-		"501 -1 Sun Oct 4 11:06:02 2026",
-		"501 x Sun Oct 4 11:06:02 2026",
-		"501 77 Sun Oct 4 11:06:02 2026 extra",
-		"501 77 Sun Oct 4 11:06:02 2026\n502 1 Sun Oct 4 11:06:02 2026",
+		"501 -1 S Sun Oct 4 11:06:02 2026",
+		"501 x S Sun Oct 4 11:06:02 2026",
+		"501 77 s Sun Oct 4 11:06:02 2026",
+		"501 77 S Sun Oct 4 11:06:02 2026 extra",
+		"501 77 S Sun Oct 4 11:06:02 2026\n502 1 S Sun Oct 4 11:06:02 2026",
 	} {
 		if _, err := parsePSIdentify([]byte(bad), loc); err == nil {
 			t.Errorf("parsePSIdentify(%q) succeeded", bad)

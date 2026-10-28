@@ -80,6 +80,33 @@ func (e *RefusedError) Error() string { return "control: refused: " + e.Reason }
 
 func refuse(reason string) error { return &RefusedError{Reason: reason} }
 
+// Describe returns a short sentence for a refusal reason code, for people
+// to read; logs and the protocol keep the code. An unknown code is
+// returned as is.
+func Describe(reason string) string {
+	switch reason {
+	case ReasonUnattributed:
+		return "no agent owns it, so throtd does not control it"
+	case ReasonNotHeavy:
+		return "it is not a heavy workload"
+	case ReasonNoMembers:
+		return "it has no processes left"
+	case ReasonTooManyMembers:
+		return fmt.Sprintf("it has more than %d processes", MaxMembers)
+	case ReasonInvalidTarget:
+		return "its process list is invalid"
+	case ReasonForeignUID:
+		return "some of its processes belong to another user"
+	case ReasonAlreadyPaused:
+		return "it is already paused, alone or as part of another workload"
+	case ReasonLimitReached:
+		return fmt.Sprintf("%d workloads are already paused, the most throtd holds", MaxPaused)
+	case ReasonNotPaused:
+		return "it is not paused"
+	}
+	return reason
+}
+
 // Signaler is the platform's process-signaling capability. Stop and Continue
 // verify that key still names the same process (PID and start time) owned
 // by uid and signal it in one operation; they return an error wrapping

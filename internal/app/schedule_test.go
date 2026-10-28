@@ -68,6 +68,13 @@ func (w *world) signal(op string, k domain.ProcessKey, uid uint32) error {
 		return domain.ErrProcessGone
 	}
 	w.sent = append(w.sent, fmt.Sprintf("%s:%d", op, k.PID))
+	switch {
+	case op == "stop":
+		p.State = domain.StateStopped
+	case p.State == domain.StateStopped:
+		p.State = domain.StateRunning
+	}
+	w.procs[k.PID] = p
 	return nil
 }
 

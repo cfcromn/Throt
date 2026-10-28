@@ -397,3 +397,71 @@ func TestTrack(t *testing.T) {
 		}
 	}
 }
+
+// TestControlEventsAndRefusalWords checks that control_paused and
+// control_resumed carry an action attr, and that a controller refusal
+// reads as a sentence while the event keeps the stable reason code.
+func TestControlEventsAndRefusalWords(t *testing.T) {
+	sig := &fakeSignaler{}
+	d := controlDaemon(t, t.TempDir(), sig)
+	d.status.Heavy = []process.WorkloadView{{Key: goTarget().Key, Name: "go", Owner: "claude-1"}}
+	d.graph.Update(time.Now(), mustSample(t))
+	raw, _ := json.Marshal(ControlParams{PID: 11})
+	ctx := context.Background()
+	if _, err := d.pause(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	if ev := eventsOf(d, domain.EventControlPaused); len(ev) != 1 || ev[0].Attrs["action"] != "pause" {
+		t.Errorf("control_paused events = %+v, want one with action pause", ev)
+	}
+	_, err := d.pause(ctx, raw)
+	want := "pause refused: it is already paused, alone or as part of another workload"
+	if err == nil || err.Error() != want {
+		t.Fatalf("second pause: err = %v, want %q", err, want)
+	}
+	ev := eventsOf(d, domain.EventControlRefused)
+	if len(ev) != 1 || ev[0].Attrs["reason"] != control.ReasonAlreadyPaused || !strings.Contains(ev[0].Message, "already paused, alone") {
+		t.Errorf("control_refused events = %+v, want reason code %s and the sentence", ev, control.ReasonAlreadyPaused)
+	}
+	if _, err := d.resume(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	if ev := eventsOf(d, domain.EventControlResumed); len(ev) != 1 || ev[0].Attrs["action"] != "resume" {
+		t.Errorf("control_resumed events = %+v, want one with action resume", ev)
+	}
+}
+
+// TestResumeOrphanTwice checks that resuming an orphan again before the
+// next sample, while the snapshot still shows it stopped, is refused from
+// the process's live state instead of reported as another resume.
+func TestResumeOrphanTwice(t *testing.T) {
+	uid := uint32(os.Getuid())
+	w := newWorld(domain.ProcessSample{PID: 30, PPID: 1, Name: "make", State: domain.StateStopped})
+	d := controlDaemon(t, t.TempDir(), w)
+	d.stopped = []process.StoppedView{{
+		Key: domain.ProcessKey{PID: 30, Start: time.Unix(30, 0)}, UID: uid, Name: "make", Class: domain.ClassBuild,
+	}}
+	raw, _ := json.Marshal(ControlParams{PID: 30, Force: true})
+	ctx := context.Background()
+	if _, err := d.resume(ctx, raw); err != nil {
+		t.Fatal(err)
+	}
+	_, err := d.resume(ctx, raw)
+	if err == nil || !strings.Contains(err.Error(), "resume refused: not stopped") {
+		t.Fatalf("second resume: err = %v, want a not-stopped refusal", err)
+	}
+	if got := w.signals(); got != "cont:30" {
+		t.Errorf("signals = %q, want one cont:30", got)
+	}
+	if ev := eventsOf(d, domain.EventControlResumed); len(ev) != 1 || ev[0].Attrs["action"] != "resume" {
+		t.Errorf("control_resumed events = %+v, want one with action resume", ev)
+	}
+	// A process gone since the sample is refused too, and not signaled.
+	w.exit(30)
+	if _, err := d.resume(ctx, raw); err == nil || !strings.Contains(err.Error(), "gone") {
+		t.Fatalf("resume of an exited orphan: err = %v", err)
+	}
+	if got := w.signals(); got != "cont:30" {
+		t.Errorf("signals = %q, want one cont:30", got)
+	}
+}

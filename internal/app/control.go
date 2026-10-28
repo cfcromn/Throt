@@ -49,7 +49,7 @@ func (d *Daemon) pause(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, d.controlError("pause", pid, err)
 	}
 	d.emit(domain.EventControlPaused, "paused "+target.Name+" ("+target.Owner+")",
-		map[string]string{"pid": strconv.Itoa(pid), "name": target.Name, "owner": target.Owner})
+		map[string]string{"action": "pause", "pid": strconv.Itoa(pid), "name": target.Name, "owner": target.Owner})
 	return nil, nil
 }
 
@@ -75,7 +75,7 @@ func (d *Daemon) resume(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := d.ctl.Resume(ctx, key); err != nil {
 		return nil, d.controlError("resume", pid, err)
 	}
-	d.emit(domain.EventControlResumed, "resumed pid "+strconv.Itoa(pid), map[string]string{"pid": strconv.Itoa(pid)})
+	d.emit(domain.EventControlResumed, "resumed pid "+strconv.Itoa(pid), map[string]string{"action": "resume", "pid": strconv.Itoa(pid)})
 	return nil, nil
 }
 
@@ -109,10 +109,16 @@ func (d *Daemon) heavyKey(pid int) (domain.ProcessKey, bool) {
 // refused emits a control_refused event for action on pid and returns the
 // error the client sees.
 func (d *Daemon) refused(action string, pid int, reason string) error {
+	return d.refusedCode(action, pid, reason, reason)
+}
+
+// refusedCode is refused with a reason code for the event's reason attr
+// and a sentence for people.
+func (d *Daemon) refusedCode(action string, pid int, code, sentence string) error {
 	p := strconv.Itoa(pid)
-	d.emit(domain.EventControlRefused, action+" pid "+p+" refused: "+reason,
-		map[string]string{"action": action, "pid": p, "reason": reason})
-	return fmt.Errorf("%s refused: %s", action, reason)
+	d.emit(domain.EventControlRefused, action+" pid "+p+" refused: "+sentence,
+		map[string]string{"action": action, "pid": p, "reason": code})
+	return fmt.Errorf("%s refused: %s", action, sentence)
 }
 
 // controlError reports a failed action on pid: a refusal by the controller
@@ -120,7 +126,7 @@ func (d *Daemon) refused(action string, pid int, reason string) error {
 func (d *Daemon) controlError(action string, pid int, err error) error {
 	var r *control.RefusedError
 	if errors.As(err, &r) {
-		return d.refused(action, pid, r.Reason)
+		return d.refusedCode(action, pid, r.Reason, control.Describe(r.Reason))
 	}
 	p := strconv.Itoa(pid)
 	d.emit(domain.EventControlFailed, action+" pid "+p+" failed: "+err.Error(),

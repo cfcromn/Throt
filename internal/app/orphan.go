@@ -49,6 +49,11 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 		return d.refused("resume", pid, reason)
 	}
 
+	// The snapshot can be up to a sample old: an orphan resumed since then
+	// must not be reported as resumed again.
+	if reason := d.notStopped(ctx, v.Key); reason != "" {
+		return d.refused("resume", pid, reason)
+	}
 	targets := []domain.ProcessKey{v.Key}
 	if leftPaused {
 		targets = d.orphanMembers(v, stopped, recorded)
@@ -60,7 +65,7 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 	if resumed == 0 {
 		return d.refused("resume", pid, "the process is gone")
 	}
-	attrs := map[string]string{"pid": strconv.Itoa(pid), "name": v.Name, "orphan": "true", "processes": strconv.Itoa(resumed)}
+	attrs := map[string]string{"action": "resume", "pid": strconv.Itoa(pid), "name": v.Name, "orphan": "true", "processes": strconv.Itoa(resumed)}
 	if v.Owner != "" {
 		attrs["owner"] = v.Owner
 	}
@@ -69,6 +74,26 @@ func (d *Daemon) resumeOrphan(ctx context.Context, params ControlParams) error {
 	}
 	d.emit(domain.EventControlResumed, "resumed stopped pid "+strconv.Itoa(pid)+" ("+v.Name+") that throtd did not pause", attrs)
 	return nil
+}
+
+// notStopped checks key's live state with the OS and returns why it cannot
+// be resumed: it is gone, or it is not stopped. It returns "" when it is
+// stopped, or when its state cannot be read (the resume then verifies
+// identity as usual, and continuing a running process is harmless).
+func (d *Daemon) notStopped(ctx context.Context, key domain.ProcessKey) string {
+	if d.ident == nil {
+		return ""
+	}
+	cctx, cancel := context.WithTimeout(ctx, control.CallTimeout)
+	p, err := d.ident.Identify(cctx, key.PID)
+	cancel()
+	switch {
+	case errors.Is(err, domain.ErrProcessGone) || err == nil && !p.Start.Equal(key.Start):
+		return "the process is gone"
+	case err != nil || p.State == "" || p.State == domain.StateStopped:
+		return ""
+	}
+	return "not stopped (it is " + string(p.State) + "); nothing to resume"
 }
 
 // orphanMembers returns the orphans among the members of the workload

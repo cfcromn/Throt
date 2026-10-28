@@ -206,6 +206,10 @@ func TestProcessControllerIdentify(t *testing.T) {
 			if got.PID != p.PID || got.PPID != os.Getppid() || got.PPID != p.PPID || !got.Start.Equal(p.Start) || got.UID != p.UID {
 				t.Fatalf("Identify = %+v, sample = %+v", got, p)
 			}
+			// Resuming an orphan checks the live state; this test runs.
+			if got.State != domain.StateRunning && got.State != domain.StateSleeping {
+				t.Errorf("Identify state = %q, want running or sleeping", got.State)
+			}
 			if _, err := id.Identify(ctx, 1<<30); !errors.Is(err, domain.ErrProcessGone) && err == nil {
 				t.Errorf("Identify(missing) succeeded")
 			}
