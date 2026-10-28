@@ -51,12 +51,16 @@ const (
 	ReasonAlreadyPaused  = "already_paused"
 	ReasonLimitReached   = "limit_reached"
 	ReasonNotPaused      = "not_paused"
+	// ReasonAlreadyStopped refuses a workload whose top process is already
+	// stopped by someone else (job control, a debugger): Throt could not
+	// later tell its own stop from theirs.
+	ReasonAlreadyStopped = "already_stopped"
 )
 
 // Reasons lists every refusal reason code.
 var Reasons = []string{
 	ReasonUnattributed, ReasonNotHeavy, ReasonNoMembers, ReasonTooManyMembers, ReasonInvalidTarget,
-	ReasonForeignUID, ReasonAlreadyPaused, ReasonLimitReached, ReasonNotPaused,
+	ReasonForeignUID, ReasonAlreadyPaused, ReasonLimitReached, ReasonNotPaused, ReasonAlreadyStopped,
 }
 
 // Record states.
@@ -264,12 +268,19 @@ func (c *Controller) PauseAs(ctx context.Context, t process.WorkloadTarget, by s
 	if err := c.eligible(t); err != nil {
 		return err
 	}
-	if err := c.liveOwners(ctx, t); err != nil {
+	held, err := c.liveOwners(ctx, t)
+	if err != nil {
 		return err
 	}
+	if held[t.Key] {
+		return refuse(ReasonAlreadyStopped)
+	}
+	// A member someone else stopped is left out: Throt neither stops it nor
+	// records it, so it never continues a process it did not stop.
+	members := slices.DeleteFunc(slices.Clone(t.Members), func(m process.Member) bool { return held[m.Key] })
 
 	rec := PausedWorkload{Key: t.Key, Name: t.Name, Owner: t.Owner, Since: c.now(), State: StatePausing, By: by}
-	for _, m := range t.Members {
+	for _, m := range members {
 		rec.Members = append(rec.Members, m.Key)
 	}
 	c.paused[t.Key] = rec
@@ -295,7 +306,7 @@ func (c *Controller) PauseAs(ctx context.Context, t process.WorkloadTarget, by s
 		return fmt.Errorf("control: pause of %s failed and rollback was incomplete (%d processes left to resume): %w",
 			keyString(t.Key), len(left), errors.Join(append([]error{cause}, errs...)...))
 	}
-	for _, m := range t.Members {
+	for _, m := range members {
 		if err := ctx.Err(); err != nil {
 			return fail(err)
 		}
@@ -365,11 +376,12 @@ func (c *Controller) eligible(t process.WorkloadTarget) error {
 // a sample's uid can be stale (a process that called setuid keeps its PID
 // and start time), and a member refused by Stop mid-pause would stop and
 // roll back the rest every round. A member that is gone or whose PID was
-// reused is left for Stop to skip. A failed lookup refuses to pause.
-func (c *Controller) liveOwners(ctx context.Context, t process.WorkloadTarget) error {
+// reused is left for Stop to skip. A failed lookup refuses to pause. It
+// returns the members that are already stopped, by someone else.
+func (c *Controller) liveOwners(ctx context.Context, t process.WorkloadTarget) (held map[domain.ProcessKey]bool, err error) {
 	for _, m := range t.Members {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("control: pause of %s: %w", keyString(t.Key), err)
+			return nil, fmt.Errorf("control: pause of %s: %w", keyString(t.Key), err)
 		}
 		var p domain.ProcessSample
 		err := c.call(ctx, func(ctx context.Context) (err error) {
@@ -380,14 +392,19 @@ func (c *Controller) liveOwners(ctx context.Context, t process.WorkloadTarget) e
 		case errors.Is(err, domain.ErrProcessGone):
 			continue
 		case err != nil:
-			return fmt.Errorf("control: pause of %s: identify %s: %w", keyString(t.Key), keyString(m.Key), err)
+			return nil, fmt.Errorf("control: pause of %s: identify %s: %w", keyString(t.Key), keyString(m.Key), err)
 		case !p.Start.Equal(m.Key.Start):
 			continue
 		case p.UID != c.uid:
-			return refuse(ReasonForeignUID)
+			return nil, refuse(ReasonForeignUID)
+		case p.State == domain.StateStopped:
+			if held == nil {
+				held = map[domain.ProcessKey]bool{}
+			}
+			held[m.Key] = true
 		}
 	}
-	return nil
+	return held, nil
 }
 
 // validPID rejects PIDs that kill(2) treats specially (0 and negatives

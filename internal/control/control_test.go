@@ -43,6 +43,8 @@ type fakeSig struct {
 	// identErr scripts Identify failures; idents counts Identify calls.
 	identErr map[int]error
 	idents   int
+	// stopped marks processes Identify reports as already stopped.
+	stopped map[int]bool
 	// onCall runs before each Stop or Continue, to script races.
 	onCall func(op string, pid int)
 	// calls records every Stop and Continue, e.g. "stop 10" or "cont 11",
@@ -108,7 +110,11 @@ func (f *fakeSig) Identify(_ context.Context, pid int) (domain.ProcessSample, er
 	if !ok {
 		return domain.ProcessSample{}, fmt.Errorf("pid %d: %w", pid, domain.ErrProcessGone)
 	}
-	return domain.ProcessSample{PID: pid, Start: p.start, UID: p.uid}, nil
+	st := domain.StateRunning
+	if f.stopped[pid] {
+		st = domain.StateStopped
+	}
+	return domain.ProcessSample{PID: pid, Start: p.start, UID: p.uid, State: st}, nil
 }
 
 // chownAtFirstSignal gives pid to uid just before the first Stop or
@@ -289,6 +295,38 @@ func TestPauseLiveIdentity(t *testing.T) {
 	}
 	if sig.idents != 4 {
 		t.Errorf("Identify calls = %d, want one per member", sig.idents)
+	}
+}
+
+// TestPauseLeavesStoppedMembers checks that a member someone else already
+// stopped (a Ctrl-Z'd child) is neither stopped nor recorded, so the
+// resume never continues it, and that a workload whose top is already
+// stopped is refused without a signal.
+func TestPauseLeavesStoppedMembers(t *testing.T) {
+	sig := newSig(10, 11, 12)
+	sig.stopped = map[int]bool{11: true}
+	c := New(sig, me, clock, nil)
+	if err := c.Pause(context.Background(), target(10, 11, 12)); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Paused()[0].Members; !reflect.DeepEqual(got, keys(10, 12)) {
+		t.Errorf("members = %v, want %v", got, keys(10, 12))
+	}
+	if err := c.Resume(context.Background(), key(10)); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"stop 10", "stop 12", "cont 12", "cont 10"}; !reflect.DeepEqual(sig.log(), want) {
+		t.Errorf("calls = %v, want %v (never pid 11)", sig.log(), want)
+	}
+
+	sig = newSig(10, 11)
+	sig.stopped = map[int]bool{10: true}
+	c = New(sig, me, clock, nil)
+	if r := reason(c.Pause(context.Background(), target(10, 11))); r != ReasonAlreadyStopped {
+		t.Fatalf("pause of a stopped top: reason %q, want %q", r, ReasonAlreadyStopped)
+	}
+	if len(sig.log()) != 0 || len(c.Paused()) != 0 {
+		t.Errorf("refusal signaled %v / recorded %v", sig.log(), c.Paused())
 	}
 }
 

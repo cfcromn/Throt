@@ -362,6 +362,7 @@ From 1.0.0 (and its release candidates), the stable surface is everything below.
 | `no_members`, `too_many_members`, `invalid_target` | the workload has no processes left, more than 4096 (256 for the scheduler), or an invalid process list |
 | `foreign_uid` | a process belongs to another user |
 | `already_paused`, `limit_reached` | already paused; or 64 workloads are paused, the most throtd holds |
+| `already_stopped` | the workload's top process is already stopped by someone else (job control, a debugger); a stopped member below it is left out of the pause instead, so Throt never continues it |
 | `not_paused` | resume: neither paused nor stopped |
 | `start_mismatch` | the PID now has another start time than the client sent |
 | `gone` | the process exited |

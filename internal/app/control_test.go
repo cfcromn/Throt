@@ -96,9 +96,10 @@ func TestResumeOrphanRefusals(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Running at first: the setup's own pause stops them.
 			w := newWorld(
-				domain.ProcessSample{PID: 30, PPID: 1, Name: "make", State: domain.StateStopped},
-				domain.ProcessSample{PID: 31, PPID: 30, Name: "cc1", State: domain.StateStopped},
+				domain.ProcessSample{PID: 30, PPID: 1, Name: "make"},
+				domain.ProcessSample{PID: 31, PPID: 30, Name: "cc1"},
 			)
 			d := controlDaemon(t, t.TempDir(), w)
 			tc.setup(t, d)
