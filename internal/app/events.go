@@ -43,14 +43,26 @@ func eventLevel(kind domain.EventKind) slog.Level {
 	return slog.LevelInfo
 }
 
-// emitChange emits a process graph change, named after its agent when it
-// has one.
+// emitChange emits a process graph change as a sentence, e.g.
+// "discovered heavy workload make (pid 123)"; the kind is in the event.
 func (d *Daemon) emitChange(c process.Change) {
-	attrs := map[string]string{"pid": strconv.Itoa(c.Process.PID), "name": c.Name}
-	msg := string(c.Kind) + " " + c.Name
+	pid := strconv.Itoa(c.Process.PID)
+	attrs := map[string]string{"pid": pid, "name": c.Name}
 	if c.Agent != "" {
 		attrs["agent"] = c.Agent
-		msg = string(c.Kind) + " " + c.Agent
+	}
+	var msg string
+	switch c.Kind {
+	case domain.EventProcessDiscovered:
+		msg = "discovered heavy workload " + c.Name + " (pid " + pid + ")"
+	case domain.EventProcessLost:
+		msg = "heavy workload " + c.Name + " (pid " + pid + ") exited"
+	case domain.EventAgentDiscovered:
+		msg = "agent " + c.Agent + " started (pid " + pid + ")"
+	case domain.EventAgentLost:
+		msg = "agent " + c.Agent + " exited (pid " + pid + ")"
+	default:
+		msg = string(c.Kind) + " " + c.Name + " (pid " + pid + ")"
 	}
 	d.emit(c.Kind, msg, attrs)
 }
