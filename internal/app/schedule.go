@@ -28,6 +28,8 @@ func newScheduler(c config.Scheduler) *scheduler.Scheduler {
 		ResumeCooldown:  time.Duration(c.ResumeCooldown),
 		PauseOnCritical: c.PauseOnCritical,
 		MaxQueueWait:    time.Duration(c.MaxQueueWait),
+		Adaptive:        c.Adaptive,
+		PerOwnerLimit:   c.PerAgentLimit,
 	})
 }
 
@@ -60,6 +62,10 @@ func (d *Daemon) schedule(parent context.Context, now time.Time, level domain.Pr
 	}
 
 	decisions := d.sched.Decide(scheduler.Input{Now: now, Pressure: level, Heavy: heavy, Paused: ours, Held: held})
+	for _, c := range d.sched.Changes() {
+		d.emit(domain.EventSchedulerLimit, fmt.Sprintf("heavy limit %d -> %d: %s", c.From, c.To, c.Reason),
+			map[string]string{"from": strconv.Itoa(c.From), "to": strconv.Itoa(c.To), "reason": c.Reason})
+	}
 	for _, dec := range decisions {
 		d.emitDecision(dec)
 		if dec.Observed {
@@ -139,5 +145,5 @@ func (d *Daemon) schedulerStatus() SchedulerStatus {
 		}
 	}
 	p := d.sched.Policy()
-	return SchedulerStatus{Mode: p.Mode, HeavyLimit: p.HeavyLimit, Queued: queued}
+	return SchedulerStatus{Mode: p.Mode, HeavyLimit: d.sched.Limit(), Queued: queued}
 }

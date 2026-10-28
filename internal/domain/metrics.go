@@ -10,6 +10,9 @@ const (
 	MetricLoad   Metric = "load"
 	MetricMemory Metric = "memory"
 	MetricSwap   Metric = "swap"
+	// MetricLatency is foreground responsiveness: how late a short timer
+	// fires, which grows when the CPU scheduler is saturated.
+	MetricLatency Metric = "latency"
 )
 
 // HostSample is one observation of host-wide resources. Fields for metrics
@@ -26,6 +29,8 @@ type HostSample struct {
 	MemAvailable uint64 `json:"mem_available"`
 	SwapTotal    uint64 `json:"swap_total"`
 	SwapUsed     uint64 `json:"swap_used"`
+	// Latency is the timer-lateness probe result (see MetricLatency).
+	Latency time.Duration `json:"latency"`
 	// Missing lists metrics the platform could not provide for this sample.
 	Missing []Metric `json:"missing,omitempty"`
 }

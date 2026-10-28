@@ -6,6 +6,12 @@
 // daemon executes them through the controller and reports back which
 // workloads are paused.
 //
+// With Policy.Adaptive the number of heavy slots follows pressure (AIMD):
+// HeavyLimit is the ceiling, and the effective limit grows by one per
+// AdaptInterval under normal pressure and halves under high or critical
+// pressure. Limit changes are not decisions; the daemon drains them with
+// Changes and reports them as events.
+//
 // The package is deterministic: it makes no OS calls, starts no goroutines,
 // and reads time only from Input.Now. A Scheduler is not safe for
 // concurrent use; the daemon calls Decide from one goroutine.
@@ -53,6 +59,12 @@ const (
 	ReasonPressureCritical = "pressure_critical"
 	ReasonSlotAvailable    = "slot_available"
 	ReasonAged             = "aged"
+	ReasonOwnerBudget      = "owner_budget_exhausted"
+	// Limit change reasons; ReasonPressureHigh and ReasonPressureCritical
+	// are also used for decreases.
+	ReasonPressureNormal  = "pressure_normal"
+	ReasonPressureUnknown = "pressure_unknown"
+	ReasonPolicyChanged   = "policy_changed"
 )
 
 // Policy defaults.
@@ -60,7 +72,12 @@ const (
 	DefaultHeavyLimit     = 2
 	DefaultResumeCooldown = 10 * time.Second
 	DefaultMaxQueueWait   = 5 * time.Minute
+	DefaultAdaptInterval  = 30 * time.Second
 )
+
+// MaxLimitChanges bounds the limit changes retained between two calls to
+// Changes; the oldest are dropped first.
+const MaxLimitChanges = 32
 
 // Policy configures the scheduler.
 type Policy struct {
@@ -79,6 +96,18 @@ type Policy struct {
 	// long outranks every other queued workload. Values <= 0 use the
 	// default.
 	MaxQueueWait time.Duration
+	// Adaptive makes HeavyLimit a ceiling: the effective limit starts there
+	// and follows pressure between 1 and HeavyLimit. Lowering it never
+	// preempts; new starts and resumes just wait.
+	Adaptive bool
+	// AdaptInterval is the minimum time between two adaptive limit changes
+	// driven by normal, high or critical pressure. Values <= 0 use the
+	// default.
+	AdaptInterval time.Duration
+	// PerOwnerLimit caps the running heavy workloads of one owner, so one
+	// agent cannot take every slot. 0 means unlimited; negative values are
+	// treated as 0.
+	PerOwnerLimit int
 }
 
 // DefaultPolicy returns the default policy, which is off.
@@ -88,6 +117,7 @@ func DefaultPolicy() Policy {
 		HeavyLimit:     DefaultHeavyLimit,
 		ResumeCooldown: DefaultResumeCooldown,
 		MaxQueueWait:   DefaultMaxQueueWait,
+		AdaptInterval:  DefaultAdaptInterval,
 	}
 }
 
@@ -102,6 +132,10 @@ func (p Policy) normalized() Policy {
 	if p.MaxQueueWait <= 0 {
 		p.MaxQueueWait = DefaultMaxQueueWait
 	}
+	if p.AdaptInterval <= 0 {
+		p.AdaptInterval = DefaultAdaptInterval
+	}
+	p.PerOwnerLimit = max(p.PerOwnerLimit, 0)
 	return p
 }
 
@@ -131,9 +165,19 @@ type Decision struct {
 	// RunningHeavy is the number of running heavy workloads when the
 	// decision was made, including any workload it resumes.
 	RunningHeavy int `json:"running_heavy"`
-	HeavyLimit   int `json:"heavy_limit"`
+	// HeavyLimit is the effective limit, which Adaptive may lower below
+	// Policy.HeavyLimit.
+	HeavyLimit int `json:"heavy_limit"`
 	// Observed is set in observe mode: the caller must not act.
 	Observed bool `json:"observed,omitempty"`
+}
+
+// LimitChange records one change of the effective heavy limit.
+type LimitChange struct {
+	From   int       `json:"from"`
+	To     int       `json:"to"`
+	Reason string    `json:"reason"`
+	At     time.Time `json:"at"`
 }
 
 // entry is what the scheduler remembers about one heavy workload. Entries
@@ -156,11 +200,22 @@ type Scheduler struct {
 	seen      map[domain.ProcessKey]*entry
 	// lastSwitch is when the last resume or preemption was decided.
 	lastSwitch time.Time
+	// limit is the effective heavy limit, in [1, policy.HeavyLimit].
+	limit int
+	// lastAdapt is when the last interval-limited limit change happened;
+	// zero allows one at once.
+	lastAdapt time.Time
+	// lastRound is Input.Now of the latest round, used to timestamp limit
+	// changes made by SetPolicy.
+	lastRound time.Time
+	// changes are limit changes not yet drained by Changes.
+	changes []LimitChange
 }
 
 // New returns a scheduler with policy p.
 func New(p Policy) *Scheduler {
-	return &Scheduler{policy: p.normalized(), seen: map[domain.ProcessKey]*entry{}}
+	p = p.normalized()
+	return &Scheduler{policy: p, seen: map[domain.ProcessKey]*entry{}, limit: p.HeavyLimit}
 }
 
 // Policy returns the effective (normalized) policy.
@@ -169,9 +224,81 @@ func (s *Scheduler) Policy() Policy { return s.policy }
 // SetPolicy replaces the policy. Workloads present at the next round are
 // adopted as pre-existing and never queued; queue state of workloads that
 // are already paused is kept so they are still resumed.
+//
+// If the scheduler was and stays adaptive, the effective limit is kept,
+// clamped to the new ceiling; otherwise it becomes the new HeavyLimit.
 func (s *Scheduler) SetPolicy(p Policy) {
-	s.policy = p.normalized()
+	p = p.normalized()
+	limit := p.HeavyLimit
+	if p.Adaptive && s.policy.Adaptive {
+		limit = min(s.limit, p.HeavyLimit)
+	}
+	s.policy = p
 	s.baselined = false
+	s.lastAdapt = time.Time{}
+	s.setLimit(limit, ReasonPolicyChanged, s.lastRound)
+}
+
+// Limit returns the effective heavy limit: Policy().HeavyLimit unless
+// Adaptive lowered it.
+func (s *Scheduler) Limit() int { return s.limit }
+
+// Changes returns the limit changes since the previous call, oldest first,
+// and forgets them. At most MaxLimitChanges are kept. A change made by
+// SetPolicy is stamped with the time of the latest round.
+func (s *Scheduler) Changes() []LimitChange {
+	out := s.changes
+	s.changes = nil
+	return out
+}
+
+// adapt moves the effective limit for this round's pressure:
+//
+//   - normal: +1, at most once per AdaptInterval, up to HeavyLimit;
+//   - elevated: hold;
+//   - high or critical: halve (floor 1), at most once per AdaptInterval;
+//   - unknown: reset to HeavyLimit at once (fail open).
+func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel) {
+	p := s.policy
+	if !p.Adaptive {
+		return
+	}
+	if !s.lastAdapt.IsZero() && now.Before(s.lastAdapt) {
+		// The clock went backwards; do not let the interval block forever.
+		s.lastAdapt = time.Time{}
+	}
+	due := s.lastAdapt.IsZero() || now.Sub(s.lastAdapt) >= p.AdaptInterval
+	next, reason := s.limit, ""
+	switch pressure {
+	case domain.PressureUnknown:
+		// Degraded metrics must not keep work throttled. The reset is not
+		// rate limited and does not delay the next decrease.
+		s.lastAdapt = time.Time{}
+		s.setLimit(p.HeavyLimit, ReasonPressureUnknown, now)
+		return
+	case domain.PressureNormal:
+		next, reason = min(s.limit+1, p.HeavyLimit), ReasonPressureNormal
+	case domain.PressureHigh:
+		next, reason = max(s.limit/2, 1), ReasonPressureHigh
+	case domain.PressureCritical:
+		next, reason = max(s.limit/2, 1), ReasonPressureCritical
+	}
+	if due && next != s.limit {
+		s.lastAdapt = now
+		s.setLimit(next, reason, now)
+	}
+}
+
+// setLimit changes the effective limit and records the change.
+func (s *Scheduler) setLimit(limit int, reason string, at time.Time) {
+	if limit == s.limit {
+		return
+	}
+	if len(s.changes) == MaxLimitChanges {
+		s.changes = append(s.changes[:0], s.changes[1:]...)
+	}
+	s.changes = append(s.changes, LimitChange{From: s.limit, To: limit, Reason: reason, At: at})
+	s.limit = limit
 }
 
 // cand is one workload in the current round.
@@ -195,6 +322,9 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		// The clock went backwards; do not let the cooldown block forever.
 		s.lastSwitch = time.Time{}
 	}
+	s.lastRound = in.Now
+	s.adapt(in.Now, in.Pressure)
+	limit := s.limit
 
 	paused := keySet(in.Paused)
 	held := keySet(in.Held)
@@ -224,7 +354,7 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		out = append(out, Decision{
 			Action: a, Key: c.v.Key, Name: c.v.Name, Owner: c.v.Owner,
 			Reason: reason, Pressure: in.Pressure,
-			RunningHeavy: running, HeavyLimit: p.HeavyLimit,
+			RunningHeavy: running, HeavyLimit: limit,
 			Observed: p.Mode == ModeObserve,
 		})
 	}
@@ -251,11 +381,15 @@ func (s *Scheduler) Decide(in Input) []Decision {
 			reason = ReasonPressureCritical
 		default:
 			switch {
-			case running >= p.HeavyLimit:
+			case s.atBudget(c, perOwner):
+				reason = ReasonOwnerBudget
+			case running >= limit:
 				reason = ReasonSlotsExhausted
-			case len(queued) > 0:
-				// Earlier workloads are waiting; a newcomer must not
-				// overtake them, or a long queue could starve.
+			case slices.ContainsFunc(queued, func(q *cand) bool { return !s.atBudget(q, perOwner) }):
+				// Earlier workloads that could run are waiting; a newcomer
+				// must not overtake them, or a long queue could starve.
+				// Work held back only by its owner's budget does not block
+				// other owners.
 				reason = ReasonQueueWaiting
 			}
 		}
@@ -355,13 +489,18 @@ func (s *Scheduler) observe(in Input, paused, held map[domain.ProcessKey]struct{
 // the reason.
 func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner map[string]int) (*cand, string) {
 	p := s.policy
-	if len(queued) == 0 {
-		return nil, ""
-	}
-	if !s.cooledDown(in.Now) {
+	if len(queued) == 0 || !s.cooledDown(in.Now) {
 		return nil, ""
 	}
 	aged := func(c *cand) bool { return in.Now.Sub(c.e.queuedSince) >= p.MaxQueueWait }
+	// Skip owners at budget. Under unknown pressure aged work ignores the
+	// budget as it ignores the slot limit, so bad metrics cannot strand it.
+	queued = slices.DeleteFunc(slices.Clone(queued), func(c *cand) bool {
+		return s.atBudget(c, perOwner) && (in.Pressure != domain.PressureUnknown || !aged(c))
+	})
+	if len(queued) == 0 {
+		return nil, ""
+	}
 	best := slices.MinFunc(queued, func(a, b *cand) int {
 		return cmp.Or(
 			-cmpBool(aged(a), aged(b)),
@@ -377,24 +516,31 @@ func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner m
 	}
 	switch in.Pressure {
 	case domain.PressureNormal, domain.PressureElevated:
-		if running < p.HeavyLimit {
+		if running < s.limit {
 			return best, reason
 		}
 	case domain.PressureHigh:
 		// Pausing frees no memory, so high pressure can outlast the queue.
-		// Aged work still gets a free slot, one per cooldown, so nothing
-		// starves.
+		// Aged work still gets a free slot under the configured ceiling (not
+		// the adaptive limit, which halves to 1 here), one per cooldown, so
+		// nothing starves.
 		if running < p.HeavyLimit && aged(best) {
 			return best, reason
 		}
 	case domain.PressureUnknown:
 		// Fail open: resume with a free slot, and resume aged workloads
 		// regardless of slots so nothing waits forever on bad metrics.
-		if running < p.HeavyLimit || aged(best) {
+		if running < s.limit || aged(best) {
 			return best, reason
 		}
 	}
 	return nil, ""
+}
+
+// atBudget reports whether c's owner already runs PerOwnerLimit heavy
+// workloads.
+func (s *Scheduler) atBudget(c *cand, perOwner map[string]int) bool {
+	return s.policy.PerOwnerLimit > 0 && perOwner[c.v.Owner] >= s.policy.PerOwnerLimit
 }
 
 // cooledDown reports whether ResumeCooldown has elapsed since the last
@@ -407,6 +553,9 @@ func (s *Scheduler) reset() {
 	s.baselined = false
 	s.lastSwitch = time.Time{}
 	clear(s.seen)
+	s.limit = s.policy.HeavyLimit
+	s.lastAdapt = time.Time{}
+	s.changes = nil
 }
 
 func keySet(keys []domain.ProcessKey) map[domain.ProcessKey]struct{} {

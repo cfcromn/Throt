@@ -25,12 +25,23 @@ type simScenario struct {
 	pressure func(t int) domain.PressureLevel
 	// wantPreempt requires at least one preemption.
 	wantPreempt bool
+	// noBound skips the makespan bound, for scenarios where pressure
+	// rather than the slot limit sets the makespan.
+	noBound bool
+	// check runs scenario-specific assertions.
+	check func(t *testing.T, r simResult)
 }
 
 type simResult struct {
 	peak, peakControlled       int
 	queued, resumed, preempted int
 	maxWait, makespan, ideal   int
+	// limitMin and limitMax are the range of the effective limit.
+	limitMin, limitMax int
+	limitChanges       int
+	// ownerMaxWait and ownerFinish are per owner: the longest single wait
+	// and when the owner's last job finished, relative to the first arrival.
+	ownerMaxWait, ownerFinish map[string]int
 }
 
 func normalPressure(int) domain.PressureLevel { return domain.PressureNormal }
@@ -59,11 +70,27 @@ func runSim(t *testing.T, sc simScenario) simResult {
 
 	s := New(sc.policy)
 	limit := s.Policy().HeavyLimit
+	budget := s.Policy().PerOwnerLimit
 	cooldown := int(s.Policy().ResumeCooldown / time.Second)
 	maxQueueWait := int(s.Policy().MaxQueueWait / time.Second)
 	lastSwitch, preemptedNow := -1, false
-	var res simResult
+	res := simResult{limitMin: limit, limitMax: limit, ownerMaxWait: map[string]int{}, ownerFinish: map[string]int{}}
 	done := 0
+	// counts returns the running controlled jobs and the running jobs per
+	// owner at tick.
+	counts := func(tick int) (int, map[string]int) {
+		ctl, perOwner := 0, map[string]int{}
+		for i, j := range sc.jobs {
+			if j.arrive <= tick && finish[i] < 0 && !paused[i] {
+				perOwner[j.owner]++
+				if j.owner != "" && !j.pre {
+					ctl++
+				}
+			}
+		}
+		return ctl, perOwner
+	}
+	prevCtl, prevOwner := 0, map[string]int{}
 	tick := 0
 	for ; done < n; tick++ {
 		if tick > maxTicks {
@@ -80,7 +107,19 @@ func runSim(t *testing.T, sc simScenario) simResult {
 			}
 		}
 		preemptedNow = false
-		for _, d := range s.Decide(in) {
+		decisions := s.Decide(in)
+		lim := s.Limit()
+		if lim < 1 || lim > limit {
+			t.Fatalf("%s t=%d: effective limit %d outside [1, %d]", sc.name, tick, lim, limit)
+		}
+		res.limitMin, res.limitMax = min(res.limitMin, lim), max(res.limitMax, lim)
+		res.limitChanges += len(s.Changes())
+		for _, d := range decisions {
+			if d.HeavyLimit != lim {
+				t.Fatalf("%s t=%d: decision limit %d, effective %d", sc.name, tick, d.HeavyLimit, lim)
+			}
+		}
+		for _, d := range decisions {
 			if d.Action != ActionQueue {
 				// Resumes and preemptions are at least one cooldown apart.
 				if lastSwitch >= 0 && tick-lastSwitch < cooldown {
@@ -116,6 +155,7 @@ func runSim(t *testing.T, sc simScenario) simResult {
 				res.resumed++
 				w := tick - waitStart[i]
 				res.maxWait = max(res.maxWait, w)
+				res.ownerMaxWait[j.owner] = max(res.ownerMaxWait[j.owner], w)
 				if sc.pressure(waitStart[i]) == domain.PressureNormal && pressure == domain.PressureNormal &&
 					w > maxQueueWait+cooldown {
 					t.Fatalf("%s: job %d waited %ds under normal pressure, bound %ds", sc.name, i, w, maxQueueWait+cooldown)
@@ -144,6 +184,17 @@ func runSim(t *testing.T, sc simScenario) simResult {
 		}
 		res.peak = max(res.peak, running)
 		res.peakControlled = max(res.peakControlled, running-exempt)
+		// A lowered limit never preempts, but nothing new may start while
+		// the controlled jobs exceed it, nor beyond an owner's budget.
+		ctl, perOwner := counts(tick)
+		if ctl > prevCtl && ctl > lim {
+			t.Fatalf("%s t=%d: started a job with %d controlled running over effective limit %d", sc.name, tick, ctl, lim)
+		}
+		for o, n := range perOwner {
+			if budget > 0 && o != "" && n > prevOwner[o] && n > budget {
+				t.Fatalf("%s t=%d: owner %s started a job with %d running over budget %d", sc.name, tick, o, n, budget)
+			}
+		}
 		for i, j := range sc.jobs {
 			if j.arrive <= tick && finish[i] < 0 && !paused[i] {
 				remaining[i]--
@@ -153,17 +204,32 @@ func runSim(t *testing.T, sc simScenario) simResult {
 				}
 			}
 		}
+		prevCtl, prevOwner = counts(tick)
 	}
 
 	first, work, lastFree := sc.jobs[0].arrive, 0, 0
+	ownerWork := map[string]int{}
 	for i, j := range sc.jobs {
 		first = min(first, j.arrive)
 		work += j.dur
+		ownerWork[j.owner] += j.dur
 		lastFree = max(lastFree, j.arrive+j.dur)
 		res.makespan = max(res.makespan, finish[i])
+		res.ownerFinish[j.owner] = max(res.ownerFinish[j.owner], finish[i])
 	}
 	res.makespan -= first
+	for o := range res.ownerFinish {
+		res.ownerFinish[o] -= first
+	}
 	res.ideal = max(lastFree-first, (work+limit-1)/limit)
+	if budget > 0 {
+		// One owner's work cannot be packed tighter than its budget allows.
+		for o, w := range ownerWork {
+			if o != "" {
+				res.ideal = max(res.ideal, (w+budget-1)/budget)
+			}
+		}
+	}
 	return res
 }
 
@@ -194,6 +260,32 @@ func TestSimulation(t *testing.T) {
 		crit = append(crit, simJob{owner: fmt.Sprintf("agent-%d", i%3), arrive: 1 + 10*i, dur: 60})
 	}
 
+	// Adaptive: pressure turns high while 12 builds overlap, then eases.
+	adaptPolicy := base
+	adaptPolicy.HeavyLimit, adaptPolicy.Adaptive = 4, true
+	var adapt []simJob
+	for i := range 12 {
+		adapt = append(adapt, simJob{owner: fmt.Sprintf("agent-%d", i%4), arrive: 1 + 5*i, dur: 40})
+	}
+	adaptPressure := func(t int) domain.PressureLevel {
+		switch {
+		case t >= 20 && t < 140:
+			return domain.PressureHigh
+		case t >= 140 && t < 170:
+			return domain.PressureElevated
+		}
+		return domain.PressureNormal
+	}
+
+	// Owner budget: agent-a floods 10 builds; agent-b starts 2 later.
+	budgetPolicy := base
+	budgetPolicy.HeavyLimit, budgetPolicy.PerOwnerLimit = 4, 2
+	var flood []simJob
+	for i := range 10 {
+		flood = append(flood, simJob{owner: "agent-a", arrive: 1 + i, dur: 30})
+	}
+	flood = append(flood, simJob{owner: "agent-b", arrive: 15, dur: 30}, simJob{owner: "agent-b", arrive: 16, dur: 30})
+
 	scenarios := []simScenario{
 		{name: "1 agent, 1 build", policy: base, jobs: []simJob{{owner: "agent-0", arrive: 1, dur: 120}}, pressure: normalPressure},
 		{name: "6 agents, 12 overlapping builds", policy: base, jobs: overlap, pressure: normalPressure},
@@ -207,6 +299,27 @@ func TestSimulation(t *testing.T) {
 				return domain.PressureNormal
 			},
 		},
+		{
+			name: "adaptive, sustained high", policy: adaptPolicy, jobs: adapt, pressure: adaptPressure, noBound: true,
+			check: func(t *testing.T, r simResult) {
+				if r.limitMin != 1 || r.limitMax != 4 {
+					t.Errorf("limit range [%d, %d], want [1, 4]: high must drive it down and recovery back up", r.limitMin, r.limitMax)
+				}
+			},
+		},
+		{
+			name: "owner budget, 1 agent floods", policy: budgetPolicy, jobs: flood, pressure: normalPressure,
+			check: func(t *testing.T, r simResult) {
+				// agent-b gets its two slots at once, so it finishes in
+				// about one job duration although agent-a queued first.
+				if w := r.ownerMaxWait["agent-b"]; w > 0 {
+					t.Errorf("agent-b waited %ds", w)
+				}
+				if f := r.ownerFinish["agent-b"]; f > 16+30 {
+					t.Errorf("agent-b finished at %ds, starved by agent-a", f)
+				}
+			},
+		},
 	}
 
 	var tbl strings.Builder
@@ -214,8 +327,18 @@ func TestSimulation(t *testing.T) {
 		"scenario", "jobs", "limit", "peak", "ctl", "queued", "resume", "preempt", "maxwait", "makespan", "ideal")
 	for _, sc := range scenarios {
 		r := runSim(t, sc)
-		fmt.Fprintf(&tbl, "%-32s %4d %5d %4d %4d %6d %6d %7d %6ds %7ds %4ds\n", sc.name, len(sc.jobs),
-			New(sc.policy).Policy().HeavyLimit, r.peak, r.peakControlled, r.queued, r.resumed, r.preempted, r.maxWait, r.makespan, r.ideal)
+		lim := fmt.Sprint(r.limitMax)
+		if r.limitMin != r.limitMax {
+			lim = fmt.Sprintf("%d-%d", r.limitMin, r.limitMax)
+		}
+		fmt.Fprintf(&tbl, "%-32s %4d %5s %4d %4d %6d %6d %7d %6ds %7ds %4ds\n", sc.name, len(sc.jobs),
+			lim, r.peak, r.peakControlled, r.queued, r.resumed, r.preempted, r.maxWait, r.makespan, r.ideal)
+		if !sc.policy.Adaptive && r.limitChanges != 0 {
+			t.Errorf("%s: %d limit changes without Adaptive", sc.name, r.limitChanges)
+		}
+		if sc.check != nil {
+			sc.check(t, r)
+		}
 		if r.resumed != r.queued+r.preempted {
 			t.Errorf("%s: %d resumes for %d pauses", sc.name, r.resumed, r.queued+r.preempted)
 		}
@@ -224,6 +347,9 @@ func TestSimulation(t *testing.T) {
 				t.Errorf("%s: no preemption", sc.name)
 			}
 			continue // pressure, not the slot limit, sets the makespan
+		}
+		if sc.noBound {
+			continue
 		}
 		// Within 15% (plus one cooldown) of a perfect packing at the limit.
 		if bound := r.ideal*115/100 + 10; r.makespan > bound {

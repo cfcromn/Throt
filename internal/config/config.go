@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 )
@@ -21,6 +22,10 @@ type Config struct {
 	SampleInterval Duration `json:"sample_interval"`
 	// EventHistory is how many recent events the daemon retains in memory.
 	EventHistory int `json:"event_history"`
+	// Profile is a preset for the scheduler:
+	// "performance", "balanced" (default), or "cool". Explicit settings
+	// override it.
+	Profile string `json:"profile"`
 	// Scheduler configures automatic heavy-workload scheduling.
 	Scheduler Scheduler `json:"scheduler"`
 }
@@ -40,6 +45,29 @@ type Scheduler struct {
 	// MaxQueueWait is how long a queued workload waits before it outranks
 	// all others.
 	MaxQueueWait Duration `json:"max_queue_wait"`
+	// Adaptive lowers the running limit under pressure and raises it back
+	// (up to HeavyLimit) when the machine is calm.
+	Adaptive bool `json:"adaptive"`
+	// PerAgentLimit caps heavy workloads per agent instance; 0 is no cap.
+	PerAgentLimit int `json:"per_agent_limit"`
+}
+
+// Profile presets. The scheduler mode is never part of a profile: enabling
+// automatic control is always an explicit choice.
+var profiles = map[string]func(*Config){
+	"performance": func(c *Config) {
+		c.Scheduler.HeavyLimit = min(64, max(2, runtime.NumCPU()/2))
+		c.Scheduler.Adaptive = false
+	},
+	"balanced": func(c *Config) {
+		c.Scheduler.HeavyLimit = min(64, max(2, runtime.NumCPU()/4))
+		c.Scheduler.Adaptive = true
+	},
+	"cool": func(c *Config) {
+		c.Scheduler.HeavyLimit = 1
+		c.Scheduler.Adaptive = true
+		c.Scheduler.PauseOnCritical = true
+	},
 }
 
 // Duration is a time.Duration that reads and writes strings like "2s".
@@ -64,7 +92,7 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 
 // Default returns the configuration used when no file exists.
 func Default() Config {
-	return Config{
+	c := Config{
 		SocketPath:     DefaultSocketPath(),
 		SampleInterval: Duration(2 * time.Second),
 		EventHistory:   1000,
@@ -74,7 +102,10 @@ func Default() Config {
 			ResumeCooldown: Duration(10 * time.Second),
 			MaxQueueWait:   Duration(5 * time.Minute),
 		},
+		Profile: "balanced",
 	}
+	profiles[c.Profile](&c)
+	return c
 }
 
 // DefaultPath is $XDG_CONFIG_HOME/throt/config.json, falling back to
@@ -110,6 +141,21 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("read config: %w", err)
 	}
+	// Apply the profile's presets first, then decode the file again over
+	// them so explicit settings win.
+	var head struct {
+		Profile string `json:"profile"`
+	}
+	if err := json.Unmarshal(b, &head); err != nil {
+		return cfg, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if head.Profile != "" {
+		apply, ok := profiles[head.Profile]
+		if !ok {
+			return cfg, fmt.Errorf("config %s: profile must be performance, balanced, or cool, not %q", path, head.Profile)
+		}
+		apply(&cfg)
+	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
@@ -136,6 +182,9 @@ func (c Config) Validate() error {
 	case "off", "observe", "enforce":
 	default:
 		return fmt.Errorf("scheduler.mode must be off, observe, or enforce, not %q", c.Scheduler.Mode)
+	}
+	if c.Scheduler.PerAgentLimit < 0 || c.Scheduler.PerAgentLimit > 64 {
+		return errors.New("scheduler.per_agent_limit must be between 0 and 64")
 	}
 	if c.Scheduler.HeavyLimit < 1 || c.Scheduler.HeavyLimit > 64 {
 		return errors.New("scheduler.heavy_limit must be between 1 and 64")
