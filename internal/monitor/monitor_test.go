@@ -30,12 +30,12 @@ func TestRunStopsOnCancel(t *testing.T) {
 }
 
 func TestProbeLatency(t *testing.T) {
-	if l := ProbeLatency(context.Background(), time.Millisecond); l < 0 || l > time.Second {
-		t.Fatalf("latency = %v", l)
+	if l, ok := ProbeLatency(context.Background(), time.Millisecond); !ok || l < 0 || l > time.Second {
+		t.Fatalf("latency = %v, %v", l, ok)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if l := ProbeLatency(ctx, time.Hour); l != 0 {
-		t.Fatalf("cancelled probe = %v, want 0", l)
+	if l, ok := ProbeLatency(ctx, time.Hour); ok || l != 0 {
+		t.Fatalf("cancelled probe = %v, %v; want 0, false", l, ok)
 	}
 }

@@ -22,7 +22,7 @@ type Config struct {
 	SampleInterval Duration `json:"sample_interval"`
 	// EventHistory is how many recent events the daemon retains in memory.
 	EventHistory int `json:"event_history"`
-	// Profile is a preset for the scheduler and pressure thresholds:
+	// Profile is a preset for the scheduler:
 	// "performance", "balanced" (default), or "cool". Explicit settings
 	// override it.
 	Profile string `json:"profile"`
@@ -56,11 +56,11 @@ type Scheduler struct {
 // automatic control is always an explicit choice.
 var profiles = map[string]func(*Config){
 	"performance": func(c *Config) {
-		c.Scheduler.HeavyLimit = max(2, runtime.NumCPU()/2)
+		c.Scheduler.HeavyLimit = min(64, max(2, runtime.NumCPU()/2))
 		c.Scheduler.Adaptive = false
 	},
 	"balanced": func(c *Config) {
-		c.Scheduler.HeavyLimit = max(2, runtime.NumCPU()/4)
+		c.Scheduler.HeavyLimit = min(64, max(2, runtime.NumCPU()/4))
 		c.Scheduler.Adaptive = true
 	},
 	"cool": func(c *Config) {

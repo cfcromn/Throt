@@ -521,9 +521,10 @@ func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner m
 		}
 	case domain.PressureHigh:
 		// Pausing frees no memory, so high pressure can outlast the queue.
-		// Aged work still gets a free slot, one per cooldown, so nothing
-		// starves.
-		if running < s.limit && aged(best) {
+		// Aged work still gets a free slot under the configured ceiling (not
+		// the adaptive limit, which halves to 1 here), one per cooldown, so
+		// nothing starves.
+		if running < p.HeavyLimit && aged(best) {
 			return best, reason
 		}
 	case domain.PressureUnknown:

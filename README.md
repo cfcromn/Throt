@@ -106,8 +106,8 @@ Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.js
 ```
 
 `profile` presets the scheduler; explicit keys override it.
-- `performance`: limit = CPUs/2, not adaptive.
-- `balanced` (default): limit = CPUs/4, adaptive.
+- `performance`: limit = CPUs/2 (at least 2), not adaptive.
+- `balanced` (default): limit = CPUs/4 (at least 2), adaptive.
 - `cool`: limit 1, adaptive, may pause one workload under critical pressure.
 
 A profile never turns the scheduler on.

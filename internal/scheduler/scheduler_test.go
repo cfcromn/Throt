@@ -521,3 +521,17 @@ func TestAgedResumesUnderHighPressure(t *testing.T) {
 		})
 	}
 }
+
+func TestAgedResumesUnderSustainedHighWithAdaptive(t *testing.T) {
+	p := enforce(2)
+	p.Adaptive = true
+	s := New(p)
+	s.baselined, s.lastSwitch = true, t0
+	s.limit = 1 // halved by sustained high pressure
+	s.seen[key(1)] = &entry{firstSeen: t0}
+	s.seen[key(100)] = &entry{firstSeen: t0, queuedSince: t0}
+	heavy := []process.WorkloadView{wv(1, ""), wv(100, "b")} // an unattributed build is running
+	now := t0.Add(DefaultMaxQueueWait)
+	expect(t, s.Decide(Input{Now: now, Pressure: domain.PressureHigh, Heavy: heavy, Paused: keys(100)}),
+		brief{ActionResume, 100, ReasonAged})
+}

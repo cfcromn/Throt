@@ -176,9 +176,12 @@ func (d *Daemon) tick(parent context.Context) {
 	// Bound each round so a hung sampler (e.g. ps) cannot stall updates.
 	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
 	defer cancel()
-	latency := monitor.ProbeLatency(ctx, latencyProbe)
+	latency, latencyOK := monitor.ProbeLatency(ctx, latencyProbe)
 	host, herr := d.host.SampleHost(ctx)
 	host.Latency = latency
+	if !latencyOK {
+		host.Missing = append(slices.Clone(host.Missing), domain.MetricLatency)
+	}
 	procs, perr := d.procs.SampleProcesses(ctx)
 	if parent.Err() != nil {
 		return // shutting down; partial samples are meaningless
