@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"slices"
@@ -14,10 +15,37 @@ import (
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
+	"github.com/cfcromn/Throt/internal/transport"
 )
 
 // explainEvents is how many events about the workload explain shows.
 const explainEvents = 10
+
+// cmdExplain is 'throt explain PID'.
+func cmdExplain(ctx context.Context, e env, args []string) error {
+	if err := e.atMostOneArg(args); err != nil {
+		return err
+	}
+	cfg, err := e.loadConfig()
+	if err != nil {
+		return err
+	}
+	pid, err := strconv.Atoi(arg(args, 0))
+	if err != nil {
+		return fmt.Errorf("usage: throt explain PID")
+	}
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	var st app.StatusResult
+	if err := transport.Call(ctx, cfg.SocketPath, "status", nil, &st); err != nil {
+		return err
+	}
+	var events []domain.Event
+	if err := transport.Call(ctx, cfg.SocketPath, "events", app.EventsParams{Limit: app.MaxEventsPerCall}, &events); err != nil {
+		return err
+	}
+	return explain(e.stdout, pid, st, events, time.Duration(cfg.Scheduler.ResumeCooldown))
+}
 
 // explain writes why the heavy workload pid is running, paused or queued,
 // using only what the daemon already reports. cooldown is the local

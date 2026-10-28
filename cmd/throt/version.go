@@ -25,6 +25,11 @@ type versionInfo struct {
 	DaemonError string `json:"daemon_error,omitempty"`
 }
 
+// cmdVersion is 'throt version'.
+func cmdVersion(_ context.Context, e env, args []string) error {
+	return runVersion(args, e.cfgPath, e.stdout)
+}
+
 // runVersion prints the client version, or with --json a versionInfo that
 // also asks throtd for its version.
 func runVersion(args []string, cfgPath string, w io.Writer) error {

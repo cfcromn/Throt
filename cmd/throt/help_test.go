@@ -30,8 +30,12 @@ func TestHelpGoesToStdout(t *testing.T) {
 		call func(stdout io.Writer) error
 		want string
 	}{
-		{"stats -h", func(w io.Writer) error { _, err := parseStatsArgs([]string{"-h"}, w); return err }, "usage: throt stats"},
-		{"events -h", func(w io.Writer) error { n := 50; _, err := parseEventsArgs([]string{"-h"}, &n, w); return err }, "usage: throt events"},
+		{"stats -h", func(w io.Writer) error { _, err := parseStatsArgs([]string{"-h"}, w, io.Discard); return err }, "usage: throt stats"},
+		{"events -h", func(w io.Writer) error {
+			n := 50
+			_, err := parseEventsArgs([]string{"-h"}, &n, w, io.Discard)
+			return err
+		}, "usage: throt events"},
 		{"run -h", func(w io.Writer) error { _, err := parseRunArgs([]string{"-h"}, w, io.Discard); return err }, "Usage: throt run"},
 		{"config -h", func(w io.Writer) error { return runConfig([]string{"-h"}, "", w) }, configUsage},
 		{"config check -h", func(w io.Writer) error { return runConfig([]string{"check", "-h"}, "", w) }, configUsage},
@@ -64,7 +68,7 @@ func TestBadFlagIsNotHelp(t *testing.T) {
 	if out.Len() != 0 || !strings.Contains(errw.String(), "-bogus") || !strings.Contains(errw.String(), "Usage: throt") {
 		t.Errorf("stdout %q, stderr %q", out.String(), errw.String())
 	}
-	if _, err := parseStatsArgs([]string{"-bogus"}, &out); err == nil || errors.Is(err, flag.ErrHelp) || out.Len() != 0 {
+	if _, err := parseStatsArgs([]string{"-bogus"}, &out, io.Discard); err == nil || errors.Is(err, flag.ErrHelp) || out.Len() != 0 {
 		t.Errorf("stats -bogus: err %v, stdout %q", err, out.String())
 	}
 }

@@ -48,7 +48,7 @@ func TestUpdateExitCodes(t *testing.T) {
 	if errors.As(err, &ee) || err == nil || !strings.Contains(err.Error(), "update: boom") {
 		t.Errorf("error: %#v", err)
 	}
-	if !strings.Contains(usage, "update [--check]") || !strings.Contains(usage, "10 when an update is available") {
+	if !strings.Contains(usageText(), "update [--check]") || !strings.Contains(usageText(), "10 when an update is available") {
 		t.Error("usage does not document update and its exit codes")
 	}
 }

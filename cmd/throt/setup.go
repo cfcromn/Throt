@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -53,6 +54,11 @@ const agentsParagraph = "Prefix heavy commands (builds, full test suites, contai
 	"It waits for a free heavy-job slot and then runs the command unchanged; if throtd is down it runs at once."
 
 const setupUsage = "usage: throt setup claude-code|codex"
+
+// cmdSetup is 'throt setup'.
+func cmdSetup(_ context.Context, e env, args []string) error {
+	return runSetup(args, e.stdout)
+}
 
 func runSetup(args []string, w io.Writer) error {
 	if len(args) != 1 {

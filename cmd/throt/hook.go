@@ -60,6 +60,12 @@ type hookWaiter struct {
 	sleep    func(ctx context.Context, d time.Duration) error
 }
 
+// cmdHook is 'throt hook'. It touches the config and the daemon only for
+// heavy commands.
+func cmdHook(_ context.Context, e env, args []string) error {
+	return runHook(args, e.cfgPath, e.stdin, e.stdout, e.stderr)
+}
+
 // runHook handles `throt hook AGENT [flags]`. For the supported agent it
 // fails open: it returns nil, without waiting, on any problem, including
 // bad flags (reported on stderr, which Claude never sees on exit 0).

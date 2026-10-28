@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 )
@@ -172,6 +173,14 @@ complete -c throt -n '__fish_seen_subcommand_from run' -l timeout -x -d 'run any
 complete -c throt -n '__fish_seen_subcommand_from run' -l no-wait -d 'check once and run regardless'
 complete -c throt -n '__fish_seen_subcommand_from run' -a '(__fish_complete_command)'
 `
+
+// cmdCompletion is 'throt completion SHELL'.
+func cmdCompletion(_ context.Context, e env, args []string) error {
+	if err := e.atMostOneArg(args); err != nil {
+		return err
+	}
+	return printCompletion(e.stdout, arg(args, 0))
+}
 
 // printCompletion writes the completion script for shell.
 func printCompletion(w io.Writer, shell string) error {

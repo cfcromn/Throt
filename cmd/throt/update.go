@@ -54,9 +54,9 @@ func parseUpdateArgs(args []string, stdout, errw io.Writer) (update.Options, err
 	return o, nil
 }
 
-// runUpdate runs 'throt update' with the real environment.
-func runUpdate(args []string, cfgPath string) error {
-	o, err := parseUpdateArgs(args, os.Stdout, os.Stderr)
+// cmdUpdate runs 'throt update' with the real environment.
+func cmdUpdate(ctx context.Context, e env, args []string) error {
+	o, err := parseUpdateArgs(args, e.stdout, e.stderr)
 	if err != nil {
 		return err
 	}
@@ -67,10 +67,10 @@ func runUpdate(args []string, cfgPath string) error {
 	bi, _ := debug.ReadBuildInfo()
 	home, _ := os.UserHomeDir()
 	socket := config.DefaultSocketPath()
-	if cfg, err := config.Load(cfgPath); err == nil {
+	if cfg, err := e.loadConfig(); err == nil {
 		socket = cfg.SocketPath
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err = update.Run(ctx, o, update.Env{
 		HTTP:       update.NewHTTPClient(),
@@ -88,7 +88,7 @@ func runUpdate(args []string, cfgPath string) error {
 		Run:        update.ExecRunner,
 		Stdin:      os.Stdin,
 		IsTTY:      isTerminal(os.Stdin),
-		Stdout:     os.Stdout,
+		Stdout:     e.stdout,
 		Ping: func(ctx context.Context) (string, error) {
 			var r app.PingResult
 			err := transport.Call(ctx, socket, "ping", nil, &r)

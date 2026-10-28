@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,6 +18,11 @@ import (
 )
 
 const configUsage = "usage: throt config check|show [--config PATH] [--json]"
+
+// cmdConfig is 'throt config'.
+func cmdConfig(_ context.Context, e env, args []string) error {
+	return runConfig(args, e.cfgPath, e.stdout)
+}
 
 // runConfig handles 'throt config check' and 'throt config show'. Both load
 // the file with config.Load, as throtd does.

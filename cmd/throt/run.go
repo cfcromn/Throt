@@ -15,7 +15,6 @@ import (
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/capacity"
-	"github.com/cfcromn/Throt/internal/config"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/platform"
 )
@@ -314,9 +313,9 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// runCommand is `throt run` with the real daemon, process table, and exec.
-func runCommand(args []string, cfgPath string) error {
-	o, err := parseRunArgs(args, os.Stdout, os.Stderr)
+// cmdRun is `throt run` with the real daemon, process table, and exec.
+func cmdRun(ctx context.Context, e env, args []string) error {
+	o, err := parseRunArgs(args, e.stdout, e.stderr)
 	if err != nil {
 		return err
 	}
@@ -327,10 +326,10 @@ func runCommand(args []string, cfgPath string) error {
 		env:       os.Environ(),
 		now:       time.Now,
 		sleep:     sleepCtx,
-		stderr:    os.Stderr,
+		stderr:    e.stderr,
 		ancestors: processAncestors,
 	}
-	cfg, err := config.Load(cfgPath)
+	cfg, err := e.loadConfig()
 	if err != nil {
 		// Fail open: a broken config must not hold the command back.
 		r.status = func(context.Context) (app.StatusResult, error) { return app.StatusResult{}, err }
@@ -341,7 +340,7 @@ func runCommand(args []string, cfgPath string) error {
 		self := app.AcquireParams{PID: os.Getpid()}
 		r.acquire = func(ctx context.Context) (app.AcquireResult, error) { return c.Acquire(ctx, self) }
 	}
-	return r.run(context.Background(), o)
+	return r.run(ctx, o)
 }
 
 // processAncestors reads the process table once to find this process's
