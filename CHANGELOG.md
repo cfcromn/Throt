@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Added
+- `throt hook claude-code [--max-wait D]`: a Claude Code `PreToolUse` hook on `Bash`. When the command's command word is a heavy tool (alone, or after `cd DIR &&`, variable assignments, or `time`), it polls `throtd`'s capacity verdict for the calling agent and returns once a heavy job is OK to start or after `--max-wait` (default 50s). It never changes, approves, or denies the command, so your permission rules apply to it unchanged. Advisory: it takes no lease. It fails open: light or unparsable commands, malformed input, or an unreachable `throtd` return at once. Shell parsing lives in the new `internal/shellwords`.
+- `throt setup claude-code` and `throt setup codex` print the hook, MCP server, and `AGENTS.md` snippets to paste; they write no files.
+
 ## [0.7.0-rc.1] - 2026-10-28
 
 Admission leases make `throt run` race-free, and stopped processes Throt did not pause are reported.

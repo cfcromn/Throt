@@ -56,7 +56,13 @@ Commands:
              'check' validates the config file as throtd would, lists what
              it changes from the defaults, and warns about risky settings;
              'show [--json]' prints the effective config and the source
-             (default, profile, or file) of each value. Both take --config
+             (default, profile, or file) of each value. Both accept --config PATH.
+  hook claude-code [--max-wait D]
+             Claude Code PreToolUse hook: before a lone heavy Bash command,
+             wait up to D (default 50s) for heavy-job capacity; never
+             changes or blocks the command (advisory; fails open)
+  setup claude-code|codex
+             print the configuration to paste into a coding agent
   completion bash|zsh|fish
              print a shell completion script
   version [--json]
@@ -99,6 +105,13 @@ func run(args []string) error {
 	}
 	if cmd == "version" {
 		return runVersion(fs.Args()[1:], *cfgPath, os.Stdout)
+	}
+	// 'hook' fails open and touches config and daemon only for heavy commands.
+	if cmd == "hook" {
+		return runHook(fs.Args()[1:], *cfgPath, os.Stdin, os.Stdout, os.Stderr)
+	}
+	if cmd == "setup" {
+		return runSetup(fs.Args()[1:], os.Stdout)
 	}
 	// 'events' takes its own flags after the command: throt events -f.
 	followEvents, statsJSON, resumeForce := false, false, false

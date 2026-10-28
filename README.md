@@ -194,6 +194,14 @@ command = "throt"
 args = ["mcp"]
 ```
 
+### Claude Code integration
+
+`throt setup claude-code` prints a `settings.json` hook and the MCP server config to paste; `throt setup codex` prints the Codex `config.toml` block and an `AGENTS.md` paragraph. Neither writes any file.
+
+The hook (`throt hook claude-code --max-wait D`, a [`PreToolUse`](https://code.claude.com/docs/en/hooks) hook on `Bash`) makes Claude Code wait for capacity without being told. When a Bash command is a single heavy tool (by the same names Throt classifies as heavy workloads), optionally after `cd DIR &&`, variable assignments, or `time`, it polls `throtd` once per second for the `throt_capacity` verdict of the calling agent and returns when a heavy job is OK to start or after `D` (default 50s; the setup snippet uses 110s with a 120s hook `timeout`, since a PreToolUse hook that times out blocks the call). It never changes, approves, or denies the command, so it runs exactly as written under your own permission rules. Commands with pipes, `;`, `||`, `&`, redirections, subshells, substitutions, heredocs, or comments, a heavy tool after another command (`make && ./run`), `throt run` itself, and input it cannot parse pass at once without contacting `throtd`; so does everything when `throtd` is down. After it waited it shows you a one-line `systemMessage`; it prints nothing else.
+
+This is advisory admission: the hook exits before the command starts, so it reserves no slot, and two commands let through at the same moment can both start. Prefix a command with `throt run --` for a reserved slot. Do not add permission allow rules for `throt run`: such a rule would allow every command run through it.
+
 ## Configuration
 
 Optional, at `~/.config/throt/config.json` (or `$XDG_CONFIG_HOME/throt/config.json`). Unknown keys are errors.
