@@ -43,6 +43,8 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 - The shutdown event says how many paused or queued processes it resumed.
 
 ### Fixed
+- The scheduler no longer serializes admission behind `resume_cooldown`. Free slots under the limit are refilled in the same round, several at once, when pressure is normal or elevated by CPU/load only, or when a running job exited (decision reasons `pressure_normal`, `pressure_elevated_throughput`, `workload_exited`). The cooldown still spaces resumes at high or critical pressure, at pressure elevated by memory, swap or latency (except refilling exited jobs' slots), and for one cooldown after a preemption or a pressure-driven queue. Before, 8 jobs of 5 s on 2 CPUs took 1m11s under the `balanced` profile against 21 s without Throt.
+- The `Bench` workflow runs the memory scenarios on macOS only; on a bare Linux runner they exhausted RAM and the job was killed.
 - `throt resume PID` on an orphan, repeated before the next sample, reported a second resume from the stale snapshot. throtd now checks the process's live state and refuses one that is gone or not stopped.
 - Resume retries no longer stall behind one record whose resume keeps failing: each round starts after the record that failed last.
 - A daemon handler error with an empty message no longer reaches the client as success.

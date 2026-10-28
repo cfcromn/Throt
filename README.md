@@ -301,7 +301,7 @@ The config file is optional: `~/.config/throt/config.json`, or `$XDG_CONFIG_HOME
 | `scheduler.start_limit` | from the profile | Where the adaptive limit starts (0 to `heavy_limit`; 0 means from the profile, capped at `heavy_limit`). Ignored without `adaptive`. |
 | `scheduler.adaptive` | from the profile | Halve the limit under high pressure; raise it by one per 30s, up to `heavy_limit`, while the machine copes. |
 | `scheduler.per_agent_limit` | `0` (no cap) | Most heavy workloads one agent may run, so one agent can't take every slot (0 to 64). |
-| `scheduler.resume_cooldown` | `10s` | Minimum spacing between resumes (and preemptions); at most `10m`. |
+| `scheduler.resume_cooldown` | `10s` | Minimum spacing between resumes (and preemptions) while pressure is high, critical, or elevated by memory, swap or latency, and after a pressure pause; free slots are refilled at once at normal or CPU-only pressure, or when a job exited. At most `10m`. |
 | `scheduler.max_queue_wait` | `5m` | Work queued this long gets the next free slot even under high pressure, so the queue can't starve (at least 1s). |
 | `scheduler.pause_on_critical` | `false` | Under critical pressure, pause the youngest running heavy workload, never the last one. |
 | `agents` | none | Custom agents: `[{"name": "myagent", "executables": ["my-agent"]}]`. Up to 32 agents; `name` is 1 to 32 lowercase letters, digits or dashes, with 1 to 16 executable base names each. |
