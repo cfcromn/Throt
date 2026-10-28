@@ -27,8 +27,6 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 ### Fixed
 - `-h` on `throt`, `throtd`, or a subcommand (`throt config check -h`, `throt run -h`, …) prints the usage to stdout and exits 0, instead of printing `flag: help requested` and exiting 1.
 - `SECURITY.md` records the 1.0 security review of IPC and process control: scope, method, a verdict per boundary, findings, and accepted residual risks.
-
-### Fixed
 - Security: throtd creates its socket with group and other permissions masked, instead of relying on the process umask until the `chmod` to 0600. Under a lax umask (such as 002) in a socket directory others may traverse, another local user could connect in that window and read `status`, `events` and `stats`. Privileged methods were never reachable.
 - `acquire` gives each OS process lookup (one `ps` call on macOS) its own 2 s deadline. Before, a hung `ps` held the request, and one of the 16 connection slots, forever; repeated `throt run` polls could fill every slot and stop throtd from serving `status`, `pause` and `resume`.
 
