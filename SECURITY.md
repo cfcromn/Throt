@@ -45,10 +45,25 @@ Accepted residual risks:
 - **Directory trust is by mode bits.** ACLs are not inspected, and a custom `socket_path` must not sit under a directory other users can write to (the default `$XDG_RUNTIME_DIR`, `/tmp` with its sticky bit, and the macOS per-user `$TMPDIR` are safe).
 - **Releases are unsigned** and carry no provenance attestation; verify `checksums.txt` over HTTPS from GitHub. The release job uses `goreleaser` `~> v2` (not an exact version) and the Go module cache.
 
+**`throt update`, 2026-10-29** (`internal/update`, `cmd/throt/update.go`). Threat model: a network attacker, a tampered or truncated download, a hostile archive, an interrupted or partial install, an unwritable install directory, and leaking the GitHub token.
+
+| Aspect | Verdict |
+|---|---|
+| Transport | Sound. Every request, redirects included, must be HTTPS (plain `http` is refused), with Go's default TLS verification against `api.github.com` and the asset host it redirects to; a whole-request timeout and at most 5 redirects. The token is sent only as an `Authorization` header to the API host: Go drops it when the asset download redirects to another host. It is never printed, logged or put in an error. |
+| Integrity | Sound. The archive for this OS and architecture is refused unless its SHA-256 equals its entry in the release's `checksums.txt`; a missing `checksums.txt`, a missing or malformed entry, or a mismatch refuses the update before anything is written. Bodies are capped (release list 4 MiB, `checksums.txt` 1 MiB, archive 100 MiB). |
+| Archive | Sound. Read in memory; only `throt` and `throtd` are taken. The whole archive is refused when any entry is absolute or contains `..`, or is anything but a regular file or directory (symlinks, hard links, devices, FIFOs), when a binary is missing, duplicated or over 100 MiB, or when it unpacks to more than 256 MiB. |
+| Replace | Sound. Each binary is written to an `O_EXCL` temporary file in its destination directory, made 0755 and synced, then run with a 10 s timeout (`throt version`, `throtd -version`); it must print the release version. Only when both pass are they renamed over the old files (atomic within a directory), `throtd` first and `throt` last, so a failure leaves either nothing changed or a new `throtd` with the error saying the two differ. An unwritable directory, a failed check, or any earlier error removes the temporary files and changes nothing. Symlinks to the binaries are resolved, so their targets are replaced and the links kept. |
+| Refusals | No install without confirmation: a terminal prompt, or `--yes`; a non-terminal stdin without `--yes` refuses. `go install` and development builds are left to `go install`. It never downgrades unless `--version` asks for it, and never restarts `throtd`. |
+| macOS | Files written by Go carry no `com.apple.quarantine` attribute, so no `xattr` step is needed; the binaries are unsigned as before. |
+
+Accepted residual risk: `checksums.txt` and the archive come from the same release, so the check gives integrity (no corruption or tampering in transit, TLS aside) but not authenticity: whoever can publish a release in the repository can publish matching checksums. Once the repository is public, verify the build provenance too: `gh attestation verify throt_<version>_<os>_<arch>.tar.gz --repo cfcromn/Throt`.
+
 ## Privacy
 
 Throt is local-first. It collects only the metrics needed to operate, keeps them on the machine, and has **no outbound telemetry**. It does not read or store prompts, model responses, source files, command output, or environment variables.
 
 Diagnostic output (`throt doctor`) is produced only on explicit request. It never collects environment variables or command arguments, names no process except stopped ones throtd did not pause (by executable base name only), and redacts home paths and the user name.
+
+`throt update` is the only command that uses the network, and only when you run it: nothing checks for updates automatically or in the background. It is not telemetry: it is an explicit user action that sends standard HTTPS requests to GitHub (the release list, `checksums.txt` and one archive), with your GitHub token when one is set, and nothing about the machine or its use beyond what any HTTPS client sends (address, `User-Agent: throt-update`).
 
 Any future telemetry requires a public proposal, documented fields, opt-in behavior, and retention/deletion instructions.

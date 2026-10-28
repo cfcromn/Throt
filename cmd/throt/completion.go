@@ -30,7 +30,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status stats ping events explain pause resume run reload config doctor mcp hook setup completion version -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status stats ping events explain pause resume run reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -40,6 +40,7 @@ _throt() {
         completion) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
         config) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "check show" -- "$cur")) || COMPREPLY=($(compgen -W "--config --json" -- "$cur")) ;;
         version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
+        update) [[ "$prev" == --version || "$prev" == -version ]] || COMPREPLY=($(compgen -W "--check --version --pre --yes" -- "$cur")) ;;
         hook) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code" -- "$cur")) ;;
         setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) ;;
         run)
@@ -95,6 +96,7 @@ _throt() {
         'setup:print the configuration to paste into a coding agent'
         'completion:print a shell completion script'
         'version:print the client version'
+        'update:install the newest verified release in place'
     )
     local curcontext="$curcontext" state line
     _arguments -C \
@@ -111,6 +113,7 @@ _throt() {
                 completion) (( CURRENT == 2 )) && compadd bash zsh fish ;;
                 config) (( CURRENT == 2 )) && compadd check show || _arguments '--config[path to config file]:file:_files' '--json[print JSON]' ;;
                 version) _arguments '--json[print JSON]' ;;
+                update) _arguments '--check[only report whether an update is available]' '--version[install this release]:version:' '--pre[include prereleases]' '--yes[do not ask for confirmation]' ;;
                 hook) (( CURRENT == 2 )) && compadd claude-code ;;
                 setup) (( CURRENT == 2 )) && compadd claude-code codex ;;
                 run) _arguments -S '--timeout[run anyway after this long]:duration:' '--no-wait[check once and run regardless]' '*::command:_normal' ;;
@@ -151,6 +154,7 @@ complete -c throt -n __fish_use_subcommand -a hook -d 'Claude Code hook that wai
 complete -c throt -n __fish_use_subcommand -a setup -d 'print the configuration to paste into a coding agent'
 complete -c throt -n __fish_use_subcommand -a completion -d 'print a shell completion script'
 complete -c throt -n __fish_use_subcommand -a version -d 'print the client version'
+complete -c throt -n __fish_use_subcommand -a update -d 'install the newest verified release in place'
 complete -c throt -n '__fish_seen_subcommand_from events' -o f -d 'keep printing new events'
 complete -c throt -n '__fish_seen_subcommand_from events' -o n -x -d 'number of recent events'
 complete -c throt -n '__fish_seen_subcommand_from pause resume explain' -x -a '(__throt_pids)'
@@ -158,6 +162,10 @@ complete -c throt -n '__fish_seen_subcommand_from completion' -x -a 'bash zsh fi
 complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show' -x -a 'check show'
 complete -c throt -n '__fish_seen_subcommand_from config' -l config -r -F -d 'path to config file'
 complete -c throt -n '__fish_seen_subcommand_from config version' -l json -d 'print JSON'
+complete -c throt -n '__fish_seen_subcommand_from update' -l check -d 'only report whether an update is available'
+complete -c throt -n '__fish_seen_subcommand_from update' -l version -x -d 'install this release'
+complete -c throt -n '__fish_seen_subcommand_from update' -l pre -d 'include prereleases'
+complete -c throt -n '__fish_seen_subcommand_from update' -l yes -d 'do not ask for confirmation'
 complete -c throt -n '__fish_seen_subcommand_from hook' -x -a 'claude-code'
 complete -c throt -n '__fish_seen_subcommand_from setup' -x -a 'claude-code codex'
 complete -c throt -n '__fish_seen_subcommand_from run' -l timeout -x -d 'run anyway after this long'

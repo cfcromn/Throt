@@ -68,6 +68,11 @@ Commands:
   version [--json]
              print the client version; --json adds the protocol and Go
              versions, and throtd's version when it is reachable
+  update [--check] [--version vX.Y.Z] [--pre] [--yes]
+             install the newest GitHub release over throt and throtd after
+             verifying its SHA-256; --check only reports (exit 0 when up to
+             date, 10 when an update is available); the only command that
+             uses the network
 
 Flags:
 `
@@ -78,8 +83,10 @@ func main() {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		fmt.Fprintln(os.Stderr, "throt:", err)
 		var ee exitError
+		if !errors.As(err, &ee) || ee.msg != "" {
+			fmt.Fprintln(os.Stderr, "throt:", err)
+		}
 		if errors.As(err, &ee) {
 			os.Exit(ee.code)
 		}
@@ -172,6 +179,10 @@ func run(args []string) error {
 	}
 	if cmd == "setup" {
 		return runSetup(fs.Args()[1:], os.Stdout)
+	}
+	// 'update' is the only command that uses the network, and only when run.
+	if cmd == "update" {
+		return runUpdate(fs.Args()[1:], *cfgPath)
 	}
 	// 'events' takes its own flags after the command: throt events -f.
 	followEvents, statsJSON, resumeForce := false, false, false

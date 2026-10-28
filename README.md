@@ -128,7 +128,20 @@ WantedBy=default.target
 
 ### Upgrade and rollback
 
-Stop `throtd` (this resumes any paused work), replace both binaries, and start it again. To roll back, install the previous release the same way. Configuration is backward compatible within a minor series, and unknown keys are reported as errors rather than silently ignored. `throt` and `throtd` must be the same release, and a mismatch is reported with both protocol versions. Published versions are never rewritten; fixes ship as new patch releases.
+```bash
+throt update --check             # current and latest version; exit 0 when up to date, 10 when an update is available
+throt update                     # download, verify, and replace throt and throtd (asks first; --yes skips the question)
+throt update --version v0.8.0-rc.1 # install a specific release, newer or older: also the rollback
+throt update --pre               # include prereleases (the default when the running version is one)
+```
+
+`throt update` finds the running `throt` (symlinks resolved) and the `throtd` next to it, asks the GitHub API for the newest matching release, downloads the archive for this OS and architecture with `checksums.txt`, and refuses unless its SHA-256 matches. It then writes both new binaries next to the old ones, runs each with its version flag, and only when both report the expected version renames them into place, `throtd` first and `throt` last; any earlier failure leaves the old binaries untouched. When the directory isn't writable it changes nothing and says so; re-run it as a user who can write there. Without `--yes` it asks on a terminal and refuses when stdin is not one. Binaries from `go install` and development builds are left alone: it prints the `go install` commands instead. On macOS the files it writes carry no quarantine attribute, so no `xattr` step is needed.
+
+The repository is private for now, so `throt update` needs a token: `GH_TOKEN` or `GITHUB_TOKEN`, otherwise `gh auth token` when the [GitHub CLI](https://cli.github.com) is installed and logged in (`gh auth login`). It uses the network only when you run it; no Throt command checks for updates on its own.
+
+A running `throtd` keeps the old version until restarted, and `throt update` says so without restarting it: `launchctl kickstart -k gui/$(id -u)/dev.throt.throtd` (launchd), `systemctl --user restart throtd` (systemd), or stop and start it by hand. Stopping `throtd` resumes everything it paused.
+
+To upgrade by hand instead, stop `throtd` (this resumes any paused work), replace both binaries from a verified release archive, and start it again. To roll back by hand, install the previous release the same way. Configuration is backward compatible within a minor series, and unknown keys are reported as errors rather than silently ignored. `throt` and `throtd` must be the same release, and a mismatch is reported with both protocol versions. Published versions are never rewritten; fixes ship as new patch releases.
 
 ## Usage
 
@@ -151,6 +164,7 @@ throt config show         # effective config and where each value came from (--j
 throt version --json      # client, protocol, Go, and throtd versions
 throt run -- npm run build    # wait for a free heavy slot, then run the command
 throt completion zsh          # shell completion script (bash, zsh, fish)
+throt update --check          # is a newer release out? (see Upgrade and rollback)
 ```
 
 Global flags go before the command: `-config PATH` uses another config file (default below), and `-n N` sets how many events `throt events` prints (default 50). `-h` on `throt`, `throtd`, or a subcommand prints its usage and exits 0.
