@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
+	"github.com/cfcromn/Throt/internal/capacity"
 	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
@@ -368,7 +369,7 @@ func TestStatusTool(t *testing.T) {
 	if err := json.Unmarshal(sc, &v); err != nil {
 		t.Fatal(err)
 	}
-	if v.Pressure != "high" || len(v.Agents) != 2 || len(v.Heavy) != 4 || v.Heavy[3].State != stateQueued ||
+	if v.Pressure != "high" || len(v.Agents) != 2 || len(v.Heavy) != 4 || v.Heavy[3].State != capacity.StateQueued ||
 		v.Scheduler.Mode != "enforce" || v.Host == nil || v.Host.CPU != "74%" {
 		t.Fatalf("structured = %+v", v)
 	}
@@ -499,7 +500,7 @@ func TestCapacity(t *testing.T) {
 			if r.IsError {
 				t.Fatalf("isError: %s", r.Content[0].Text)
 			}
-			var v capacityView
+			var v capacity.Verdict
 			if err := json.Unmarshal(sc, &v); err != nil {
 				t.Fatal(err)
 			}

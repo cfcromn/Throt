@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -40,9 +41,14 @@ Commands:
              explain why a heavy workload is running, paused, or queued
   pause PID  pause a heavy workload (SIGSTOP) shown in 'status'
   resume PID resume a paused workload (SIGCONT)
+  run [--timeout D] [--no-wait] -- CMD [ARGS...]
+             wait for heavy-job capacity, then exec CMD (advisory; runs
+             immediately if throtd is down)
   reload     make throtd re-read its config file
   doctor     print a sanitized diagnostic report (safe to share)
   mcp        run a read-only MCP server on stdio for coding agents
+  completion bash|zsh|fish
+             print a shell completion script
   version    print the client version
 
 Flags:
@@ -51,6 +57,10 @@ Flags:
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "throt:", err)
+		var ee exitError
+		if errors.As(err, &ee) {
+			os.Exit(ee.code)
+		}
 		os.Exit(1)
 	}
 }
@@ -67,6 +77,10 @@ func run(args []string) error {
 	cmd := "top"
 	if fs.NArg() >= 1 {
 		cmd = fs.Arg(0)
+	}
+	// 'run' takes its own flags and passes everything else to the command.
+	if cmd == "run" {
+		return runCommand(fs.Args()[1:], *cfgPath)
 	}
 	// 'events' takes its own flags after the command: throt events -f.
 	followEvents, statsJSON := false, false
@@ -101,6 +115,9 @@ func run(args []string) error {
 
 	if cmd == "doctor" {
 		return runDoctor(*cfgPath)
+	}
+	if cmd == "completion" {
+		return printCompletion(os.Stdout, fs.Arg(1))
 	}
 
 	cfg, err := config.Load(*cfgPath)

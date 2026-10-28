@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/cfcromn/Throt/internal/app"
+	"github.com/cfcromn/Throt/internal/capacity"
 	"github.com/cfcromn/Throt/internal/domain"
-	"github.com/cfcromn/Throt/internal/scheduler"
 	"github.com/cfcromn/Throt/internal/stats"
 )
 
@@ -226,13 +226,6 @@ type schedulerView struct {
 	Queued     int    `json:"queued"`
 }
 
-// Workload states, matching `throt status`.
-const (
-	stateRunning = "running"
-	statePaused  = "PAUSED"
-	stateQueued  = "QUEUED"
-)
-
 func newStatusView(st app.StatusResult) statusView {
 	v := statusView{
 		Pressure:       st.Pressure.String(),
@@ -266,7 +259,7 @@ func newStatusView(st app.StatusResult) statusView {
 			Agent: a.Agent, PID: a.Key.PID, CPUPercent: percent(a.CPU), Memory: bytesHuman(a.RSS), Children: a.Children,
 		})
 	}
-	states := workloadStates(st)
+	states := capacity.WorkloadStates(st)
 	for _, h := range st.Heavy {
 		owner := h.Owner
 		if owner == "" {
@@ -278,26 +271,6 @@ func newStatusView(st app.StatusResult) statusView {
 		})
 	}
 	return v
-}
-
-// workloadStates maps every heavy workload to running, PAUSED, or QUEUED.
-// Scheduler queueing wins over a plain pause, as in `throt status`.
-func workloadStates(st app.StatusResult) map[domain.ProcessKey]string {
-	states := make(map[domain.ProcessKey]string, len(st.Heavy))
-	for _, h := range st.Heavy {
-		states[h.Key] = stateRunning
-	}
-	for _, p := range st.Paused {
-		if _, ok := states[p.Key]; ok {
-			states[p.Key] = statePaused
-		}
-	}
-	for _, k := range st.Scheduler.Queued {
-		if _, ok := states[k]; ok {
-			states[k] = stateQueued
-		}
-	}
-	return states
 }
 
 func (s *Server) status(ctx context.Context) toolResult {
@@ -340,104 +313,6 @@ func (s *Server) status(ctx context.Context) toolResult {
 	return textResult(strings.TrimSuffix(b.String(), "\n"), v)
 }
 
-// capacityView is the structured content of throt_capacity.
-type capacityView struct {
-	OKToStart      bool   `json:"ok_to_start"`
-	Reason         string `json:"reason"`
-	Pressure       string `json:"pressure"`
-	PressureReason string `json:"pressure_reason,omitempty"`
-	SchedulerMode  string `json:"scheduler_mode"`
-	RunningHeavy   int    `json:"running_heavy"`
-	HeavyLimit     int    `json:"heavy_limit"`
-	Agent          string `json:"agent,omitempty"`
-	// AgentRunningHeavy is set only when an agent was requested.
-	AgentRunningHeavy *int   `json:"agent_running_heavy,omitempty"`
-	Suggestion        string `json:"suggestion"`
-}
-
-// assessCapacity answers "should I start a heavy job now?". It is advisory
-// and fails open: missing data never blocks work.
-func assessCapacity(st app.StatusResult, agent string) capacityView {
-	states := workloadStates(st)
-	running, agentRunning := 0, 0
-	for _, h := range st.Heavy {
-		if states[h.Key] != stateRunning {
-			continue
-		}
-		running++
-		if agent != "" && h.Owner == agent {
-			agentRunning++
-		}
-	}
-	mode := st.Scheduler.Mode
-	if mode == "" {
-		mode = scheduler.ModeOff
-	}
-	c := capacityView{
-		Pressure:       st.Pressure.String(),
-		PressureReason: st.Reason,
-		SchedulerMode:  string(mode),
-		RunningHeavy:   running,
-		HeavyLimit:     st.Scheduler.HeavyLimit,
-		Agent:          agent,
-	}
-	if agent != "" {
-		c.AgentRunningHeavy = &agentRunning
-	}
-	pressure := c.Pressure
-	if st.Reason != "" {
-		pressure += " (" + st.Reason + ")"
-	}
-	switch {
-	case st.Pressure >= domain.PressureHigh:
-		c.Reason = "pressure is " + pressure
-		c.Suggestion = "pressure is " + pressure + "; wait or run a lighter task"
-	case mode != scheduler.ModeOff && agent != "" && st.Scheduler.PerAgentLimit > 0 && agentRunning >= st.Scheduler.PerAgentLimit:
-		c.Reason = fmt.Sprintf("%s already runs %d heavy jobs (per-agent limit %d)", agent, agentRunning, st.Scheduler.PerAgentLimit)
-		c.Suggestion = "wait for one of your heavy jobs to finish; a new one would wait for your budget"
-	case mode != scheduler.ModeOff && len(st.Scheduler.Queued) > 0:
-		c.Reason = fmt.Sprintf("%d heavy jobs are already queued", len(st.Scheduler.Queued))
-		c.Suggestion = "new heavy jobs queue behind waiting ones; wait or run a lighter task"
-	case mode != scheduler.ModeOff && running >= st.Scheduler.HeavyLimit:
-		c.Reason = fmt.Sprintf("all heavy slots are in use (%d running, limit %d)", running, st.Scheduler.HeavyLimit)
-		if mode == scheduler.ModeEnforce {
-			c.Suggestion = "a new heavy job would be queued (paused) by throtd until a slot frees; wait for a running heavy job to finish or run a lighter task"
-		} else {
-			c.Suggestion = "wait for a running heavy job to finish or run a lighter task"
-		}
-	case st.Pressure == domain.PressureUnknown:
-		c.OKToStart = true
-		c.Reason = "pressure is unknown (no stable sample yet); allowed, but capacity is unverified"
-		c.Suggestion = "ok to start; check again shortly if the job is large"
-	case st.Pressure == domain.PressureElevated:
-		c.OKToStart = true
-		c.Reason = "pressure is " + pressure + " but below high"
-		c.Suggestion = "ok to start one heavy job; avoid starting several at once"
-	default:
-		c.OKToStart = true
-		c.Reason = "pressure is " + pressure
-		if mode == scheduler.ModeOff {
-			c.Reason += "; scheduler is off, so no heavy limit applies"
-		} else {
-			c.Reason += fmt.Sprintf("; %d of %d heavy slots in use", running, st.Scheduler.HeavyLimit)
-		}
-		c.Suggestion = "ok to start"
-	}
-	if agent != "" && !hasAgent(st, agent) {
-		c.Suggestion += fmt.Sprintf(" (note: agent %q is not currently detected; see throt_status for labels)", agent)
-	}
-	return c
-}
-
-func hasAgent(st app.StatusResult, label string) bool {
-	for _, a := range st.Agents {
-		if a.Agent == label {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Server) capacity(ctx context.Context, agent string) toolResult {
 	st, err := s.client.Status(ctx)
 	if err != nil {
@@ -452,7 +327,7 @@ func (s *Server) capacity(ctx context.Context, agent string) toolResult {
 			}
 		}
 	}
-	c := assessCapacity(st, agent)
+	c := capacity.Assess(st, agent)
 	verdict := "NO"
 	if c.OKToStart {
 		verdict = "YES"

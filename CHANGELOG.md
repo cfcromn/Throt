@@ -21,6 +21,8 @@ Accurate pressure everywhere: cgroup-aware Linux, the macOS kernel verdict, and 
 - `throt explain PID`: why a heavy workload is running, paused, or queued, with its recent events.
 - `throt stats` (and `--json`), the `stats` protocol method, and the `throt_stats` MCP tool: per-agent CPU time, peak memory, heavy jobs started, and time queued by the scheduler since throtd started, with all-agent and unattributed totals. Kept in memory for at most 256 agent instances.
 - TUI: `p`/`r` pause or resume the selected heavy workload after a `y/n` confirmation. The timeline now fetches only new events.
+- `throt run [--timeout D] [--no-wait] -- CMD`: cooperative admission control. Waits until throtd reports capacity for a heavy job (the `throt_capacity` verdict, for the nearest agent ancestor), then execs the command in place. Advisory and fail-open: it never pauses anything, runs immediately when throtd is unreachable, and reserves nothing, so two runs checking at once can both start.
+- `throt completion bash|zsh|fish` prints a shell completion script; PIDs complete after `pause`, `resume`, and `explain`.
 
 ### Changed
 - LICENSE copyright holder romanized.

@@ -125,7 +125,26 @@ throt doctor    # sanitized diagnostics to paste into a bug report
 throt pause PID # pause a heavy workload owned by one of your agents
 throt resume PID
 throt reload    # re-read the config without restarting (or send throtd SIGHUP)
+throt run -- npm run build    # wait for a free heavy slot, then run the command
+throt completion zsh          # shell completion script (bash, zsh, fish)
 ```
+
+### Wait before starting: `throt run`
+
+`throt run [--timeout D] [--no-wait] -- CMD [ARGS...]` is the gentle alternative to being paused: it checks capacity *before* the command starts, using the same verdict as `throt_capacity`. It polls `throtd` once per second until a heavy job is OK to start (pressure below high, a free heavy slot, nothing queued, and the calling agent within its `per_agent_limit`), printing a notice to stderr at most every 10s. Then it execs the command in its own place, so the PID, signals, and exit status are the command's own. The agent is the nearest agent process among its ancestors. A missing command exits 127.
+
+- `--timeout D` stops waiting after `D` and runs the command anyway (the default, 0, waits forever).
+- `--no-wait` checks once, prints the verdict, and runs regardless.
+
+It fails open: if `throtd` is unreachable, it prints one notice and runs immediately, so a stopped daemon never blocks your work. It never pauses anything. It is also advisory: nothing is reserved, so two `throt run` commands that check at the same moment can both start. With `scheduler.mode` set to `enforce`, `throtd` still queues the extra one.
+
+To have coding agents use it, add a line such as this to your `AGENTS.md` or `CLAUDE.md`:
+
+```markdown
+Prefix heavy commands (builds, full test suites, container builds) with `throt run --`, e.g. `throt run -- npm run build`.
+```
+
+Shell completion: `source <(throt completion bash)` or `source <(throt completion zsh)` in your shell's rc file, or `throt completion fish | source`. After `pause`, `resume`, and `explain` it completes the heavy-workload PIDs from `throt status`.
 
 ## Use with coding agents (MCP)
 
