@@ -80,19 +80,41 @@ const (
 // entered with enter, not tab.
 const tablePanes = paneDrill
 
-// sortKey is a table's sort column. sortDaemon keeps throtd's order.
+// sortKey is a table's sort column. sortAuto, the default, sorts by memory
+// while the pressure reason is a memory signal and by CPU otherwise;
+// sortDaemon keeps throtd's order.
 type sortKey int
 
 const (
-	sortDaemon sortKey = iota
+	sortAuto sortKey = iota
 	sortCPU
 	sortMem
 	sortName
+	sortDaemon
 	sortCount
 )
 
 func (k sortKey) String() string {
-	return [...]string{"daemon order", "cpu", "mem", "name"}[k]
+	return [...]string{"auto", "cpu", "mem", "name", "daemon order"}[k]
+}
+
+// memoryReason reports whether a pressure reason code names a memory or
+// swap signal (memory_used, memory_stall_*, kernel_memory_pressure,
+// swap_growth, ...).
+func memoryReason(code string) bool {
+	name, _, _ := strings.Cut(code, ">=")
+	return strings.Contains(name, "memory") || strings.HasPrefix(name, "swap")
+}
+
+// effectiveSort resolves sortAuto against the current pressure reason.
+func (m Model) effectiveSort(k sortKey) sortKey {
+	if k != sortAuto {
+		return k
+	}
+	if memoryReason(m.status.Reason) {
+		return sortMem
+	}
+	return sortCPU
 }
 
 // tickMsg asks for the next poll.
@@ -156,6 +178,10 @@ type Model struct {
 
 	details bool
 	help    bool
+	// splash is true while the startup splash shows; splashDone once
+	// splashMin has passed. It hides after both that and the first poll,
+	// or at the first key.
+	splash, splashDone bool
 
 	// filter narrows the timeline to events whose kind or message contains
 	// it (case insensitive); filtering is true while the user types it after /.
@@ -174,10 +200,13 @@ type Model struct {
 	stop context.CancelFunc
 }
 
-// New returns a model that polls client. socket is shown in the
-// unreachable-daemon banner. NO_COLOR and TERM are read here.
+// New returns a model that polls client and opens with the startup
+// splash. socket is shown in the unreachable-daemon banner. NO_COLOR and
+// TERM are read here.
 func New(client Client, socket string) Model {
-	return newWithEnv(client, socket, os.Getenv)
+	m := newWithEnv(client, socket, os.Getenv)
+	m.splash = true
+	return m
 }
 
 // newWithEnv is New reading the environment through getenv.
@@ -206,10 +235,14 @@ func (m Model) quit() tea.Cmd {
 // Init starts polling immediately and, with color on, asks the terminal for
 // its background so the colors keep their contrast on light themes too.
 func (m Model) Init() tea.Cmd {
-	if !m.color {
-		return m.poll()
+	cmds := []tea.Cmd{m.poll()}
+	if m.splash {
+		cmds = append(cmds, m.tick(splashMin, splashDoneMsg{}))
 	}
-	return tea.Batch(m.poll(), tea.RequestBackgroundColor)
+	if m.color {
+		cmds = append(cmds, tea.RequestBackgroundColor)
+	}
+	return tea.Batch(cmds...)
 }
 
 // poll fetches status and events under a timeout so a stuck daemon never
@@ -282,8 +315,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd = m.poll()
 	case pollMsg:
 		m.applyPoll(msg)
+		m.splash = m.splash && !m.splashDone
 		cmd = m.tick(pollInterval, tickMsg{})
+	case splashDoneMsg:
+		m.splashDone = true
+		m.splash = m.splash && !m.polled
 	case tea.KeyPressMsg:
+		if m.splash {
+			// Any key dismisses the splash; only the quit keys do more.
+			m.splash = false
+			if s := msg.String(); s != "q" && s != "ctrl+c" {
+				break
+			}
+		}
 		cmd = m.handleKey(msg)
 	case controlMsg:
 		target := fmt.Sprintf("%s (pid %d)", msg.name, msg.key.PID)
@@ -325,8 +369,8 @@ func (m *Model) applyPoll(r pollMsg) {
 // resort rebuilds the display order of both tables and keeps each
 // selection on its process.
 func (m *Model) resort() {
-	m.agents = sortedAgents(m.status.Agents, m.sortBy[paneAgents])
-	m.heavy = sortedHeavy(m.status.Heavy, m.sortBy[paneHeavy])
+	m.agents = sortedAgents(m.status.Agents, m.effectiveSort(m.sortBy[paneAgents]))
+	m.heavy = sortedHeavy(m.status.Heavy, m.effectiveSort(m.sortBy[paneHeavy]))
 	for p := range paneCount {
 		keys := m.keys(p)
 		for i, k := range keys {
@@ -593,6 +637,14 @@ func (m *Model) setSel(p pane, i int) {
 	}
 }
 
+// agentsCollapsed reports whether the agents table, given rows rows, shows
+// its first rows-1 agents and a summary of the rest: when they do not all
+// fit and the selection is among the first ones. Moving the selection past
+// them scrolls through the rest as usual.
+func (m Model) agentsCollapsed(rows int) bool {
+	return rows >= 2 && len(m.agents) > rows && m.sel[paneAgents] < rows-1
+}
+
 // clampScroll keeps each selection inside its pane's visible window.
 func (m *Model) clampScroll() {
 	l := m.layout()
@@ -600,6 +652,10 @@ func (m *Model) clampScroll() {
 	for p := range paneCount {
 		n := len(m.keys(p))
 		h := max(rows[p], 1)
+		if p == paneAgents && m.agentsCollapsed(rows[p]) {
+			m.off[p] = 0
+			continue
+		}
 		if m.sel[p] < m.off[p] {
 			m.off[p] = m.sel[p]
 		}

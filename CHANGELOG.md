@@ -14,7 +14,11 @@ The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md
 - Every `throt mcp` tool declares an `outputSchema` (MCP `2025-06-18` and later) describing its `structuredContent`; earlier clients ignore it. Error results still carry no structured content.
 - Benchmarks: `1 job alone` checks that Throt does not intervene in a single build, and `TestBenchMixed` runs long jobs with a stream of short ones and reports the short jobs' wait and the long jobs' makespan. The `Bench` workflow now also runs the memory scenarios on Linux, in a container with a 3 GiB limit on the runner. CI builds and tests on Intel macOS and arm64 Linux, the two release platforms it did not run before.
 
+- `status` reports `unattributed_rss`, the resident memory of every process no agent owns, and `unattributed_memory`, the five process names with the most of it (`name`, `processes`, `rss`; names only, no arguments or paths).
+- TUI: an `OUTSIDE AGENTS` line with that memory and its largest names, so memory the agents do not explain is visible; an agents total (CPU and memory) in the `AGENTS` title; and a startup splash with the version and the daemon's state, dismissed by any key or once `throtd` has answered and 1.5 s have passed.
+
 ### Changed
+- TUI: a lighter screen. Bars are at most 20 cells and sparklines 10; table columns are as wide as their content; the pressure reason has the pressure's color. Tables sort by memory while the pressure reason is a memory or swap signal and by CPU otherwise (`s` still cycles; auto comes first). Beyond the first 9 agents the rest fold into one `+N more` row with their largest CPU and memory and their totals; moving the selection past them scrolls through all. The timeline shows a burst of agents or heavy workloads found or lost in the same second as one line ("53 agents started: claude-1, …"); control and scheduler events keep a line each.
 - The `reason` attr of every `control_refused` event is now a stable code. Refusals throtd decides itself used to put a sentence there; they now use `start_mismatch`, `gone`, `peer_mismatch`, `unidentified`, `paused_member`, `needs_force`, `job_control` or `not_stopped` (or the controller's `not_heavy`, `foreign_uid`, `not_paused`). The sentence stays in the event message and the error the client sees.
 
 ### Fixed

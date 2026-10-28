@@ -16,7 +16,18 @@ type styles struct {
 	title, header, selected, banner, degraded, footer lipgloss.Style
 	pressure                                          [domain.PressureCritical + 1]lipgloss.Style
 	event                                             [eventClassCount]lipgloss.Style
+	// splash colors the wordmark's rows, top to bottom; splashShadow its
+	// shadow layer.
+	splash       [wordmarkHeight]lipgloss.Style
+	splashShadow lipgloss.Style
 }
+
+// Sky-blue wordmark gradients, light to deep: one for dark backgrounds, and
+// a deeper one that keeps its contrast on light backgrounds.
+var (
+	splashDark  = [wordmarkHeight]string{"#CFF0FF", "#AFE3FB", "#8FD3F7", "#6FC3EF", "#4FB3E8", "#2E8FD1"}
+	splashLight = [wordmarkHeight]string{"#4FB3E8", "#3FA2DE", "#2E8FD1", "#2580C2", "#1C70B0", "#14609C"}
+)
 
 // colorEnabled reports whether the environment allows ANSI styling: not
 // when NO_COLOR is set to anything non-empty (https://no-color.org), nor on
@@ -54,6 +65,14 @@ func newStyles(colored, dark bool) styles {
 		domain.PressureHigh:     lipgloss.NewStyle().Bold(true).Foreground(orange),
 		domain.PressureCritical: lipgloss.NewStyle().Bold(true).Foreground(red),
 	}
+	grad, shadow := splashLight, "#A9CDE6"
+	if dark {
+		grad, shadow = splashDark, "#2B5675"
+	}
+	for i, h := range grad {
+		s.splash[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(h))
+	}
+	s.splashShadow = lipgloss.NewStyle().Foreground(lipgloss.Color(shadow))
 	s.event = [...]lipgloss.Style{
 		eventOther:     {},
 		eventControl:   lipgloss.NewStyle().Foreground(c("25", "12")),

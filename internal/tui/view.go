@@ -3,6 +3,8 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,9 +25,10 @@ const (
 	// Sparklines get up to maxSparkWidth cells and are dropped, before
 	// anything else, when fewer than minSparkWidth fit beside a bar of
 	// minBarWidth.
-	maxSparkWidth = 16
-	minSparkWidth = 8
+	maxSparkWidth = 10
+	minSparkWidth = 6
 	minBarWidth   = 10
+	maxBarWidth   = 20
 	// barOverhead is the label, spaces and percentage around a bar;
 	// barDetailWidth is what a bar leaves for its detail text.
 	barOverhead    = 14
@@ -51,6 +54,9 @@ func (m Model) render() string {
 			lines[i] = truncate(l, m.width)
 		}
 		return strings.Join(lines[:min(len(lines), m.height)], "\n")
+	}
+	if m.splash {
+		return strings.Join(m.splashLines(), "\n")
 	}
 	l := m.layout()
 	lines := append([]string{}, l.top...)
@@ -79,6 +85,9 @@ func (m Model) render() string {
 	lines = append(lines[:m.height-1], m.footer())
 	return strings.Join(lines, "\n")
 }
+
+// maxAgentRows is the most rows the agents table gets.
+const maxAgentRows = 10
 
 type layout struct {
 	top, details, drillInfo                       []string
@@ -116,7 +125,9 @@ func (m Model) layout() layout {
 		l.timelineRows = max(1, (rest-1)/4)
 		rest -= l.timelineRows + 1
 	}
-	agentsWant, heavyWant := max(1, len(m.status.Agents)), max(1, len(m.status.Heavy))
+	// Many agents fold into the top maxAgentRows-1 and a summary row, so
+	// the heavy workloads and the timeline keep their room.
+	agentsWant, heavyWant := max(1, min(len(m.status.Agents), maxAgentRows)), max(1, len(m.status.Heavy))
 	if len(l.details) > 0 && rest < 2 {
 		rows := max(1, rest+paneOverhead+1)
 		if m.focus == paneAgents {
@@ -141,7 +152,8 @@ func (m Model) layout() layout {
 
 // topLines renders the connection banner, the system section, and the
 // degraded notice. On a short terminal the system details give way, so a
-// table stays visible: SWAP first, then the why line, MEM and CPU. The
+// table stays visible: the memory outside agents first, then SWAP, the why
+// line, MEM and CPU. The
 // pressure, the scheduler summary and the warnings always stay.
 func (m Model) topLines() []string {
 	w := m.width
@@ -199,12 +211,14 @@ func (m Model) topLines() []string {
 		tail = append(tail, splitLines(m.st.degraded.Render(lipgloss.Wrap("DEGRADED  "+m.status.Degraded, w, "")))...)
 	}
 
-	// details are the why line and the CPU, MEM and SWAP bars, "" when absent.
-	details := [4]string{"", "", "", ""}
+	// details are the why line, the CPU, MEM and SWAP bars and the memory
+	// outside agents, "" when absent.
+	details := [5]string{}
 	if m.connected && m.status.Reason != "" {
 		details[0] = m.reasonLine()
 	}
 	copy(details[1:], m.metricLines())
+	details[4] = m.outsideLine()
 	room := m.height - 1 - minPaneLines - len(lines) - len(tail)
 	shown := func() int {
 		n := 0
@@ -215,7 +229,7 @@ func (m Model) topLines() []string {
 		}
 		return n
 	}
-	for _, i := range [...]int{3, 0, 2, 1} {
+	for _, i := range [...]int{4, 3, 0, 2, 1} {
 		if shown() <= room {
 			break
 		}
@@ -307,6 +321,10 @@ func psiSummary(h domain.HostSample) string {
 // followed by the raw code when it fits; an unknown code is shown raw.
 func (m Model) reasonLine() string {
 	text, ok := explainReason(m.status.Reason)
+	if p := m.status.Pressure; p >= domain.PressureElevated && int(p) < len(m.st.pressure) {
+		// The cause is as prominent as the level it explains.
+		text = m.st.pressure[p].Render(text)
+	}
 	line := "  why: " + text
 	if raw := "  (" + m.status.Reason + ")"; ok && lipgloss.Width(line+raw) <= m.width {
 		line += m.st.header.Render(raw)
@@ -369,7 +387,7 @@ func (m Model) metricLines() []string {
 	if sw := m.sparkWidth(); sw > 0 {
 		sparkCols = sw + 2
 	}
-	room := func(detail int) int { return min(40, m.width-barOverhead-detail-sparkCols) }
+	room := func(detail int) int { return min(maxBarWidth, m.width-barOverhead-detail-sparkCols) }
 	width := max(min(minBarWidth, max(5, room(barDetailWidth))),
 		room(max(barDetailWidth, lipgloss.Width(cpu), lipgloss.Width(mem), lipgloss.Width(swap))))
 
@@ -413,11 +431,61 @@ func (m Model) agentsPane(rows int) []string {
 		{title: "CHILDREN", width: 8, right: true, drop: 1},
 	}
 	cells := make([][]string, len(m.agents))
+	var cpu float64
+	var rss uint64
 	for i, a := range m.agents {
 		cells[i] = []string{a.Agent, fmt.Sprint(a.Key.PID), cores(a.CPU), formatBytes(a.RSS), fmt.Sprint(a.Children)}
+		cpu, rss = cpu+a.CPU, rss+a.RSS
 	}
-	return m.table(paneAgents, "AGENTS", "(no agents detected)", cols, cells, rows)
+	note, more := "", ""
+	if len(m.agents) > 1 {
+		note = fmt.Sprintf("  total %s CPU, %s", cores(cpu), formatBytes(rss))
+	}
+	if m.agentsCollapsed(rows) {
+		more = moreAgents(m.agents[rows-1:])
+	}
+	return m.table(paneAgents, "AGENTS", note, "(no agents detected)", cols, cells, rows, more)
 }
+
+// moreAgents summarizes the agents a collapsed table leaves out.
+func moreAgents(rest []process.AgentView) string {
+	var maxCPU, sumCPU float64
+	var maxRSS, sumRSS uint64
+	for _, a := range rest {
+		maxCPU, maxRSS = max(maxCPU, a.CPU), max(maxRSS, a.RSS)
+		sumCPU, sumRSS = sumCPU+a.CPU, sumRSS+a.RSS
+	}
+	return fmt.Sprintf("+%d more (each ≤%.0f%% CPU, ≤%s; %s CPU, %s together)",
+		len(rest), math.Ceil(maxCPU*100), formatBytes(maxRSS), cores(sumCPU), formatBytes(sumRSS))
+}
+
+// outsideLine names where the memory outside every agent goes: the total
+// and the process names with the most of it, largest first, as many as fit.
+// It is "" when throtd does not report it.
+func (m Model) outsideLine() string {
+	st := m.status
+	if !m.connected || len(st.UnattributedMemory) == 0 {
+		return ""
+	}
+	line := m.st.title.Render("OUTSIDE AGENTS") + "  " + formatBytes(st.UnattributedRSS)
+	sep := ": "
+	for _, u := range st.UnattributedMemory {
+		item := truncate(u.Name, maxOutsideName)
+		if u.Processes > 1 {
+			item += fmt.Sprintf(" ×%d", u.Processes)
+		}
+		item += " " + formatBytes(u.RSS)
+		if lipgloss.Width(line)+len(sep)+lipgloss.Width(item) > m.width {
+			break
+		}
+		line += sep + item
+		sep = ", "
+	}
+	return truncate(line, m.width)
+}
+
+// maxOutsideName bounds a process name on the OUTSIDE AGENTS line.
+const maxOutsideName = 24
 
 func (m Model) heavyPane(rows int) []string {
 	cols := []column{
@@ -435,7 +503,7 @@ func (m Model) heavyPane(rows int) []string {
 		cells[i] = []string{owner(h.Owner), fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), state(h.Key)}
 		cols[6].width = max(cols[6].width, lipgloss.Width(cells[i][6]))
 	}
-	return m.table(paneHeavy, "HEAVY WORKLOADS", "(no heavy workloads)", cols, cells, rows)
+	return m.table(paneHeavy, "HEAVY WORKLOADS", "", "(no heavy workloads)", cols, cells, rows, "")
 }
 
 // stateOf returns a lookup of each workload's scheduling state: "QUEUED",
@@ -499,24 +567,43 @@ func (m Model) drillPane(rows int) []string {
 		cells[i] = []string{fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), st}
 		cols[5].width = max(cols[5].width, lipgloss.Width(st))
 	}
-	return m.table(paneDrill, "HEAVY WORKLOADS", "(no heavy workloads)", cols, cells, rows)
+	return m.table(paneDrill, "HEAVY WORKLOADS", "", "(no heavy workloads)", cols, cells, rows, "")
 }
 
-// table renders a titled, scrollable table of exactly rows+2 lines.
-func (m Model) table(p pane, title, empty string, cols []column, cells [][]string, rows int) []string {
+// table renders a titled, scrollable table of exactly rows+2 lines. note
+// follows the title. A non-empty more replaces the last row: the table then
+// shows its first rows-1 rows and more summarizes the rest.
+func (m Model) table(p pane, title, note, empty string, cols []column, cells [][]string, rows int, more string) []string {
 	focused := m.active() == p && !m.help
 	mark := "  "
 	if focused {
 		mark = "▸ "
 	}
 	head := mark + title
-	if n := len(cells); n > rows {
+	visible := rows
+	if more != "" {
+		visible = rows - 1
+	}
+	if n := len(cells); n > rows && more == "" {
 		head += fmt.Sprintf(" %d-%d of %d", m.off[p]+1, min(m.off[p]+rows, n), n)
 	} else if n > 0 {
 		head += fmt.Sprintf(" (%d)", n)
 	}
-	widths := fitColumns(cols, m.width-markerWidth)
-	sortBy := m.sortBy[m.sortPane(p)]
+	head += note
+	// Columns are as wide as their widest cell or title (with room for a
+	// sort indicator), within their limits.
+	want := make([]int, len(cols))
+	for i, c := range cols {
+		want[i] = lipgloss.Width(c.title)
+		if c.sort != sortAuto {
+			want[i]++
+		}
+		for _, r := range cells {
+			want[i] = max(want[i], lipgloss.Width(r[i]))
+		}
+	}
+	widths := fitColumns(cols, want, m.width-markerWidth)
+	sortBy := m.effectiveSort(m.sortBy[m.sortPane(p)])
 	header := make([]string, len(cols))
 	for i, c := range cols {
 		header[i] = c.title
@@ -538,13 +625,16 @@ func (m Model) table(p pane, title, empty string, cols []column, cells [][]strin
 		}
 		lines = append(lines, truncate(strings.Repeat(" ", markerWidth)+msg, m.width))
 	}
-	for i := m.off[p]; i < len(cells) && i < m.off[p]+rows; i++ {
+	for i := m.off[p]; i < len(cells) && i < m.off[p]+visible; i++ {
 		row := formatRow(cols, widths, cells[i])
 		if focused && i == m.sel[p] {
 			lines = append(lines, m.st.selected.Render("> "+row))
 		} else {
 			lines = append(lines, "  "+row)
 		}
+	}
+	if more != "" {
+		lines = append(lines, m.st.header.Render(truncate(strings.Repeat(" ", markerWidth)+more, m.width)))
 	}
 	for len(lines) < rows+2 {
 		lines = append(lines, "")
@@ -621,13 +711,13 @@ func (m Model) timeline(rows int) []string {
 	lines := []string{truncate(title, m.width)}
 	// time and tag columns with their gaps
 	msgWidth := m.width - (2 + 8 + 2 + eventTagWidth + 2)
-	for i := len(events) - 1; i >= 0 && len(lines) <= rows; i-- {
-		e := events[i]
-		st := m.st.event[classify(e.Kind)]
-		text := e.Message
-		if text == "" {
-			text = string(e.Kind)
+	for _, it := range coalesce(events) {
+		if len(lines) > rows {
+			break
 		}
+		e := it.e
+		st := m.st.event[classify(e.Kind)]
+		text := it.text()
 		line := fmt.Sprintf("  %s  %s  %s", e.Time.Local().Format("15:04:05"),
 			st.Render(eventTags[classify(e.Kind)]), truncate(text, max(0, msgWidth)))
 		lines = append(lines, truncate(strings.TrimRight(line, " "), m.width))
@@ -641,6 +731,60 @@ func (m Model) timeline(rows int) []string {
 	return lines
 }
 
+// burstText words a burst of same-kind lifecycle events, given their count.
+// Only these kinds are coalesced: control and scheduler events always keep
+// a line each.
+var burstText = map[domain.EventKind]string{
+	domain.EventAgentDiscovered:   "%d agents started",
+	domain.EventAgentLost:         "%d agents exited",
+	domain.EventProcessDiscovered: "discovered %d heavy workloads",
+	domain.EventProcessLost:       "%d heavy workloads exited",
+}
+
+// timelineItem is one timeline line: an event, or a burst of n events of
+// one kind in the same second, e the newest; names lists them newest first.
+type timelineItem struct {
+	e     domain.Event
+	n     int
+	names []string
+}
+
+func (it timelineItem) text() string {
+	if it.n > 1 {
+		names := slices.Clone(it.names)
+		slices.Reverse(names)
+		return fmt.Sprintf(burstText[it.e.Kind], it.n) + ": " + strings.Join(names, ", ")
+	}
+	if it.e.Message == "" {
+		return string(it.e.Kind)
+	}
+	return it.e.Message
+}
+
+// coalesce returns the timeline lines for events (oldest first), newest
+// first, merging adjacent lifecycle events of one kind in the same second.
+// It changes only the presentation: the filter still counts events.
+func coalesce(events []domain.Event) []timelineItem {
+	var out []timelineItem
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		name := e.Attrs["name"]
+		if a := e.Attrs["agent"]; a != "" && (e.Kind == domain.EventAgentDiscovered || e.Kind == domain.EventAgentLost) {
+			name = a
+		}
+		if _, ok := burstText[e.Kind]; ok && len(out) > 0 {
+			last := &out[len(out)-1]
+			if last.e.Kind == e.Kind && last.e.Time.Unix() == e.Time.Unix() {
+				last.n++
+				last.names = append(last.names, name)
+				continue
+			}
+		}
+		out = append(out, timelineItem{e: e, n: 1, names: []string{name}})
+	}
+	return out
+}
+
 func (m Model) helpLines() []string {
 	lines := []string{
 		m.st.title.Render("HELP"),
@@ -652,10 +796,12 @@ func (m Model) helpLines() []string {
 		"              else clear the timeline filter",
 		"  /           filter the timeline by kind or text (enter keeps, esc clears)",
 		"  p / r       pause / resume the selected heavy workload (asks y/n)",
-		"  s           sort the table: cpu, mem, name, daemon order",
+		"  s           sort the table: auto, cpu, mem, name, daemon order",
 		"  ?           toggle this help",
 		"",
-		"  Sparklines: the last 60 polls of CPU, memory used, swap growth",
+		"  Auto sorts by memory while pressure is from memory, else by CPU.",
+		"  Agents beyond the first rows fold into a +N more row; j scrolls on.",
+		"  Sparklines: the latest polls of CPU, memory used, swap growth",
 		"  (on the SWAP line) and latency (in the header).",
 		"  The TUI makes no decisions: p and r send only what you confirm,",
 		"  and throtd checks ownership before acting.",
@@ -713,9 +859,10 @@ func truncateWords(s string, width int) string {
 	return s
 }
 
-// column describes one table column. A column with width 0 is flexible and
-// shares the leftover space; columns with a higher drop value are removed
-// first when the table does not fit.
+// column describes one table column. A column with width 0 is flexible:
+// at least min wide, and growing towards its content while space is left.
+// A fixed column is at most width wide. Columns with a higher drop value
+// are removed first when the table does not fit.
 type column struct {
 	title string
 	width int
@@ -731,15 +878,16 @@ const (
 	maxFlexWidth = 32
 )
 
-// fitColumns returns each column's width for a table avail cells wide;
-// a dropped column gets width 0.
-func fitColumns(cols []column, avail int) []int {
+// fitColumns returns each column's width for a table avail cells wide,
+// given the width each column's content wants; a dropped column gets
+// width 0. No column is wider than its content.
+func fitColumns(cols []column, want []int, avail int) []int {
 	keep := make([]bool, len(cols))
 	for i := range keep {
 		keep[i] = true
 	}
 	for {
-		need, flex, worst := 0, 0, -1
+		need, worst := 0, -1
 		for i, c := range cols {
 			if !keep[i] {
 				continue
@@ -748,10 +896,9 @@ func fitColumns(cols []column, avail int) []int {
 				need += columnGap
 			}
 			if c.width == 0 {
-				need += c.min
-				flex++
+				need += min(c.min, want[i])
 			} else {
-				need += c.width
+				need += min(c.width, want[i])
 			}
 			if c.drop > 0 && (worst < 0 || c.drop > cols[worst].drop) {
 				worst = i
@@ -764,9 +911,12 @@ func fitColumns(cols []column, avail int) []int {
 				switch {
 				case !keep[i]:
 				case c.width == 0:
-					widths[i] = min(maxFlexWidth, c.min+spare/max(flex, 1))
+					// Flexible columns grow in order, each to its content.
+					lo := min(c.min, want[i])
+					widths[i] = lo + min(spare, max(0, min(maxFlexWidth, want[i])-lo))
+					spare -= widths[i] - lo
 				default:
-					widths[i] = c.width
+					widths[i] = min(c.width, want[i])
 				}
 			}
 			return widths

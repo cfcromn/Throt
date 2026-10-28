@@ -194,29 +194,31 @@ Shell completion: add `source <(throt completion zsh)` (or `bash`) to your shell
 
 ```text
 $ throt
-SYSTEM  pressure HIGH  latency 4ms ▁▁▂▁▁▃▂▁▁▁▂▁▁▁▂▁
-  why: memory 90%+ used  (memory_used>=0.9)
-CPU   ██████████████████████████████░░░░░░░░░░   74%  ▃▄▄▅▆▆▇▆▅▆▆▇▆▅▆▆  load 1.12/cpu
-MEM   ██████████████████████████████████████░░   95%  ▆▆▆▆▇▇▇▇▇▇▇▇▇███  30.5 GiB / 32.0 GiB
-SWAP  ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░   35%  ▁▁▁▁▁▂▅█▃▁▁▁▁▁▁▁  1.4 GiB / 4.0 GiB
-▸ AGENTS (3)
-  AGENT                                 PID    CPU▼        MEM  CHILDREN
-> codex-1                              4120    231%    2.8 GiB         5
-  claude-1                             3988    104%    1.8 GiB         7
-  claude-2                             5310     12%    921 MiB         2
+SYSTEM  pressure ELEVATED  latency 6ms ▁▁▂▁▃▂▁▁▂▃
+  why: kernel memory pressure warning  (kernel_memory_pressure>=warning)
+CPU   █████████░░░░░░░░░░░   46%  ▃▄▄▅▆▅▄▄▅▄  load 0.62/cpu
+MEM   ██████████████████░░   88%  ▆▆▇▇▇▇▇▇▇▇  21.0 GiB / 24.0 GiB  kernel: warning
+SWAP  █████████████████░░░   87%  ▁▁▂▅█▃▁▁▁▁  10.4 GiB / 12.0 GiB
+OUTSIDE AGENTS  10.1 GiB: com.apple.Virtualizatio… 4.2 GiB, Google Chrome Helper (R… ×31 2.5 GiB
+▸ AGENTS (53)  total 339% CPU, 9.0 GiB
+  AGENT        PID   CPU     MEM▼  CHILDREN
+> codex-1    41350  190%  2.2 GiB        14
+  codex-2    41357   42%  1.1 GiB         6
+  claude-5   41028    2%  112 MiB         2
+  +50 more (each ≤3% CPU, ≤112 MiB; 95% CPU, 5.0 GiB together)
   HEAVY WORKLOADS (2)
-  OWNER               PID  PROCESS           CLASS               CPU        MEM
-  codex-1            4312  java              build              190%    2.3 GiB
-  claude-1           4471  buildkitd         container-build     60%    420 MiB
+  OWNER      PID  PROCESS   CLASS   CPU     MEM▼  STATE
+  codex-1  52011  cargo     build  170%  1.8 GiB
+  codex-2  52230  vitest    test    35%  700 MiB
 TIMELINE
-  14:02:52  pressure_changed    pressure elevated -> high
-  14:02:13  agent_discovered    agent_discovered codex-1
-  14:02:11  daemon_started      listening on /run/user/501/throt/throtd.sock
+  09:00:09         pressure normal -> elevated
+  09:00:02         53 agents started: claude-1, claude-2, claude-3, claude-4, …
+  09:00:00         throtd started
 
-q quit  tab focus  j/k move  enter open  s sort  ? help
+tab focus  j/k move  enter open  s sort  / filter  ? help  q quit
 ```
 
-The `why:` line names the signal behind the pressure level. CPU is a percentage of one core (two busy cores show 200%). Sparklines show the last 60 refreshes (one per second) of CPU, memory, swap growth and foreground latency; the TUI keeps that history itself and loses it when it exits. Metrics the platform cannot provide show as `n/a`. If `throtd` is not running, the TUI says so and reconnects when it starts. Narrow terminals drop the sparklines first (below 55 columns), then columns; below 40×12 it asks for a larger window.
+It opens with a short splash (the version and whether `throtd` answers) that any key dismisses; it also goes once `throtd` has answered and 1.5 s have passed. The `why:` line names the signal behind the pressure level. CPU is a percentage of one core (two busy cores show 200%); an agent's CPU and memory include all the processes it owns. Sparklines show the last 10 refreshes (one per second) of CPU, memory, swap growth and foreground latency; the TUI keeps 60 itself and loses them when it exits. `OUTSIDE AGENTS` is the resident memory of every process no agent owns, with the largest names (at most 5, names only), so memory the agents do not explain is visible. Tables sort by memory while the pressure reason is a memory or swap signal and by CPU otherwise. Beyond the first 9 agents, the rest fold into one `+N more` row; moving the selection past them scrolls through all of them. Bursts of agents or heavy workloads found or lost in the same second are one timeline line. Metrics the platform cannot provide show as `n/a`. If `throtd` is not running, the TUI says so and reconnects when it starts. Narrow terminals drop the sparklines first (below 53 columns), then columns; below 40×12 it asks for a larger window.
 
 When the scheduler is on, a `SCHEDULER` line shows its mode, the current adaptive limit with its start and ceiling, the per-agent cap, and queued and reserved counts; a `STOPPED` line counts processes throtd did not pause (see `throt doctor`). Timeline events are tagged `CTL`, `SCHED` and `FAIL`. Every state is shown in text as well as color, and `NO_COLOR` or `TERM=dumb` turns color off entirely.
 
@@ -227,7 +229,7 @@ When the scheduler is on, a `SCHEDULER` line shows its mode, the current adaptiv
 | `enter` | On an agent: open its drilldown (PID, CPU, memory, children, and each heavy workload it owns with its state: running, `PAUSED`, `QUEUED`). On a heavy workload: toggle its details. |
 | `esc` | Leave the drilldown, help, or filter. |
 | `p` / `r` | Pause or resume the selected heavy workload, after a `y/n` confirmation. |
-| `s` | Cycle the sort column: CPU, memory, name, then `throtd`'s order (`▼` descending, `▲` ascending). |
+| `s` | Cycle the sort column: auto (memory under memory pressure, else CPU), CPU, memory, name, then `throtd`'s order (`▼` descending, `▲` ascending). |
 | `/` | Filter the timeline by event kind (case-insensitive substring); `enter` keeps it, `esc` clears it. |
 | `?` | Help. |
 | `q`, `ctrl+c` | Quit. |

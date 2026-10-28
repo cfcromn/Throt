@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -178,7 +179,7 @@ func TestObserveState(t *testing.T) {
 // keeps going, so the TUI reconnects by itself.
 func TestDaemonDownMessage(t *testing.T) {
 	c := &fakeClient{err: &transport.NotRunningError{Socket: testSocket, Err: errors.New("no such file")}}
-	m := update(t, New(c, testSocket), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m := update(t, newWithEnv(c, testSocket, os.Getenv), tea.WindowSizeMsg{Width: 100, Height: 30})
 	next, cmd := m.Update(m.poll()())
 	m = next.(Model)
 	out := view(m)

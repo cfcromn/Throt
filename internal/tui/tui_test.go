@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -117,7 +118,7 @@ func press(t *testing.T, m Model, keys ...string) Model {
 
 func newModel(t *testing.T, c *fakeClient, w, h int) Model {
 	t.Helper()
-	m := update(t, New(c, testSocket), tea.WindowSizeMsg{Width: w, Height: h})
+	m := update(t, newWithEnv(c, testSocket, os.Getenv), tea.WindowSizeMsg{Width: w, Height: h})
 	return poll(t, m)
 }
 
@@ -204,10 +205,10 @@ func TestRenderNarrow(t *testing.T) {
 	st := sampleStatus(3, 2)
 	st.Agents[0].Agent = "a-very-long-agent-instance-label-that-cannot-fit"
 	c := &fakeClient{status: st, events: sampleEvents()}
-	m := newModel(t, c, 60, 20)
+	m := newModel(t, c, 44, 20)
 	out := view(m)
-	assertFits(t, out, 60, 20)
-	assertContains(t, out, "pressure HIGH", "AGENTS", "HEAVY WORKLOADS", "gradle", "a-very-long", "…", "q quit")
+	assertFits(t, out, 44, 20)
+	assertContains(t, out, "pressure HIGH", "AGENTS", "HEAVY WORKLOADS", "gradle", "a-very-lon", "…", "q quit")
 	// The heavy table drops PID, then CLASS, before STATE at this width.
 	heavy := out[strings.Index(out, "HEAVY WORKLOADS"):]
 	header := strings.Split(heavy, "\n")[1]
@@ -493,10 +494,18 @@ func TestFitColumns(t *testing.T) {
 		{4, []int{8, 0, 0}},
 	}
 	for _, tt := range tests {
-		got := fitColumns(cols, tt.avail)
+		got := fitColumns(cols, []int{40, 10, 10}, tt.avail)
 		if fmt.Sprint(got) != fmt.Sprint(tt.want) {
 			t.Errorf("fitColumns(%d) = %v, want %v", tt.avail, got, tt.want)
 		}
+	}
+	// Columns are no wider than their content, so narrow content leaves
+	// room unused rather than padding the table out.
+	if got := fitColumns(cols, []int{12, 4, 10}, 100); fmt.Sprint(got) != "[12 4 10]" {
+		t.Errorf("content-sized fitColumns = %v", got)
+	}
+	if got := fitColumns(cols, []int{12, 4, 10}, 20); fmt.Sprint(got) != "[12 4 0]" {
+		t.Errorf("content-sized narrow fitColumns = %v", got)
 	}
 	if got := truncate("abcdef", 4); got != "abc…" {
 		t.Errorf("truncate = %q", got)

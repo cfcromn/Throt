@@ -78,11 +78,11 @@ func TestSparklinesInView(t *testing.T) {
 		h(1, 1<<30+2<<20, 40*time.Millisecond),
 	)
 	out := view(m)
-	// 16 cells, right-aligned: CPU 0, 0.5, 1 of one; swap growth unknown,
+	// 10 cells, right-aligned: CPU 0, 0.5, 1 of one; swap growth unknown,
 	// 2 MiB/s, 0; latency scaled to its 40ms maximum.
-	assertContains(t, lineWith(t, out, "CPU "), "100%  "+strings.Repeat(" ", 13)+"▁▅█  load 0.85/cpu")
-	assertContains(t, lineWith(t, out, "MEM "), "75%  "+strings.Repeat(" ", 13)+"▆▆▆  12.0 GiB")
-	assertContains(t, lineWith(t, out, "SWAP "), "25%  "+strings.Repeat(" ", 14)+"█▁  1.0 GiB / 4.0 GiB")
+	assertContains(t, lineWith(t, out, "CPU "), "100%  "+strings.Repeat(" ", 7)+"▁▅█  load 0.85/cpu")
+	assertContains(t, lineWith(t, out, "MEM "), "75%  "+strings.Repeat(" ", 7)+"▆▆▆  12.0 GiB")
+	assertContains(t, lineWith(t, out, "SWAP "), "25%  "+strings.Repeat(" ", 8)+"█▁  1.0 GiB / 4.0 GiB")
 	assertContains(t, lineWith(t, out, "SYSTEM"), "latency 40ms ▃▅█")
 	assertFits(t, out, 120, 40)
 
@@ -90,7 +90,7 @@ func TestSparklinesInView(t *testing.T) {
 	gap := h(0, 1<<30, 0)
 	gap.Missing = []domain.Metric{domain.MetricCPU}
 	m = pollHosts(t, m, c, gap, h(1, 1<<30, 0))
-	assertContains(t, lineWith(t, view(m), "CPU "), strings.Repeat(" ", 11)+"▁▅█ █  load")
+	assertContains(t, lineWith(t, view(m), "CPU "), strings.Repeat(" ", 5)+"▁▅█ █  load")
 
 	// Losing the daemon drops the history with the rest of the data.
 	c.err = errors.New("down")
@@ -372,9 +372,10 @@ func TestNarrowDropOrder(t *testing.T) {
 		raw               bool
 	}{
 		{120, maxSparkWidth, true},
-		{60, 13, true},
-		{55, minSparkWidth, true},
-		{54, 0, true},
+		{60, maxSparkWidth, true},
+		{55, 8, true},
+		{53, minSparkWidth, true},
+		{52, 0, true},
 		{40, 0, false},
 	} {
 		c := &fakeClient{status: st}

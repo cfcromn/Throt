@@ -218,7 +218,7 @@ func TestTimelineFilter(t *testing.T) {
 	}
 	// Keys type while filtering: q does not quit, s does not sort.
 	m = press(t, m, "S", "c", "h", "q")
-	if m.filter != "Schq" || m.sortBy[paneAgents] != sortDaemon {
+	if m.filter != "Schq" || m.sortBy[paneAgents] != sortAuto {
 		t.Fatalf("filter = %q, sort %v", m.filter, m.sortBy[paneAgents])
 	}
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
