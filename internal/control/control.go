@@ -139,8 +139,11 @@ type Controller struct {
 	onChange func(state []byte) error
 	timeout  time.Duration
 
-	mu     sync.Mutex // serializes signaling and guards paused
+	mu     sync.Mutex // serializes signaling and guards paused and retryAfter
 	paused map[domain.ProcessKey]PausedWorkload
+	// retryAfter is the record whose retry failed last round; the next
+	// round starts after it. Zero means start at the lowest key.
+	retryAfter domain.ProcessKey
 
 	viewMu sync.RWMutex // guards view
 	view   []PausedWorkload
@@ -399,7 +402,9 @@ func (c *Controller) ResumeAll(ctx context.Context) []error {
 	return c.resumeWhere(ctx, func(PausedWorkload) bool { return true })
 }
 
-// RetryResumes retries every record in the resuming state. If a pause or
+// RetryResumes retries the records in the resuming state, in key order
+// starting after the one that failed in the previous round, until one
+// fails. If a pause or
 // resume is in progress it does nothing and returns nil; the daemon calls it
 // every tick.
 func (c *Controller) RetryResumes(ctx context.Context) []error {
@@ -408,22 +413,35 @@ func (c *Controller) RetryResumes(ctx context.Context) []error {
 	}
 	defer c.mu.Unlock()
 	// Unlike shutdown, a retry ends at the first hard error: the OS is
-	// likely still failing, and the next tick tries again.
-	var errs []error
-	n := 0
+	// likely still failing, and the next tick tries again. The next round
+	// starts after the record that failed, so one record that keeps
+	// failing cannot starve the others.
+	var resuming []PausedWorkload
 	for _, p := range c.sorted() {
-		if p.State != StateResuming {
-			continue
+		if p.State == StateResuming {
+			resuming = append(resuming, p)
 		}
-		n++
+	}
+	if len(resuming) == 0 {
+		c.retryAfter = domain.ProcessKey{}
+		return nil
+	}
+	first := 0
+	if c.retryAfter != (domain.ProcessKey{}) {
+		// -1 (nothing after it) wraps around to the lowest key.
+		first = max(slices.IndexFunc(resuming, func(p PausedWorkload) bool { return compareKeys(p.Key, c.retryAfter) > 0 }), 0)
+	}
+	c.retryAfter = domain.ProcessKey{}
+	var errs []error
+	for i := range resuming {
+		p := resuming[(first+i)%len(resuming)]
 		if err := c.resumeKey(ctx, p.Key, true); err != nil {
 			errs = append(errs, err)
+			c.retryAfter = p.Key
 			break
 		}
 	}
-	if n > 0 {
-		c.changed()
-	}
+	c.changed()
 	return errs
 }
 

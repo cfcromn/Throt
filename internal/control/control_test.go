@@ -1050,3 +1050,45 @@ func TestRetryStopsAtFirstHardError(t *testing.T) {
 		t.Errorf("paused = %+v", p)
 	}
 }
+
+// TestRetryRotatesPastAFailingRecord checks that a record whose resume
+// keeps failing does not starve the records after it: each round starts
+// after the record that failed in the previous one.
+func TestRetryRotatesPastAFailingRecord(t *testing.T) {
+	sig := newSig(10, 20, 30)
+	c := New(sig, me, clock, nil)
+	ctx := context.Background()
+	for _, pid := range []int{10, 20, 30} {
+		if err := c.Pause(ctx, target(pid)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fail := errors.New("ps: fork failed")
+	sig.mu.Lock()
+	for _, pid := range []int{10, 20, 30} {
+		sig.contErr[pid] = fail
+	}
+	sig.mu.Unlock()
+	for _, pid := range []int{10, 20, 30} {
+		if err := c.Resume(ctx, key(pid)); err == nil {
+			t.Fatalf("resume %d succeeded", pid)
+		}
+	}
+	// 10 keeps failing; 20 and 30 would now succeed.
+	sig.mu.Lock()
+	delete(sig.contErr, 20)
+	delete(sig.contErr, 30)
+	sig.calls = nil
+	sig.mu.Unlock()
+	for range 2 {
+		if errs := c.RetryResumes(ctx); len(errs) != 1 || !errors.Is(errs[0], fail) {
+			t.Fatalf("retry errs = %v", errs)
+		}
+	}
+	if got := sig.log(); !reflect.DeepEqual(got, []string{"cont 10", "cont 20", "cont 30", "cont 10"}) {
+		t.Errorf("retry calls = %v, want 10, then 20 30 10", got)
+	}
+	if p := c.Paused(); len(p) != 1 || p[0].Key != key(10) {
+		t.Errorf("paused = %+v, want only 10 left", p)
+	}
+}
