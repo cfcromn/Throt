@@ -435,7 +435,8 @@ func panelBody(t *testing.T, out, title string) []string {
 		col := lipgloss.Width(l[:j])
 		for _, b := range lines[i+1:] {
 			seg, ok := segmentAt(b, col)
-			if !ok || strings.ContainsAny(seg, "╰┗") {
+			// A bottom border; the big digits use ┗ too, but never ━━.
+			if b := strings.TrimSpace(seg); !ok || strings.HasPrefix(b, "╰") || strings.HasPrefix(b, "┗━━") {
 				break
 			}
 			body = append(body, strings.TrimRight(strings.TrimPrefix(seg, " "), " "))

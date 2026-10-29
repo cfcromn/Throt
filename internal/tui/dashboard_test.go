@@ -90,7 +90,7 @@ func TestDashboardFillsWindow(t *testing.T) {
 	}
 	// Big numbers, the detail under them and the sparkline last.
 	mem := panelBody(t, out, "MEMORY")
-	if mem[0] != "█▀█ █▀█ █ ▄▀" || mem[3] != "21.1/24.0 GiB" || mem[4] != "kernel: warning" || !strings.HasSuffix(mem[5], "▇▇▇") {
+	if mem[0] != "┏━┓ ┏━┓" || mem[3] != "21.1/24.0 GiB" || mem[4] != "kernel: warning" || !strings.HasSuffix(mem[5], "▇▇▇") {
 		t.Errorf("MEMORY panel = %q", mem)
 	}
 	assertContains(t, strings.Join(panelBody(t, out, "PRESSURE"), "\n"), "ELEVATED\nwhy: kernel memory pressure warning\n")

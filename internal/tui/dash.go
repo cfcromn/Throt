@@ -507,25 +507,25 @@ func wrapItems(items []string, width int, sep string) []string {
 
 func percent(f float64) string { return fmt.Sprintf("%.0f%%", max(0, f)*100) }
 
-// bigGlyphs is a three-row font for numbers.
+// bigGlyphs is a three-row seven-segment font for digits, drawn with
+// box-drawing lines.
 var bigGlyphs = map[rune][3]string{
-	'0': {"█▀█", "█ █", "█▄█"},
-	'1': {"▀█ ", " █ ", "▄█▄"},
-	'2': {"▀▀█", "█▀▀", "█▄▄"},
-	'3': {"▀▀█", " ▀█", "▄▄█"},
-	'4': {"█ █", "▀▀█", "  █"},
-	'5': {"█▀▀", "▀▀█", "▄▄█"},
-	'6': {"█▀▀", "█▀█", "█▄█"},
-	'7': {"▀▀█", "  █", "  █"},
-	'8': {"█▀█", "█▀█", "█▄█"},
-	'9': {"█▀█", "▀▀█", "▄▄█"},
-	'%': {"█ ▄▀", " ▄▀ ", "▄▀ █"},
-	'.': {" ", " ", "▄"},
+	'0': {"┏━┓", "┃ ┃", "┗━┛"},
+	'1': {"╺┓ ", " ┃ ", "╺┻╸"},
+	'2': {"╺━┓", "┏━┛", "┗━╸"},
+	'3': {"╺━┓", " ━┫", "╺━┛"},
+	'4': {"╻ ╻", "┗━┫", "  ╹"},
+	'5': {"┏━╸", "┗━┓", "╺━┛"},
+	'6': {"┏━╸", "┣━┓", "┗━┛"},
+	'7': {"╺━┓", "  ┃", "  ╹"},
+	'8': {"┏━┓", "┣━┫", "┗━┛"},
+	'9': {"┏━┓", "┗━┫", "╺━┛"},
 }
 
-// bigText renders s in the big font, glyphs a cell apart. Letters, which
-// the font lacks, sit on the bottom row in normal size ("6ms"). ok is false
-// when s has no digit.
+// bigText renders s in the big font, glyphs a cell apart. Anything else
+// (units such as "%" and "ms", a decimal point) sits on the bottom row in
+// normal size, like a unit beside a figure. ok is false when s has no
+// digit.
 func bigText(s string) (rows [3]string, ok bool) {
 	for i, r := range s {
 		g, known := bigGlyphs[r]
