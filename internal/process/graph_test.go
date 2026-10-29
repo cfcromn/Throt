@@ -544,3 +544,77 @@ func TestZombieIsGone(t *testing.T) {
 		t.Error("zombie reported live")
 	}
 }
+
+// TestCommandWorkloads checks that a busy command an agent runs through its
+// shell is a heavy workload whatever it is called, and that idle commands,
+// an agent's own servers, shells hosting an agent, and builds already known
+// by name are not.
+func TestCommandWorkloads(t *testing.T) {
+	heavy := func(g *Graph) map[int]WorkloadView {
+		m := map[int]WorkloadView{}
+		for _, h := range g.Snapshot().Heavy {
+			m[h.Key.PID] = h
+		}
+		return m
+	}
+	claude := ps{pid: 10, ppid: 1, name: "claude"}
+	// claude -> zsh -> python: a busy tool call.
+	shell := ps{pid: 20, ppid: 10, name: "zsh"}
+	train := ps{pid: 21, ppid: 20, name: "python"}
+	// claude -> node: an MCP server, busy but not a tool call.
+	mcp := ps{pid: 30, ppid: 10, name: "node"}
+	// claude -> zsh -> claude: a shell hosting another agent.
+	host := ps{pid: 40, ppid: 10, name: "zsh"}
+	nested := ps{pid: 41, ppid: 40, name: "claude"}
+	worker := ps{pid: 42, ppid: 41, name: "node"}
+	// claude -> bash -> go: a build known by name keeps its own workload.
+	bash := ps{pid: 50, ppid: 10, name: "bash"}
+	build := ps{pid: 51, ppid: 50, name: "go"}
+	// claude -> zsh -> sleep: idle.
+	idle := ps{pid: 60, ppid: 10, name: "zsh"}
+	nap := ps{pid: 61, ppid: 60, name: "sleep"}
+	all := func() []ps { return []ps{claude, shell, train, mcp, host, nested, worker, bash, build, idle, nap} }
+
+	g := newGraph()
+	g.Update(epoch, samples(all()))
+	train.cpu, mcp.cpu, worker.cpu, build.cpu = 4, 4, 4, 4 // 2 cores each over 2s
+	g.Update(epoch.Add(2*time.Second), samples(all()))
+	got := heavy(g)
+	if h, ok := got[20]; !ok || h.Class != domain.ClassCommand || h.Name != "python" || h.Owner != "claude-1" {
+		t.Errorf("busy tool call = %+v, %v; want a command workload named python owned by claude-1", h, ok)
+	}
+	if h, ok := got[51]; !ok || h.Class != domain.ClassBuild {
+		t.Errorf("go build = %+v, %v; want its own build workload", h, ok)
+	}
+	for _, pid := range []int{30, 40, 41, 42, 50, 60, 61} {
+		if h, ok := got[pid]; ok {
+			t.Errorf("pid %d is heavy (%+v), want not", pid, h)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("heavy = %v, want the command and the go build", got)
+	}
+
+	// Idle again: held for launcherHold, kept while stopped, then dropped.
+	g.Update(epoch.Add(30*time.Second), samples(all()))
+	if _, ok := heavy(g)[20]; !ok {
+		t.Error("command dropped within the hold")
+	}
+	shell.state, train.state = domain.StateStopped, domain.StateStopped
+	g.Update(epoch.Add(120*time.Second), samples(all()))
+	if _, ok := heavy(g)[20]; !ok {
+		t.Error("stopped command dropped")
+	}
+	shell.state, train.state = domain.StateRunning, domain.StateRunning
+	g.Update(epoch.Add(122*time.Second), samples(all()))
+	if _, ok := heavy(g)[20]; ok {
+		t.Error("idle command still heavy after the hold")
+	}
+
+	// Memory alone makes a command heavy.
+	train.rss = 1200
+	g.Update(epoch.Add(124*time.Second), samples(all()))
+	if _, ok := heavy(g)[20]; !ok {
+		t.Error("command using 1.2 GiB is not heavy")
+	}
+}

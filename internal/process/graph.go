@@ -139,9 +139,20 @@ type proc struct {
 	// stoppedSince is when an Update first saw this process stopped in the
 	// current run of stopped samples; zero while it is not stopped.
 	stoppedSince time.Time
-	// activeAt is when a launcher's subtree was last active (see
-	// launcherHeavy); zero if never, and for other processes.
+	// activeAt is when a launcher's or command shell's subtree was last
+	// active (see launcherHeavy); zero if never, and for other processes.
 	activeAt time.Time
+	// title names a command workload by the program its shell runs; empty
+	// for other processes.
+	title string
+}
+
+// name is what workloads and events call p: its title, or its executable.
+func (p *proc) name() string {
+	if p.title != "" {
+		return p.title
+	}
+	return p.s.Name
 }
 
 // A launcher (agent.Launcher: npm, pnpm, yarn, bun, java, dotnet) is heavy
@@ -156,6 +167,24 @@ const (
 	launcherRSS  = 512 << 20
 	launcherHold = time.Minute
 )
+
+// A command shell is a shell an agent started itself, which is how agents
+// run a tool call (Claude Code's Bash tool: claude, then zsh, then the
+// command); an agent's MCP and language servers are its direct children
+// without a shell. Its subtree is a heavy workload of class command,
+// whatever the programs are called, while it uses at least commandCPU cores
+// or commandRSS bytes (with launcherHold and the stopped rule, as for
+// launchers). It is not one while its subtree holds an agent, which must
+// never be paused, nor while a workload already recognized by name runs in
+// it, so known builds keep their own workload; once a command, it stays one
+// and such a build folds into it.
+const (
+	commandCPU = 1.0
+	commandRSS = 1 << 30
+)
+
+// shells are the shells agents run commands through.
+var shells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "fish": true}
 
 // Graph tracks processes across full snapshots. It is not safe for
 // concurrent use; the owner serializes calls and shares Snapshots instead.
@@ -265,6 +294,7 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 			}
 		}
 	}
+	g.markCommands(now, order)
 	for _, p := range order {
 		for q := p; q != nil; q = q.parent {
 			if q.adapter != "" {
@@ -311,6 +341,74 @@ func (g *Graph) launcherActivity(order []*proc) map[*proc]bool {
 		active[q] = u.cpu >= launcherCPU || u.rss >= launcherRSS
 	}
 	return active
+}
+
+// commandShell reports whether p is a shell an agent started itself.
+func commandShell(p *proc) bool {
+	return p.adapter == "" && shells[p.s.Name] && p.parent != nil && p.parent.adapter != ""
+}
+
+// markCommands makes busy command shells heavy workloads of class command;
+// see commandCPU.
+func (g *Graph) markCommands(now time.Time, order []*proc) {
+	type use struct {
+		cpu          float64
+		rss          uint64
+		agent, named bool
+		title        string
+	}
+	var sums map[*proc]*use
+	at := func(q *proc) *use {
+		if sums == nil {
+			sums = map[*proc]*use{}
+		}
+		u := sums[q]
+		if u == nil {
+			u = &use{}
+			sums[q] = u
+		}
+		return u
+	}
+	for _, p := range order {
+		if p.adapter != "" {
+			// An agent below a command shell: that shell is never one.
+			for q := p.parent; q != nil && q.adapter == ""; q = q.parent {
+				if commandShell(q) {
+					at(q).agent = true
+				}
+			}
+			continue
+		}
+		for q := p; q != nil && q.adapter == ""; q = q.parent {
+			if !commandShell(q) {
+				continue
+			}
+			u := at(q)
+			u.cpu += p.cpu
+			u.rss += p.s.RSS
+			if p != q && p.track == trackHeavy {
+				u.named = true
+			}
+			// order is by PID, so this is the first program the shell ran.
+			if u.title == "" && p.parent == q && !shells[p.s.Name] {
+				u.title = p.s.Name
+			}
+		}
+	}
+	for q, u := range sums {
+		old := g.procs[q.s.Key()]
+		was := old != nil && old.track == trackHeavy && old.class == domain.ClassCommand
+		if u.agent || u.named && !was {
+			continue
+		}
+		if !g.launcherHeavy(now, q, u.cpu >= commandCPU || u.rss >= commandRSS) {
+			continue
+		}
+		q.class, q.track, q.title = domain.ClassCommand, trackHeavy, u.title
+		if q.title == "" && old != nil {
+			q.title = old.title
+		}
+	}
 }
 
 // launcherHeavy reports whether launcher p is heavy at now, recording its
@@ -393,7 +491,7 @@ func (g *Graph) lifecycle(next map[domain.ProcessKey]*proc, order []*proc) []Cha
 			delete(g.used[old.adapter], labelNum(old))
 			changes = append(changes, Change{Kind: domain.EventAgentLost, Process: k, Name: old.s.Name, Agent: old.label})
 		case trackHeavy:
-			changes = append(changes, Change{Kind: domain.EventProcessLost, Process: k, Name: old.s.Name})
+			changes = append(changes, Change{Kind: domain.EventProcessLost, Process: k, Name: old.name()})
 		}
 	}
 	// order is sorted by PID, so labels are assigned deterministically.
@@ -406,7 +504,7 @@ func (g *Graph) lifecycle(next map[domain.ProcessKey]*proc, order []*proc) []Cha
 			p.label = g.assign(p.adapter)
 			changes = append(changes, Change{Kind: domain.EventAgentDiscovered, Process: p.s.Key(), Name: p.s.Name, Agent: p.label})
 		case trackHeavy:
-			changes = append(changes, Change{Kind: domain.EventProcessDiscovered, Process: p.s.Key(), Name: p.s.Name})
+			changes = append(changes, Change{Kind: domain.EventProcessDiscovered, Process: p.s.Key(), Name: p.name()})
 		}
 	}
 	slices.SortFunc(changes, compareChanges)
@@ -492,7 +590,7 @@ func (g *Graph) build(order []*proc, busy, dt float64, rates bool) Snapshot {
 		if !ok {
 			i = len(snap.Heavy)
 			heavy[r] = i
-			v := WorkloadView{Key: r.s.Key(), Name: r.s.Name, Class: r.class}
+			v := WorkloadView{Key: r.s.Key(), Name: r.name(), Class: r.class}
 			if r.owner != nil {
 				v.Owner, v.OwnerPID = r.owner.label, r.owner.s.PID
 			}
@@ -613,7 +711,7 @@ func (g *Graph) Workload(key domain.ProcessKey) (WorkloadTarget, bool) {
 			children[p.parent] = append(children[p.parent], p)
 		}
 	}
-	t := WorkloadTarget{Key: key, Name: r.s.Name, Class: r.class}
+	t := WorkloadTarget{Key: key, Name: r.name(), Class: r.class}
 	if r.owner != nil {
 		t.Owner = r.owner.label
 	}
