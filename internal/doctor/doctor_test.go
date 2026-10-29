@@ -50,7 +50,7 @@ func TestCollect(t *testing.T) {
 	}
 	// Without a host CPU counter, throtd derives CPU from the process
 	// table, so doctor must not list it as missing.
-	if len(r.Host.Missing) != 0 || r.Host.Derived[domain.MetricCPU] != "derived from process CPU by throtd" {
+	if len(r.Host.Missing) != 0 || r.Host.Derived[domain.MetricCPU] != "measured by throtd (iostat on macOS, else process CPU)" {
 		t.Errorf("host = %+v, want cpu derived, nothing missing", r.Host)
 	}
 	b, _ := json.Marshal(r)

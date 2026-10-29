@@ -6,14 +6,12 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
-### Added
-- `throt status --idle` lists every agent session by memory, largest first, with its PID, age, subtree memory and CPU, and whether it looks idle (under 1% of a core and no heavy workload in each of three status samples, one sample interval apart), with totals. Report only: it never signals or stops a process.
-
 ## [1.0.0-rc.1] - 2026-10-29
 
 The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md#compatibility) now applies: the commands, config, local protocol v1, JSON output, events, reason codes, MCP tools and exit codes it lists do not break within 1.x, and tests pin them. The scheduler stays off by default; the benchmarks say when to turn it on.
 
 ### Added
+- `throt status --idle` lists every agent session by memory, largest first, with its PID, age, subtree memory and CPU, and whether it looks idle (under 1% of a core and no heavy workload in each of three status samples, one sample interval apart), with totals. Report only: it never signals or stops a process.
 - Learned heavy commands: the Claude Code hook now also waits for capacity before commands it does not know by name (`python train.py`, `./scripts/build.sh`, `npx playwright test`) once `throtd` has seen them start a heavy workload. Before a single simple command the hook, and `throt run`, report its signature (program and first non-flag argument, base names only) to `throtd` through the new privileged `expect` method; a heavy workload of the same agent starting within 10s, with no other report it could belong to, makes the signature learned. Three light runs in a row forget it. Up to 256 signatures are kept with their peak memory in `learned.json` (0600) next to the socket; `throt learned` lists them, `--forget SIGNATURE` and `--clear` drop them (new `learned` method). Common light tools (`ls`, `git`, `grep`, …) are never reported. Against an older or stopped `throtd` the hook behaves as before.
 - Any busy command an agent runs through a shell is a heavy workload, whatever its programs are called (class `command`): a shell an agent started, whose subtree uses at least one core or 1 GiB. Shells hosting another agent and an agent's own servers are never one, and builds known by name keep their own workload.
 - Background priority: in `enforce` mode every agent-owned heavy workload runs at background CPU and I/O priority, so foreground apps stay responsive while builds saturate the CPU (heavy slots protect memory; they could not help when a few builds each use every core). macOS uses the background state of `taskpolicy -b` (`PRIO_DARWIN_BG`: lowest priority, efficiency cores on Apple silicon, throttled I/O), Linux nice +10 and best-effort I/O level 7 on every thread. Each member is identity-verified and lowered once; members that appear later are lowered on the next tick. Throt restores what it lowered when the mode leaves `enforce`, when the new `scheduler.background` key (default `true`, reloadable) is turned off, and on shutdown. New events `priority_lowered` and `priority_restored`, one per workload; `status` heavy entries carry `background`, and the TUI shows `bg` in the STATE column.
@@ -27,6 +25,7 @@ The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md
 - README: [Gradle, Maven and Docker](README.md#gradle-maven-and-docker), the recommended setup for agents running JVM builds with Testcontainers.
 
 ### Changed
+- `throt doctor` describes derived host CPU as "measured by throtd (iostat on macOS, else process CPU)", matching how throtd now reads it.
 - On macOS, throtd identifies a process (for `acquire`, `expect`, a pause's live check) with one `sysctl` instead of forking `ps`: the Claude Code hook asks before most tool calls, so with dozens of agents those forks added up.
 - The Claude Code hook waits for `./gradlew` and `./mvnw` (it passed them at once: the process classifier knows `gradle` and `mvn`, not the wrappers) and for `docker build`, `docker buildx build` and `docker compose build`. Read-only Gradle tasks (`tasks`, `projects`, `properties`, `help`, `dependencies`) and `--stop`/`--status` still pass, as do all other `docker` commands, `docker compose up` included.
 - The `balanced` profile's ceiling is four heavy workloads per CPU (at most 64) instead of one. The adaptive limit still rises on its own only to one per CPU, and resets there at unknown pressure; only waiting work that fits in free memory takes it further. A burst of CPU-bound builds now costs about 3% makespan over no scheduler instead of 11% (4-CPU container).

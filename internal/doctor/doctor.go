@@ -104,8 +104,8 @@ type Check struct {
 	Error   string                   `json:"error,omitempty"`
 }
 
-// derivedCPU is how throtd fills host CPU without a host CPU counter.
-const derivedCPU = "derived from process CPU by throtd"
+// derivedCPU is how throtd fills host CPU the one-shot sampler lacks.
+const derivedCPU = "measured by throtd (iostat on macOS, else process CPU)"
 
 // Status summarizes the daemon's view without naming any process.
 type Status struct {
