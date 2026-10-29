@@ -239,7 +239,7 @@ func bashCommand(data []byte) (command, why string) {
 // when command is not provably a lone heavy tool. It accepts a single
 // simple command, optionally preceded by `cd DIR &&` steps, whose command
 // word (after variable assignments and `time`) is a plain word naming a
-// heavy tool per agent.Classify. Pipes, other lists, redirections,
+// heavy tool (see heavyTool). Pipes, other lists, redirections,
 // substitutions and anything else shellwords refuses do not count.
 func heavyCommand(command string) (string, bool) {
 	cmds, ok := shellwords.Split(command)
@@ -261,14 +261,11 @@ func heavyCommand(command string) (string, bool) {
 		return "", false
 	}
 	name := path.Base(words[i].Raw)
-	if !isHeavy(name) {
-		return "", false
-	}
 	args := make([]string, 0, len(words)-i-1)
 	for _, w := range words[i+1:] {
 		args = append(args, w.Raw)
 	}
-	if lightInvocation(name, args) {
+	if !heavyTool(name, args) || lightInvocation(name, args) {
 		return "", false
 	}
 	return name, true
@@ -286,14 +283,23 @@ var lightFlags = map[string]bool{
 // ponytail: a short allowlist of the commonest cases; anything unlisted
 // still waits (the safe direction), extend when agents hit one often.
 var lightSubcommands = map[string]map[string]bool{
-	"go":     {"version": true, "env": true, "fmt": true, "doc": true, "list": true, "mod": true},
-	"npm":    {"view": true, "config": true, "ls": true, "list": true, "outdated": true, "root": true, "bin": true, "prefix": true, "info": true},
-	"pnpm":   {"view": true, "config": true, "ls": true, "list": true, "outdated": true, "root": true, "info": true},
-	"yarn":   {"info": true, "config": true, "list": true, "why": true, "bin": true},
-	"bun":    {"pm": true},
-	"cargo":  {"metadata": true, "tree": true, "search": true, "locate-project": true, "pkgid": true},
-	"gradle": {"tasks": true, "projects": true, "properties": true},
-	"dotnet": {"--info": true, "--list-sdks": true, "--list-runtimes": true},
+	"go":      {"version": true, "env": true, "fmt": true, "doc": true, "list": true, "mod": true},
+	"npm":     {"view": true, "config": true, "ls": true, "list": true, "outdated": true, "root": true, "bin": true, "prefix": true, "info": true},
+	"pnpm":    {"view": true, "config": true, "ls": true, "list": true, "outdated": true, "root": true, "info": true},
+	"yarn":    {"info": true, "config": true, "list": true, "why": true, "bin": true},
+	"bun":     {"pm": true},
+	"cargo":   {"metadata": true, "tree": true, "search": true, "locate-project": true, "pkgid": true},
+	"gradle":  gradleLight,
+	"gradlew": gradleLight,
+	"dotnet":  {"--info": true, "--list-sdks": true, "--list-runtimes": true},
+}
+
+// gradleLight are Gradle tasks and flags that only report on the build or
+// manage daemons. "dependencies" may download, but compiles and tests
+// nothing.
+var gradleLight = map[string]bool{
+	"tasks": true, "projects": true, "properties": true, "help": true, "dependencies": true,
+	"--stop": true, "--status": true,
 }
 
 // lightInvocation reports whether args make a heavy tool's run trivial.
@@ -310,6 +316,39 @@ func lightInvocation(name string, args []string) bool {
 		}
 	}
 	return lightSubcommands[name][args[0]]
+}
+
+// wrappers are build-tool wrapper scripts the process classifier cannot
+// know: a wrapper runs as sh and then java, so only the hook, which sees
+// the command word, can tell the build apart.
+var wrappers = map[string]bool{"gradlew": true, "mvnw": true}
+
+// heavyTool reports whether the command word name with args runs a heavy
+// workload: a classified heavy tool, a build wrapper, or a Docker image
+// build.
+func heavyTool(name string, args []string) bool {
+	switch {
+	case wrappers[name]:
+		return true
+	case name == "docker":
+		return dockerBuild(args)
+	}
+	return isHeavy(name)
+}
+
+// dockerBuild reports whether docker args build an image: "docker build",
+// "docker buildx build" or "docker compose build", subcommand first. Other
+// subcommands pass. "docker compose up" in particular stays light: it is
+// long-lived, so it would wait for a slot only to run for hours, and its
+// containers run in Docker's VM, where no slot covers them.
+func dockerBuild(args []string) bool {
+	switch {
+	case len(args) >= 1 && args[0] == "build":
+		return true
+	case len(args) >= 2 && (args[0] == "buildx" || args[0] == "compose") && args[1] == "build":
+		return true
+	}
+	return false
 }
 
 // isHeavy reports whether an executable base name is a heavy workload.

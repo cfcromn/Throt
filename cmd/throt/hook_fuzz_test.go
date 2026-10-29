@@ -17,6 +17,8 @@ func FuzzHookClaudeCode(f *testing.F) {
 	for _, s := range []string{
 		bashEvent("make -j8"), bashEvent("cd a && go test ./..."), bashEvent("FOO=1 time cargo build"),
 		bashEvent("go version"), bashEvent("ls"), bashEvent("make | tee log"), bashEvent(""),
+		bashEvent("./gradlew test"), bashEvent("./gradlew --stop"), bashEvent("./mvnw verify"),
+		bashEvent("docker compose build"), bashEvent("docker compose up"),
 		bashEvent("cd && make"), bashEvent("'make'"), bashEvent("make\x00"), bashEvent("\xff"),
 		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":null}}`,
 		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":1}}`,
