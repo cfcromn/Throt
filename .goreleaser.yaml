@@ -48,6 +48,8 @@ archives:
         info: *file_info
       - src: README.md
         info: *file_info
+      - src: README.ko.md
+        info: *file_info
       - src: CHANGELOG.md
         info: *file_info
 
