@@ -74,15 +74,27 @@ jobs:
           cache: true
       - name: Fuzz
         # A failing input is written to the package's testdata/fuzz, which
-        # the next step uploads to reproduce it with plain go test.
+        # the next step uploads to reproduce it with plain go test. A run
+        # that fails without writing one (the fuzzer's "context deadline
+        # exceeded" when a worker misses the -fuzztime deadline) found
+        # nothing and is only a warning.
         run: |
+          failed=0
           for pkg in $(go list ./...); do
             for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz'); do
               echo "::group::$pkg $target"
-              go test -run '^$' -fuzz "^${target}\$" -fuzztime 30s "$pkg"
+              if ! go test -run '^$' -fuzz "^${target}\$" -fuzztime 30s "$pkg"; then
+                if [ -n "$(git status --porcelain --untracked-files=all -- '*testdata/fuzz/*')" ]; then
+                  echo "::error::$pkg $target found a failing input"
+                  failed=1
+                else
+                  echo "::warning::$pkg $target failed without a failing input (fuzzer deadline)"
+                fi
+              fi
               echo "::endgroup::"
             done
           done
+          exit $failed
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
