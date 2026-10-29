@@ -301,7 +301,7 @@ The config file is optional: `~/.config/throt/config.json`, or `$XDG_CONFIG_HOME
 
 `profile` presets the scheduler limits; keys you set explicitly win. A profile never turns the scheduler on.
 
-Turn on `enforce` (with `balanced`) when agents' builds together can run out of memory: in the [benchmarks](docs/ARCHITECTURE.md#benchmarks) that is where it finished every job while the baseline swapped until jobs hit their cap or the OOM killer took them. For CPU-only contention, `observe` is enough; enforcing costs a few percent of build time there.
+Turn on `enforce` (with `balanced`) when agents' builds together can run out of memory: in the [benchmarks](docs/ARCHITECTURE.md#benchmarks) that is where it finished every job while the baseline swapped until jobs hit their cap or the OOM killer took them. When only the CPUs are busy it neither helps nor hurts measurably.
 
 | Profile | Heavy limit | Adaptive |
 |---|---|---|
@@ -346,7 +346,7 @@ Custom `agents` match exact executable names among your own processes. Generic r
 - **Scheduling** (only with `scheduler.mode` set). Throt can only act on processes that exist, so a new heavy workload that appears while every slot is taken is paused within one sample interval and resumed when a slot opens. Work already running is never queued. High pressure blocks new starts; queued work and `throt run` callers share one first-come line. Every decision is an event with a reason code.
 - **Control.** Pause and resume act only on heavy workloads of your own agents, and each signal is sent only after the process's identity (PID, start time, uid) is verified. Paused processes are recorded in `paused.json` before they are stopped, so a restarted `throtd` resumes them.
 
-The scheduler stays off by default. In the benchmarks it pays off when builds together run out of memory, and costs a few percent of build time when only the CPUs are busy, so turning it on is a choice to make per machine (see [Profiles](#profiles)). Details, benchmark results and the local protocol are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), see [Scheduler](docs/ARCHITECTURE.md#scheduler), [Control](docs/ARCHITECTURE.md#control) and [Results](docs/ARCHITECTURE.md#results).
+The scheduler stays off by default. In the benchmarks it pays off when builds together run out of memory and makes no measurable difference when only the CPUs are busy; pausing your agents' work is still your choice to make (see [Profiles](#profiles)). Details, benchmark results and the local protocol are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), see [Scheduler](docs/ARCHITECTURE.md#scheduler), [Control](docs/ARCHITECTURE.md#control) and [Results](docs/ARCHITECTURE.md#results).
 
 ## Known limitations
 

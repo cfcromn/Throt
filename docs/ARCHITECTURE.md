@@ -185,20 +185,24 @@ gh run watch    # then read the job summary, or download the bench-<os> artifact
 
 Outside a container the benchmark runs only with `CI=true`, and sizes the contention to the runner, since there is no CPU limit: the burst launches 4× `runtime.NumCPU()` jobs at once, and the staggered stream launches as many at intervals of 5 s / (2 × CPUs), so its arrival rate asks for about twice the machine. Throt runs the shipped defaults (the `balanced` profile: adaptive, start CPUs/4 but at least 2, ceiling the CPU count; 2 s sampling; 10 s cooldown). On macOS, peak running comes from `ps -o state=,comm=` instead of `/proc`. Each row is still the median of three runs, and the table header gives the OS, kernel, CPU count and limits. `THROT_BENCH_JOBS` and `THROT_BENCH_REPS` shrink a run for a quick check. `THROT_BENCH_DEFAULTS=1` sizes a container the same way, with the shipped defaults; give it a cpuset (`--cpuset-cpus`) so that `NumCPU`, and so the profile, matches its CPUs.
 
-CI results with the shipped defaults ([workflow run 40770079966](https://github.com/cfcromn/Throt/actions/runs/40770079966), GitHub-hosted runners, medians of 3 runs; the CPU rows of the earlier [run 40753939145](https://github.com/cfcromn/Throt/actions/runs/40753939145) were within 1 s of these):
+CI results with the shipped defaults ([workflow run 40789957752](https://github.com/cfcromn/Throt/actions/runs/40789957752), GitHub-hosted runners, medians of 3 runs; the runners had 4 CPUs on Linux and 3 on macOS that day, so each scenario has 4× that many jobs):
 
-| Runner | Scenario | Baseline makespan | Throt makespan | Probe p95 baseline → Throt |
-|---|---|---|---|---|
-| ubuntu, 2 CPUs (start 2, ceiling 2) | 8 × 5 s at once | 20.6s | 21.2s | 3.0 → 1.2ms |
-| ubuntu | 8 staggered 1.25s | 21.3s | 22.9s | 2.2 → 1.0ms |
-| macOS, 5 CPUs (start 2, ceiling 5) | 20 × 5 s at once | 23.6s | 26.2s | 1.1 → 2.8ms |
-| macOS | 20 staggered 500ms | 24.8s | 28s | 2.1 → 3.0ms |
-| macOS memory | burst, 8 × 3 GiB | 3m1s, 8/8 capped, +7.5 GiB swap | 3m15s (range 2m33s–3m34s), 0 capped, +4.2 GiB swap | 3.1 → 8.1ms |
-| macOS memory | staggered | 3m8s, 7/8 capped, +14.8 GiB swap | 33s (range 30s–3m29s), 0 capped, no swap growth | 3.3 → 8.0ms |
-| ubuntu memory, container (3 GiB + 1 GiB swap, 2 CPUs) | burst, 8 × 675 MiB | 3m0s, 5 capped, 3 OOM-killed | 3m25s (range 59s–3m25s), none capped or killed | 0.8 → 0.2ms |
-| ubuntu memory, container | staggered | 28s, 4 OOM-killed | 40s, none killed | 2.0 → 0.4ms |
+| Runner | Scenario | Baseline | Observe | Throt | Probe p95 baseline → Throt |
+|---|---|---|---|---|---|
+| ubuntu, 4 CPUs | 16 × 5 s at once | 20.5s | 20.4s | 20.9s | 4.0 → 4.0ms |
+| ubuntu | 16 staggered 630ms | 21.6s | 21.5s | 21.7s | 3.0 → 3.0ms |
+| ubuntu | 2 long + 16 short | 46s | – | 45.7s | 2.9 → 2.9ms |
+| macOS, 3 CPUs | 12 × 5 s at once | 20.3s | 21.6s | 19.8s | 2.2 → 2.3ms |
+| macOS | 12 staggered 830ms | 21.2s | 20.4s | 20.3s | 2.3 → 2.2ms |
+| macOS | 1 long + 12 short | 54s | – | 47s | 7.4 → 8.0ms |
+| macOS memory | burst, 8 × 22% of RAM | 3m1s, 8/8 capped, +5.3 GiB swap | – | 3m56s (range 2m33s–4m13s), 1 capped, +2.7 GiB swap | 4.2 → 4.7ms |
+| macOS memory | staggered | 3m10s, 8/8 capped, +4.9 GiB swap | – | 1m16s, none capped, +0.3 GiB swap | 5.6 → 5.3ms |
+| ubuntu memory, container (3 GiB + 1 GiB swap, 2 CPUs) | burst, 8 × 675 MiB | 58s, 3 OOM-killed | – | 2m12s, none killed | 2.2 → 0.2ms (p99 38 → 0.3ms) |
+| ubuntu memory, container | staggered | 27s, 3 OOM-killed | – | 31s, none killed | 30.7 → 1.2ms |
 
-Memory is where Throt pays off. On the macOS runner the baseline thrashed until the jobs hit their 3-minute cap, so its makespan is the cap, not completion; with Throt every job finished, though how long it took varied widely between runs. In the Linux container the baseline lost jobs to the OOM killer in both scenarios (in the burst, the rest hit the cap); with Throt none was killed, at the cost of more wall time in the staggered case. CPU-only contention is the cost, now small: Throt adds 3–13% makespan. On Linux it also cuts the probe tail; on macOS the p95 rises by 1–2 ms with CPU jobs and about 5 ms with memory jobs. That is not the daemon's own CPU (a sample costs 3–4% of one core at 2 s, see Platforms, under 1% of 5 CPUs); it is more likely the wake-up latency of SIGCONT and, with memory jobs, of resuming a job whose pages were swapped out.
+Memory is where Throt pays off. Without it, the macOS runner thrashed until every job hit its 3-minute cap (its makespan is the cap, not completion) and the Linux container lost 3 jobs to the OOM killer in each scenario. With it, every job finished but one capped job in one macOS burst, with half the swap growth or less, and the Linux tail latency fell from tens of milliseconds to about one. CPU-only contention now costs nothing measurable: Throt is within ±3% of the baseline either way, and it finished mixed long and short jobs sooner on both runners. `observe` matched the baseline, so watching costs nothing. The daemon column of the CPU table, an upper bound on throtd's own CPU, was 0.3–0.7% of one core on Linux and 2–3% on macOS, where reading the process table with `ps` costs more (see Platforms).
+
+The previous CI run ([40770079966](https://github.com/cfcromn/Throt/actions/runs/40770079966)), before the four-per-CPU ceiling, had Throt 3–13% slower than the baseline on CPU-only contention.
 
 The two changes behind the CPU numbers, measured in a container with `THROT_BENCH_DEFAULTS=1` (`docker run --init --cpus 4 --cpuset-cpus 0-3`, same Docker Desktop VM as above, start 2, ceiling 4):
 
@@ -224,7 +228,7 @@ In the memory scenarios (`--cpus 2 --cpuset-cpus 0-1 --memory 3g --memory-swap 4
 
 This keeps the default decision: the scheduler stays off.
 
-**When to turn it on:** when agents' builds together can exceed RAM (several Gradle, Docker or test-suite runs on a laptop), enable `enforce` with the default `balanced` profile; that is the case where the baseline swapped until jobs hit their cap or were OOM-killed and Throt finished every job. When contention is CPU-only, leave it off or in `observe`: it costs 3–13% makespan for a lower probe tail on Linux and a slightly higher one on macOS. With long and short jobs mixed, expect long jobs to finish sooner and short ones to wait longer (below). A lone build is unaffected either way.
+**When to turn it on:** when agents' builds together can exceed RAM (several Gradle, Docker or test-suite runs on a laptop), enable `enforce` with the default `balanced` profile; that is the case where the baseline swapped until jobs hit their cap or were OOM-killed and Throt finished every job. When contention is CPU-only it neither helps nor hurts measurably, so `observe` is enough. With long and short jobs mixed, expect long jobs to finish sooner and short ones to wait longer (below). A lone build is unaffected either way.
 
 ### One build, and long jobs mixed with short ones
 

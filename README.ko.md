@@ -301,7 +301,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 
 `profile`은 스케줄러 한도의 프리셋이다. 명시적으로 설정한 키가 우선한다. 프로필이 스케줄러를 켜는 일은 없다.
 
-에이전트들의 빌드가 함께 메모리를 다 쓸 수 있는 상황이라면 `enforce`(`balanced`와 함께)를 켠다. [벤치마크](docs/ARCHITECTURE.md#benchmarks)에서 이 설정은 모든 작업을 끝냈고, 기준선은 swap을 쓰다가 작업이 상한에 걸리거나 OOM killer에 죽었다. CPU만 경합하는 경우라면 `observe`로 충분하다. 이때 enforce는 빌드 시간을 몇 퍼센트 늘린다.
+에이전트들의 빌드가 함께 메모리를 다 쓸 수 있는 상황이라면 `enforce`(`balanced`와 함께)를 켠다. [벤치마크](docs/ARCHITECTURE.md#benchmarks)에서 이 설정은 모든 작업을 끝냈고, 기준선은 swap을 쓰다가 작업이 상한에 걸리거나 OOM killer에 죽었다. CPU만 바쁠 때는 눈에 띄는 득도 실도 없다.
 
 | 프로필 | 무거운 작업 한도 | 적응형 |
 |---|---|---|
@@ -346,7 +346,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 - **스케줄링**(`scheduler.mode`를 설정했을 때만). Throt는 이미 존재하는 프로세스에만 손을 쓸 수 있다. 그래서 모든 슬롯이 찬 상태에서 새 무거운 작업이 나타나면 샘플 주기 한 번 안에 일시 정지하고, 슬롯이 나면 재개한다. 이미 실행 중인 작업은 대기열에 넣지 않는다. high 압력이면 새 시작을 막는다. 대기 중인 작업과 `throt run` 호출자는 선착순 줄 하나를 함께 쓴다. 모든 결정은 reason 코드가 붙은 이벤트로 남는다.
 - **제어.** 일시 정지와 재개는 내 에이전트의 무거운 작업에만 적용한다. 시그널은 프로세스의 신원(PID, 시작 시각, uid)을 확인한 뒤에만 보낸다. 일시 정지한 프로세스는 정지하기 전에 `paused.json`에 기록하므로 재시작한 `throtd`가 이를 재개한다.
 
-스케줄러는 기본적으로 꺼져 있다. 벤치마크에서는 빌드들이 함께 메모리를 다 쓸 때 효과가 있었고, CPU만 바쁠 때는 빌드 시간이 몇 퍼센트 늘었다. 그러니 켤지 말지는 머신마다 정할 일이다([프로필](#프로필) 참고). 세부 사항, 벤치마크 결과, 로컬 프로토콜은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 있다. [Scheduler](docs/ARCHITECTURE.md#scheduler), [Control](docs/ARCHITECTURE.md#control), [Results](docs/ARCHITECTURE.md#results)를 참고한다.
+스케줄러는 기본적으로 꺼져 있다. 벤치마크에서는 빌드들이 함께 메모리를 다 쓸 때 효과가 있었고, CPU만 바쁠 때는 눈에 띄는 차이가 없었다. 그래도 에이전트의 작업을 멈추는 일이니 켤지는 사용자가 정한다([프로필](#프로필) 참고). 세부 사항, 벤치마크 결과, 로컬 프로토콜은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)에 있다. [Scheduler](docs/ARCHITECTURE.md#scheduler), [Control](docs/ARCHITECTURE.md#control), [Results](docs/ARCHITECTURE.md#results)를 참고한다.
 
 ## 알려진 제약
 
