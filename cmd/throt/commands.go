@@ -52,7 +52,8 @@ func isHelp(a string) bool {
 func commands() []command {
 	return []command{
 		{name: "top", run: cmdTop, help: "open the terminal UI (the default with no command)"},
-		{name: "status", run: cmdStatus, help: "show host resources and pressure; --json for JSON"},
+		{name: "status", run: cmdStatus, help: `show host resources and pressure; --json for JSON; --idle
+lists agent sessions by memory and which look idle (report only)`},
 		{name: "stats", run: cmdStats, flags: true, help: "show per-agent resource usage since throtd started; --json for JSON"},
 		{name: "learned", run: cmdLearned, flags: true, synopsis: "[--forget SIGNATURE | --clear]", help: `list the commands throtd learned heavy, which the hook then
 waits for like heavy tools; --forget or --clear drops them`},

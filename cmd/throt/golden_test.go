@@ -499,7 +499,8 @@ const goldenUsage = `Usage: throt [flags] [command]
 
 Commands:
   top        open the terminal UI (the default with no command)
-  status     show host resources and pressure; --json for JSON
+  status     show host resources and pressure; --json for JSON; --idle
+             lists agent sessions by memory and which look idle (report only)
   stats      show per-agent resource usage since throtd started; --json for JSON
   learned [--forget SIGNATURE | --clear]
              list the commands throtd learned heavy, which the hook then
@@ -1380,7 +1381,8 @@ claude-1  4312  make     build  150%  2.0 GiB  running
 `, stderr: ""},
 		"status -h": {code: 0, stdout: `usage: throt status
 
-show host resources and pressure; --json for JSON
+show host resources and pressure; --json for JSON; --idle
+lists agent sessions by memory and which look idle (report only)
 `, stderr: ""},
 		"status down":                {code: 1, stdout: "", stderr: "throt: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},
 		"status down invalid config": {code: 1, stdout: "", stderr: "throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not \"sometimes\"; using the default socket\nthrot: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},

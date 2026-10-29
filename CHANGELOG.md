@@ -6,6 +6,9 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Added
+- `throt status --idle` lists every agent session by memory, largest first, with its PID, age, subtree memory and CPU, and whether it looks idle (under 1% of a core and no heavy workload in each of three status samples, one sample interval apart), with totals. Report only: it never signals or stops a process.
+
 ## [1.0.0-rc.1] - 2026-10-29
 
 The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md#compatibility) now applies: the commands, config, local protocol v1, JSON output, events, reason codes, MCP tools and exit codes it lists do not break within 1.x, and tests pin them. The scheduler stays off by default; the benchmarks say when to turn it on.

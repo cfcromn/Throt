@@ -168,6 +168,7 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 |---|---|
 | `throt`, `throt top` | Terminal UI. Quitting it never affects `throtd`. |
 | `throt status [--json]` | Pressure and its reason, host resources, agents, heavy workloads, scheduler state, stopped processes. |
+| `throt status --idle` | Every agent session by memory with its age, CPU, and whether it looks idle (under 1% CPU and no heavy workload over three samples). Report only: it never stops a process. |
 | `throt stats [--json]` | Per agent: CPU time, peak memory, heavy jobs and time queued since `throtd` started. |
 | `throt learned [--forget SIGNATURE \| --clear]` | The commands `throtd` learned heavy, which the Claude Code hook then waits for; `--forget` or `--clear` drops them. See [Learned heavy commands](#learned-heavy-commands). |
 | `throt events [-f] [-n N]` | Recent daemon events as JSON lines (default 50); `-f` keeps printing new ones. |
