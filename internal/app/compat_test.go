@@ -88,7 +88,7 @@ var protocolWant = map[string]struct {
 		params: nil,
 		result: []string{
 			"agents[].agent", "agents[].children", "agents[].cpu", "agents[].name", "agents[].process.pid",
-			"agents[].process.start", "agents[].rss", "degraded", "heavy[].class", "heavy[].cpu",
+			"agents[].process.start", "agents[].rss", "degraded", "heavy[].background", "heavy[].class", "heavy[].cpu",
 			"heavy[].name", "heavy[].owner", "heavy[].owner_pid", "heavy[].process.pid",
 			"heavy[].process.start", "heavy[].rss", "host.cpu_stall.full", "host.cpu_stall.some",
 			"host.cpu_usage", "host.io_stall.full", "host.io_stall.some", "host.latency", "host.load1",

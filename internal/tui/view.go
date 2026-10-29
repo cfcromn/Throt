@@ -743,7 +743,7 @@ func (m Model) heavyPane(rows, w int) panel {
 	state := m.stateOf()
 	cells := make([][]string, len(m.heavy))
 	for i, h := range m.heavy {
-		cells[i] = []string{owner(h.Owner), fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), state(h.Key)}
+		cells[i] = []string{owner(h.Owner), fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), state(h)}
 		cols[6].width = max(cols[6].width, lipgloss.Width(cells[i][6]))
 	}
 	return m.table(paneHeavy, "HEAVY WORKLOADS", "", "(no heavy workloads)", cols, cells, rows, "", w)
@@ -751,8 +751,8 @@ func (m Model) heavyPane(rows, w int) panel {
 
 // stateOf returns a lookup of each workload's scheduling state: "QUEUED",
 // "PAUSED", "running (would queue)" for work observe mode would have
-// queued, or "" while it runs.
-func (m Model) stateOf() func(domain.ProcessKey) string {
+// queued, "bg" while it runs at background priority, or "" while it runs.
+func (m Model) stateOf() func(process.WorkloadView) string {
 	paused := make(map[domain.ProcessKey]bool, len(m.status.Paused))
 	for _, p := range m.status.Paused {
 		paused[p.Key] = true
@@ -765,14 +765,16 @@ func (m Model) stateOf() func(domain.ProcessKey) string {
 	for _, k := range m.status.Scheduler.WouldQueue {
 		would[k] = true
 	}
-	return func(k domain.ProcessKey) string {
-		switch {
+	return func(h process.WorkloadView) string {
+		switch k := h.Key; {
 		case queued[k]:
 			return "QUEUED"
 		case paused[k]:
 			return "PAUSED"
 		case would[k]:
 			return "running (would queue)"
+		case h.Background:
+			return "bg"
 		}
 		return ""
 	}
@@ -803,7 +805,7 @@ func (m Model) drillPane(rows, w int) panel {
 	hs := m.workloads(paneDrill)
 	cells := make([][]string, len(hs))
 	for i, h := range hs {
-		st := state(h.Key)
+		st := state(h)
 		if st == "" {
 			st = "running"
 		}

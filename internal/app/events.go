@@ -34,7 +34,8 @@ func (d *Daemon) emit(kind domain.EventKind, msg string, attrs map[string]string
 func eventLevel(kind domain.EventKind) slog.Level {
 	switch kind {
 	case domain.EventProcessDiscovered, domain.EventProcessLost,
-		domain.EventLeaseGranted, domain.EventLeaseReleased:
+		domain.EventLeaseGranted, domain.EventLeaseReleased,
+		domain.EventPriorityLowered, domain.EventPriorityRestored:
 		return slog.LevelDebug
 	case domain.EventDegraded, domain.EventControlFailed, domain.EventControlRefused,
 		domain.EventConfigReloadFailed, domain.EventOrphanStopped:

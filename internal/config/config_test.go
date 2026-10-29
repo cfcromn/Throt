@@ -68,6 +68,17 @@ func TestLoad(t *testing.T) {
 				t.Errorf("got %+v, want defaults", c)
 			}
 		}},
+		{name: "background on by default", body: `{"profile":"cool","scheduler":{"mode":"enforce"}}`, check: func(t *testing.T, c Config) {
+			if !c.Scheduler.Background {
+				t.Errorf("got %+v", c.Scheduler)
+			}
+		}},
+		{name: "background off", body: `{"scheduler":{"background":false}}`, check: func(t *testing.T, c Config) {
+			if c.Scheduler.Background {
+				t.Errorf("got %+v", c.Scheduler)
+			}
+		}},
+		{name: "background not a bool", body: `{"scheduler":{"background":"yes"}}`, wantErr: "background"},
 		{name: "bad scheduler mode", body: `{"scheduler":{"mode":"auto"}}`, wantErr: "scheduler.mode"},
 		{name: "unknown scheduler key", body: `{"scheduler":{"limit":3}}`, wantErr: `unknown key "limit" in scheduler`},
 		{name: "resume cooldown too long", body: `{"scheduler":{"resume_cooldown":"11m"}}`, wantErr: "scheduler.resume_cooldown must be at most 10m0s"},

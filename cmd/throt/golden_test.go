@@ -745,6 +745,7 @@ scheduler.pause_on_critical  true                      profile
 scheduler.max_queue_wait     5m0s                      default
 scheduler.adaptive           true                      profile
 scheduler.per_agent_limit    0                         default
+scheduler.background         true                      default
 agents                       []                        default
 `, stderr: ""},
 		"config show --json": {code: 0, stdout: `{
@@ -764,7 +765,8 @@ agents                       []                        default
       "pause_on_critical": true,
       "max_queue_wait": "5m0s",
       "adaptive": true,
-      "per_agent_limit": 0
+      "per_agent_limit": 0,
+      "background": true
     },
     "agents": null
   },
@@ -827,6 +829,11 @@ agents                       []                        default
     {
       "key": "scheduler.per_agent_limit",
       "value": "0",
+      "source": "default"
+    },
+    {
+      "key": "scheduler.background",
+      "value": "true",
       "source": "default"
     },
     {

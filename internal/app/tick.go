@@ -70,11 +70,13 @@ func (d *Daemon) tick(parent context.Context) {
 		d.account(s.now, r.snap)
 		d.watch = d.refillWatch(r.snap.Heavy, len(waiters))
 		d.procsFailingSince = time.Time{}
+		d.background(parent, s.procs, &r)
 	} else {
 		// No round ran, so there is no current would_queue to show.
 		d.wouldQueue = d.wouldQueue[:0]
 		d.watch = nil
 		d.failOpenQueued(parent, s.now)
+		d.background(parent, nil, nil)
 	}
 	d.publishScheduler()
 }
@@ -203,7 +205,7 @@ func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level
 		d.status.Host = &host
 	}
 	if s.perr == nil {
-		d.status.Agents, d.status.Heavy = r.snap.Agents, r.snap.Heavy
+		d.status.Agents, d.status.Heavy = r.snap.Agents, d.withBackground(r.snap.Heavy)
 		d.status.Orphans, d.status.OrphanCount = r.orphans, r.orphanCount
 		d.status.UnattributedMemory, d.status.UnattributedRSS = r.snap.Unattributed, r.snap.UnattributedRSS
 		d.stopped = r.snap.Stopped

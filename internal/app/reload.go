@@ -94,7 +94,11 @@ func (d *Daemon) Reload() (ReloadResult, error) {
 	}
 	// New adapters can split a workload into new keys; re-sending the
 	// policy rebaselines the scheduler so running work is never queued.
-	if next.Scheduler != d.live.Scheduler || agentsChanged {
+	// scheduler.background is not part of the policy: changing it alone
+	// must not rebaseline the scheduler.
+	nextPolicy, livePolicy := next.Scheduler, d.live.Scheduler
+	nextPolicy.Background, livePolicy.Background = false, false
+	if nextPolicy != livePolicy || agentsChanged {
 		select {
 		case <-d.policyCh: // superseded before the tick took it
 		default:
@@ -102,6 +106,7 @@ func (d *Daemon) Reload() (ReloadResult, error) {
 		d.policyCh <- schedulerPolicy(next.Scheduler)
 	}
 	d.live = next
+	d.bgEnabled.Store(next.Scheduler.Background)
 
 	msg := "config reloaded: no changes"
 	if len(res.Changed) > 0 {

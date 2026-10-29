@@ -72,7 +72,7 @@ Throt is not a coding agent, a container orchestrator, or a cloud scheduler, and
    throt events -f      # watch; decisions appear when agents' heavy jobs compete for slots
    ```
 
-5. **Enforce** once the decisions look right: set `"mode": "enforce"` in the file, then run `throt config check` and `throt reload` again. New heavy workloads beyond the limit are now paused (SIGSTOP) until a slot frees up. Stopping `throtd` resumes everything it paused.
+5. **Enforce** once the decisions look right: set `"mode": "enforce"` in the file, then run `throt config check` and `throt reload` again. New heavy workloads beyond the limit are now paused (SIGSTOP) until a slot frees up, and every agent-owned heavy workload runs at background CPU and I/O priority, so your own apps stay responsive while builds keep every core busy. Stopping `throtd` resumes everything it paused and restores the priorities it lowered.
 
 ## Install and update
 
@@ -331,6 +331,7 @@ Turn on `enforce` (with `balanced`) when agents' builds together can run out of 
 | `scheduler.start_limit` | from the profile | Where the adaptive limit starts (0 to `heavy_limit`; 0 means from the profile, capped at `heavy_limit`). Ignored without `adaptive`. |
 | `scheduler.adaptive` | from the profile | Halve the limit under high pressure; raise it by one per 30s, up to one per CPU, while the machine copes, or at once, up to `heavy_limit`, for waiting jobs that fit in free memory. |
 | `scheduler.per_agent_limit` | `0` (no cap) | Most heavy workloads one agent may run, so one agent can't take every slot (0 to 64). |
+| `scheduler.background` | `true` | In `enforce` mode, run every agent-owned heavy workload at background priority: on macOS the background state of `taskpolicy -b` (lowest CPU priority, efficiency cores on Apple silicon, throttled disk I/O), on Linux nice +10 and the lowest best-effort I/O priority. Throt restores them when you leave `enforce`, turn this off, or stop `throtd`; on Linux the nice value usually stays until the process exits, since only root may raise priority again. Profiles don't change it. |
 | `scheduler.resume_cooldown` | `10s` | Minimum spacing between resumes (and preemptions) while pressure is high, critical, or elevated by memory, swap or latency, and after a pressure pause; free slots are refilled at once at normal or CPU-only pressure, or when a job exited. At most `10m`. |
 | `scheduler.max_queue_wait` | `5m` | Work queued this long gets the next free slot even under high pressure, so the queue can't starve (at least 1s). |
 | `scheduler.pause_on_critical` | `false` | Under critical pressure, pause the youngest running heavy workload, never the last one. |
@@ -347,7 +348,7 @@ Custom `agents` match exact executable names among your own processes. Generic r
 
 - `throt config check [--config PATH]` loads the file exactly as `throtd` does, prints `ok` and each value that differs from the defaults (marked `file` or `profile`), and exits 1 with the error for an invalid or missing file. It warns, without failing, about `enforce` with a fixed `heavy_limit` of at least the CPU count, `pause_on_critical` with mode `off`, and a custom agent that shadows a built-in one.
 - `throt config show [--json]` prints the effective config and the source of every value: `default`, `profile` or `file`.
-- `throt reload` (or SIGHUP) applies `scheduler.*`, `profile` and `agents` live and prints each `applied:` change. `socket_path`, `sample_interval` and `event_history` are reported as `requires restart`. A file that fails to load changes nothing. Leaving `enforce` resumes everything the scheduler queued, never your manual pauses.
+- `throt reload` (or SIGHUP) applies `scheduler.*`, `profile` and `agents` live and prints each `applied:` change. `socket_path`, `sample_interval` and `event_history` are reported as `requires restart`. A file that fails to load changes nothing. Leaving `enforce` resumes everything the scheduler queued, never your manual pauses, and restores the priorities Throt lowered.
 
 **Logging.** `throtd` logs to stderr. Flags: `-config PATH`, `-version`, `-log-format text|json` (default `text`), `-log-level debug|info|warn|error` (default `info`). `info` covers daemon lifecycle, agents appearing and leaving, pressure changes, scheduler decisions and control actions; `debug` adds each heavy workload start and exit and each admission lease. The event log (`throt events`) records everything regardless of the log level.
 

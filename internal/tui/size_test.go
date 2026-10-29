@@ -179,6 +179,22 @@ func TestObserveState(t *testing.T) {
 	}
 }
 
+// TestBackgroundState checks that a workload throtd keeps at background
+// priority reads "bg" while it runs, and QUEUED once queued.
+func TestBackgroundState(t *testing.T) {
+	st := sampleStatus(1, 2)
+	st.Scheduler = app.SchedulerStatus{Mode: scheduler.Mode("enforce"), HeavyLimit: 2,
+		Queued: []domain.ProcessKey{st.Heavy[0].Key}, WouldQueue: []domain.ProcessKey{}}
+	st.Heavy[0].Background, st.Heavy[1].Background = true, true
+	out := view(newModel(t, &fakeClient{status: st}, 140, 40))
+	if l := lineContaining(t, out, "2001"); !strings.Contains(l, " bg") {
+		t.Errorf("background row = %q", l)
+	}
+	if l := lineContaining(t, out, "2000"); !strings.Contains(l, "QUEUED") {
+		t.Errorf("queued background row = %q", l)
+	}
+}
+
 // TestDaemonDownMessage checks the not-running banner and that polling
 // keeps going, so the TUI reconnects by itself.
 func TestDaemonDownMessage(t *testing.T) {

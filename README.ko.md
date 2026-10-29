@@ -72,7 +72,7 @@ Throt는 코딩 에이전트도, 컨테이너 오케스트레이터도, 클라�
    throt events -f      # watch; decisions appear when agents' heavy jobs compete for slots
    ```
 
-5. 결정이 적절해 보이면 **enforce**로 바꾼다. 파일에서 `"mode": "enforce"`로 설정하고 `throt config check`와 `throt reload`를 다시 실행한다. 이제 한도를 넘는 새 무거운 작업은 슬롯이 빌 때까지 일시 정지(SIGSTOP)된다. `throtd`를 멈추면 그동안 일시 정지한 작업을 모두 재개한다.
+5. 결정이 적절해 보이면 **enforce**로 바꾼다. 파일에서 `"mode": "enforce"`로 설정하고 `throt config check`와 `throt reload`를 다시 실행한다. 이제 한도를 넘는 새 무거운 작업은 슬롯이 빌 때까지 일시 정지(SIGSTOP)된다. 또 에이전트가 소유한 무거운 작업은 모두 백그라운드 CPU·I/O 우선순위로 돌기 때문에, 빌드가 모든 코어를 쓰고 있어도 내가 쓰는 앱은 계속 잘 반응한다. `throtd`를 멈추면 그동안 일시 정지한 작업을 모두 재개하고 낮췄던 우선순위도 되돌린다.
 
 ## 설치와 업데이트
 
@@ -331,6 +331,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 | `scheduler.start_limit` | 프로필에서 | 적응형 한도의 시작값(0–`heavy_limit`. 0이면 프로필 값을 쓰되 `heavy_limit`을 넘지 않는다). `adaptive`가 아니면 무시한다. |
 | `scheduler.adaptive` | 프로필에서 | high 압력에서는 한도를 절반으로 줄인다. 머신이 버티는 동안 30s마다 하나씩 CPU당 하나까지 올리고, 빈 메모리에 들어가는 대기 작업이 있으면 `heavy_limit`까지 즉시 올린다. |
 | `scheduler.per_agent_limit` | `0` (제한 없음) | 한 에이전트가 실행할 수 있는 무거운 작업의 최대 수. 한 에이전트가 모든 슬롯을 차지하지 못하게 한다(0–64). |
+| `scheduler.background` | `true` | `enforce` 모드에서 에이전트가 소유한 무거운 작업을 모두 백그라운드 우선순위로 돌린다. macOS에서는 `taskpolicy -b`와 같은 백그라운드 상태(가장 낮은 CPU 우선순위, Apple silicon에서는 효율 코어, 디스크 I/O 제한)이고, Linux에서는 nice +10과 가장 낮은 best-effort I/O 우선순위다. `enforce`를 끄거나 이 값을 끄거나 `throtd`를 멈추면 원래대로 되돌린다. 다만 Linux에서는 우선순위를 다시 올리는 일을 root만 할 수 있어서, 보통 nice 값은 프로세스가 끝날 때까지 남는다. 프로필은 이 값을 바꾸지 않는다. |
 | `scheduler.resume_cooldown` | `10s` | 압력이 high나 critical이거나 메모리, swap, latency 때문에 elevated일 때, 그리고 압력 때문에 일시 정지한 뒤에 재개(와 선점) 사이에 두는 최소 간격. 압력이 normal이거나 CPU만 원인일 때, 또는 작업이 종료되었을 때는 빈 슬롯을 즉시 채운다. 최대 `10m`. |
 | `scheduler.max_queue_wait` | `5m` | 이만큼 대기한 작업은 high 압력에서도 다음 빈 슬롯을 받는다. 대기열이 기아 상태에 빠지지 않게 한다(최소 1s). |
 | `scheduler.pause_on_critical` | `false` | critical 압력에서 가장 최근에 시작한 무거운 작업을 일시 정지한다. 마지막 하나는 건드리지 않는다. |
@@ -347,7 +348,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 
 - `throt config check [--config PATH]`는 `throtd`와 똑같은 방식으로 파일을 읽어 `ok`와 기본값과 다른 값을 출력한다(각각 `file` 또는 `profile`로 표시). 파일이 잘못되었거나 없으면 오류와 함께 1로 종료한다. 실패로 처리하지는 않지만 다음 경우에는 경고한다. 고정 `heavy_limit`이 CPU 수 이상인데 `enforce`인 경우, mode가 `off`인데 `pause_on_critical`인 경우, 사용자 정의 에이전트가 기본 에이전트를 가리는 경우다.
 - `throt config show [--json]`은 실제로 적용되는 설정과 각 값의 출처(`default`, `profile`, `file`)를 출력한다.
-- `throt reload`(또는 SIGHUP)는 `scheduler.*`, `profile`, `agents`를 실행 중에 적용하고 바뀐 항목마다 `applied:`를 출력한다. `socket_path`, `sample_interval`, `event_history`는 `requires restart`로 보고한다. 파일을 읽지 못하면 아무것도 바꾸지 않는다. `enforce`에서 벗어나면 스케줄러가 대기열에 넣은 작업을 모두 재개하지만, 사용자가 직접 일시 정지한 작업은 건드리지 않는다.
+- `throt reload`(또는 SIGHUP)는 `scheduler.*`, `profile`, `agents`를 실행 중에 적용하고 바뀐 항목마다 `applied:`를 출력한다. `socket_path`, `sample_interval`, `event_history`는 `requires restart`로 보고한다. 파일을 읽지 못하면 아무것도 바꾸지 않는다. `enforce`에서 벗어나면 스케줄러가 대기열에 넣은 작업을 모두 재개하고 Throt가 낮춘 우선순위를 되돌린다. 사용자가 직접 일시 정지한 작업은 건드리지 않는다.
 
 **로깅.** `throtd`는 stderr에 로그를 남긴다. 플래그는 `-config PATH`, `-version`, `-log-format text|json`(기본 `text`), `-log-level debug|info|warn|error`(기본 `info`)다. `info`는 데몬 생명주기, 에이전트의 등장과 종료, 압력 변화, 스케줄러 결정, 제어 동작을 다룬다. `debug`는 무거운 작업의 시작과 종료, admission lease를 하나하나 추가로 기록한다. 이벤트 로그(`throt events`)는 로그 레벨과 관계없이 모든 것을 기록한다.
 

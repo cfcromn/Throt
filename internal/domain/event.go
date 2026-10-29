@@ -29,6 +29,7 @@ var EventKinds = []EventKind{
 	EventProcessDiscovered, EventProcessLost, EventAgentDiscovered, EventAgentLost, EventOrphanStopped,
 	EventControlPaused, EventControlResumed, EventControlRefused, EventControlFailed,
 	EventSchedulerDecision, EventSchedulerLimit, EventLeaseGranted, EventLeaseReleased,
+	EventPriorityLowered, EventPriorityRestored,
 }
 
 // Event is the single structured record that feeds logs, diagnostics, and

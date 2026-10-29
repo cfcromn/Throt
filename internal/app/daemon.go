@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/agent"
@@ -81,6 +82,10 @@ type Daemon struct {
 	exits ExitChecker
 	// refillEvery is how often exits is polled; tests shorten it.
 	refillEvery time.Duration
+	// pri lowers heavy workloads to background priority; nil when sig
+	// cannot. bgEnabled is scheduler.background, set by Reload.
+	pri       Prioritizer
+	bgEnabled atomic.Bool
 
 	graphMu sync.Mutex // guards graph; held briefly, never while signaling
 	graph   *process.Graph
@@ -103,6 +108,8 @@ type Daemon struct {
 	// procsFailingSince is when the current run of failed process samples
 	// began; zero while sampling works.
 	procsFailingSince time.Time
+	// prio holds the processes lowered to background priority.
+	prio priorities
 
 	// mu guards status, leases, and stopped together, so an acquire checks
 	// and grants against one consistent view, and a tick replaces the heavy
@@ -163,6 +170,7 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		sig:      sig,
 		uid:      uint32(os.Getuid()),
 		reported: map[domain.ProcessKey]bool{},
+		prio:     newPriorities(),
 		live:     cfg,
 		policyCh: make(chan scheduler.Policy, 1),
 
@@ -174,6 +182,8 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 	d.ctl = control.New(sig, d.uid, time.Now, d.saveState)
 	d.ident, _ = sig.(ProcessIdentifier)
 	d.exits, _ = sig.(ExitChecker)
+	d.pri, _ = sig.(Prioritizer)
+	d.bgEnabled.Store(cfg.Scheduler.Background)
 	d.linePolicy = d.sched.Policy()
 	return d
 }
@@ -207,6 +217,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	err = srv.Serve(ctx, l)
 	cancel()
 	wg.Wait()
+	// The sampling goroutine has stopped, so d.prio is ours now.
+	if len(d.prio.workloads) > 0 {
+		d.restorePriorities(ctx, RestoreShutdown)
+	}
 	msg, attrs := "shutdown", map[string]string(nil)
 	// Fail open: never leave work paused behind us.
 	if n := d.resumeAll(); n > 0 {

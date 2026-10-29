@@ -21,4 +21,9 @@ const (
 	// became_workload, or expired.
 	EventLeaseGranted  EventKind = "lease_granted"
 	EventLeaseReleased EventKind = "lease_released"
+	// EventPriorityLowered records that a heavy workload was put at
+	// background CPU and I/O priority; EventPriorityRestored that its
+	// processes got their normal priority back.
+	EventPriorityLowered  EventKind = "priority_lowered"
+	EventPriorityRestored EventKind = "priority_restored"
 )

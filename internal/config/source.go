@@ -88,7 +88,7 @@ func profileKeys(name string) map[string]bool {
 		SocketPath: "-", SampleInterval: -1, EventHistory: -1, Profile: "-",
 		Scheduler: Scheduler{
 			Mode: "-", HeavyLimit: -1, StartLimit: -1, ResumeCooldown: -1, PauseOnCritical: true,
-			MaxQueueWait: -1, Adaptive: true, PerAgentLimit: -1,
+			MaxQueueWait: -1, Adaptive: true, PerAgentLimit: -1, Background: true,
 		},
 		Agents: []Agent{{Name: "-"}},
 	}

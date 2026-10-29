@@ -59,6 +59,9 @@ type WorkloadView struct {
 	// CPU (cores) and RSS (bytes) include collapsed descendants.
 	CPU float64 `json:"cpu"`
 	RSS uint64  `json:"rss"`
+	// Background is set by throtd when the workload runs at background
+	// priority (scheduler.background); the graph leaves it false.
+	Background bool `json:"background,omitempty"`
 }
 
 // MaxUnattributed bounds Snapshot.Unattributed.

@@ -47,6 +47,7 @@ func flatten(c Config) []keyValue {
 		{"scheduler.max_queue_wait", dur(s.MaxQueueWait)},
 		{"scheduler.adaptive", strconv.FormatBool(s.Adaptive)},
 		{"scheduler.per_agent_limit", strconv.Itoa(s.PerAgentLimit)},
+		{"scheduler.background", strconv.FormatBool(s.Background)},
 		{"agents", agentsString(c.Agents)},
 	}
 }

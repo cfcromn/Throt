@@ -88,6 +88,10 @@ type Scheduler struct {
 	Adaptive bool `json:"adaptive"`
 	// PerAgentLimit caps heavy workloads per agent instance; 0 is no cap.
 	PerAgentLimit int `json:"per_agent_limit"`
+	// Background runs agents' heavy workloads at background CPU and I/O
+	// priority in enforce mode, so foreground apps stay responsive. No
+	// profile changes it.
+	Background bool `json:"background"`
 }
 
 // Profile presets for a machine with ncpu CPUs. The scheduler mode is never
@@ -174,6 +178,7 @@ func Default() Config {
 			HeavyLimit:     2,
 			ResumeCooldown: Duration(10 * time.Second),
 			MaxQueueWait:   Duration(5 * time.Minute),
+			Background:     true,
 		},
 		Profile: defaultProfile,
 	}
