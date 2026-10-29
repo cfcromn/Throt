@@ -507,7 +507,13 @@ func parseStatus(out string) statusView {
 		case "AGENT":
 			s.agents[f[0]] = pid
 		case "OWNER":
-			s.heavy = append(s.heavy, heavyRow{owner: f[0], pid: pid, name: f[2], class: f[3], state: f[len(f)-1]})
+			// The state is the last word, except "running (background)",
+			// which is running all the same.
+			state := f[len(f)-1]
+			if state == "(background)" {
+				state = f[len(f)-2]
+			}
+			s.heavy = append(s.heavy, heavyRow{owner: f[0], pid: pid, name: f[2], class: f[3], state: state})
 		}
 	}
 	return s

@@ -127,6 +127,17 @@ var classes = map[string]domain.WorkloadClass{
 	"kaniko":     domain.ClassContainerBuild,
 }
 
+// launchers run builds and tests (npm run build, a Gradle build in java)
+// but just as often host long-lived idle processes: an MCP server under
+// npm exec, a Gradle or Kotlin daemon, a language server. Arguments are
+// never read, so the graph tells them apart by activity instead (see
+// process.Graph).
+var launchers = map[string]bool{"npm": true, "pnpm": true, "yarn": true, "bun": true, "java": true, "dotnet": true}
+
+// Launcher reports whether name is a package-manager launcher, heavy only
+// while it is active.
+func Launcher(name string) bool { return launchers[name] }
+
 // Classify labels p by its exact executable name. It never returns
 // ClassAgent: agent recognition is the adapters' job. Unlisted names,
 // including generic runtimes such as node and python, are ClassUnknown.

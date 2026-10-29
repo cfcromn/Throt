@@ -233,15 +233,23 @@ func TestRunLease(t *testing.T) {
 				f.replies = []statusReply{{err: errors.New("status must not be called")}}
 			}
 			r := f.runner()
-			acquires := 0
+			acquires, overdue := 0, 0
 			r.acquire = func(context.Context) (app.AcquireResult, error) {
 				a := tt.acquires[min(acquires, len(tt.acquires)-1)]
 				acquires++
 				return a.res, a.err
 			}
+			r.overdue = func(context.Context) (app.AcquireResult, error) {
+				overdue++
+				return app.AcquireResult{Granted: true, Reason: app.ReasonOverdue}, nil
+			}
 			tt.opts.argv = argv
 			if err := r.run(context.Background(), tt.opts); err != nil {
 				t.Fatalf("run: %v", err)
+			}
+			// Only a timed-out wait asks for the over-limit lease.
+			if want := strings.HasPrefix(tt.name, "timeout"); (overdue == 1) != want || overdue > 1 {
+				t.Errorf("overdue calls = %d, want %v", overdue, want)
 			}
 			if f.execPath != "/usr/bin/make" || !reflect.DeepEqual(f.execArgv, argv) {
 				t.Errorf("exec %q %q", f.execPath, f.execArgv)
@@ -449,5 +457,39 @@ func TestRunDispatchPassesArgs(t *testing.T) {
 	err := run(context.Background(), []string{"-config", "/nonexistent/throt.json", "run"}, strings.NewReader(""), io.Discard, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "missing command") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestRunReportsSignature checks that throt run reports its command's
+// signature just before the exec when throtd answered, and not when it is
+// unreachable; a failed report never stops the command.
+func TestRunReportsSignature(t *testing.T) {
+	tests := []struct {
+		argv    []string
+		replies []statusReply
+		want    []string
+	}{
+		{[]string{"python", "scripts/train.py", "--epochs", "3"}, []statusReply{busy(), free()}, []string{"python train.py"}},
+		{[]string{"make", "-j8"}, []statusReply{free()}, []string{"make (named)"}},
+		{[]string{"python", "x.py"}, []statusReply{down()}, nil},
+		{[]string{"python", "x.py"}, []statusReply{busy(), down()}, nil},
+	}
+	for _, tt := range tests {
+		f := &fakeRun{replies: tt.replies, now: time.Unix(1000, 0)}
+		r := f.runner()
+		var reports []string
+		r.expect = func(_ context.Context, sig string, named bool) (bool, error) {
+			if named {
+				sig += " (named)"
+			}
+			reports = append(reports, sig)
+			return false, errors.New("unknown method: expect")
+		}
+		if err := r.run(context.Background(), runOptions{argv: tt.argv}); err != nil || f.execPath == "" {
+			t.Fatalf("%q: err %v, exec %q", tt.argv, err, f.execPath)
+		}
+		if strings.Join(reports, ",") != strings.Join(tt.want, ",") {
+			t.Errorf("%q: reports %q, want %q", tt.argv, reports, tt.want)
+		}
 	}
 }

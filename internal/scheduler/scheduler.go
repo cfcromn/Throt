@@ -78,6 +78,19 @@ const (
 	ReasonWorkloadExited = "workload_exited"
 )
 
+// DecisionReasons lists every reason code a Decision can carry.
+var DecisionReasons = []string{
+	ReasonSlotsExhausted, ReasonQueueWaiting, ReasonPressureHigh, ReasonPressureCritical,
+	ReasonSlotAvailable, ReasonAged, ReasonOwnerBudget, ReasonPressureNormal,
+	ReasonPressureThroughput, ReasonWorkloadExited,
+}
+
+// LimitReasons lists every reason code a LimitChange can carry.
+var LimitReasons = []string{
+	ReasonPressureNormal, ReasonPressureThroughput, ReasonPressureHigh, ReasonPressureCritical,
+	ReasonPressureUnknown, ReasonPolicyChanged,
+}
+
 // Policy defaults.
 const (
 	DefaultHeavyLimit     = 2
@@ -117,6 +130,12 @@ type Policy struct {
 	// turns Adaptive on, or ModeOff. Values < 1 or above HeavyLimit mean
 	// HeavyLimit. It is ignored without Adaptive.
 	StartLimit int
+	// BlindLimit is as far as the adaptive limit rises without evidence
+	// that more work fits in memory: the +1 per AdaptInterval and the reset
+	// at unknown pressure stop there, and only grow (sized by
+	// Input.MemoryHeadroom) goes above it, up to HeavyLimit. Values < 1 or
+	// above HeavyLimit mean HeavyLimit.
+	BlindLimit int
 	// AdaptInterval is the minimum time between two adaptive limit changes
 	// driven by normal, elevated (throughput only), high or critical
 	// pressure. Values <= 0 use the
@@ -148,6 +167,9 @@ func (p Policy) normalized() Policy {
 	p.HeavyLimit = max(p.HeavyLimit, 1)
 	if p.StartLimit < 1 || p.StartLimit > p.HeavyLimit {
 		p.StartLimit = p.HeavyLimit
+	}
+	if p.BlindLimit < 1 || p.BlindLimit > p.HeavyLimit {
+		p.BlindLimit = p.HeavyLimit
 	}
 	p.ResumeCooldown = max(p.ResumeCooldown, 0)
 	if p.MaxQueueWait <= 0 {
@@ -419,13 +441,13 @@ func (s *Scheduler) adapt(now time.Time, pressure domain.PressureLevel, throughp
 		// Degraded metrics must not keep work throttled. The reset is not
 		// rate limited and does not delay the next decrease.
 		s.lastAdapt = time.Time{}
-		s.setLimit(p.HeavyLimit, ReasonPressureUnknown, now)
+		s.setLimit(max(s.limit, p.BlindLimit), ReasonPressureUnknown, now)
 		return
 	case domain.PressureNormal:
-		next, reason = min(s.limit+1, p.HeavyLimit), ReasonPressureNormal
+		next, reason = max(s.limit, min(s.limit+1, p.BlindLimit)), ReasonPressureNormal
 	case domain.PressureElevated:
 		if throughputOnly {
-			next, reason = min(s.limit+1, p.HeavyLimit), ReasonPressureThroughput
+			next, reason = max(s.limit, min(s.limit+1, p.BlindLimit)), ReasonPressureThroughput
 		}
 	case domain.PressureHigh:
 		next, reason = max(s.limit/2, 1), ReasonPressureHigh

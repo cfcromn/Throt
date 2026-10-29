@@ -20,6 +20,36 @@ import (
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
+// TestMain keeps paused.json writes off the disk's flush path: these tests
+// fake every process, and a full fsync on a loaded macOS runner can stall
+// the sampling goroutine past their deadlines between a scheduler decision
+// and its status. TestWriteFileAtomicSyncs covers the real sync.
+func TestMain(m *testing.M) {
+	syncFile = func(*os.File) error { return nil }
+	os.Exit(m.Run())
+}
+
+func TestWriteFileAtomicSyncs(t *testing.T) {
+	var synced []string
+	defer func(orig func(*os.File) error) { syncFile = orig }(syncFile)
+	syncFile = func(f *os.File) error {
+		synced = append(synced, filepath.Base(f.Name()))
+		return f.Sync()
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "paused.json")
+	if err := writeFileAtomic(path, []byte("state")); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "state" {
+		t.Fatalf("paused.json = %q, %v", b, err)
+	}
+	// The temporary file before the rename, then the directory after it.
+	if len(synced) != 2 || !strings.HasPrefix(synced[0], "paused.json.") || synced[1] != filepath.Base(dir) {
+		t.Fatalf("synced %q, want the temporary file then %q", synced, filepath.Base(dir))
+	}
+}
+
 type fakeSampler struct{}
 
 func (fakeSampler) SampleProcesses(context.Context) ([]domain.ProcessSample, error) {

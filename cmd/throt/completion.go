@@ -33,7 +33,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status stats ping events explain pause resume run reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status stats learned ping events explain pause resume run reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -42,10 +42,12 @@ _throt() {
         pause|resume|explain) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "$(_throt_pids)" -- "$cur")) ;;
         completion) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
         config) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "check show" -- "$cur")) || COMPREPLY=($(compgen -W "--config --json" -- "$cur")) ;;
-        status|version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
+        status) COMPREPLY=($(compgen -W "--json --idle" -- "$cur")) ;;
+        version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
+        learned) [[ "$prev" == --forget || "$prev" == -forget ]] || COMPREPLY=($(compgen -W "--forget --clear" -- "$cur")) ;;
         update) [[ "$prev" == --version || "$prev" == -version ]] || COMPREPLY=($(compgen -W "--check --version --pre --yes" -- "$cur")) ;;
         hook) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code" -- "$cur")) ;;
-        setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) ;;
+        setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) || COMPREPLY=($(compgen -W "--write" -- "$cur")) ;;
         run)
             local j
             for ((j = i + 1; j < COMP_CWORD; j++)); do
@@ -91,6 +93,7 @@ _throt() {
         'resume:resume a paused workload'
         'run:wait for heavy-job capacity, then run a command'
         'stats:per-agent resource usage since throtd started'
+        'learned:list or forget the commands throtd learned heavy'
         'reload:make throtd re-read its config file'
         'config:check or show the config file'
         'doctor:print a sanitized diagnostic report'
@@ -115,10 +118,12 @@ _throt() {
                 pause|resume|explain) (( CURRENT == 2 )) && _throt_pids ;;
                 completion) (( CURRENT == 2 )) && compadd bash zsh fish ;;
                 config) (( CURRENT == 2 )) && compadd check show || _arguments '--config[path to config file]:file:_files' '--json[print JSON]' ;;
-                status|version) _arguments '--json[print JSON]' ;;
+                status) _arguments '(--idle)--json[print JSON]' '(--json)--idle[list agent sessions and which look idle]' ;;
+                version) _arguments '--json[print JSON]' ;;
+                learned) _arguments '--forget[forget one learned command]:signature:' '--clear[forget every learned command]' ;;
                 update) _arguments '--check[only report whether an update is available]' '--version[install this release]:version:' '--pre[include prereleases]' '--yes[do not ask for confirmation]' ;;
                 hook) (( CURRENT == 2 )) && compadd claude-code ;;
-                setup) (( CURRENT == 2 )) && compadd claude-code codex ;;
+                setup) (( CURRENT == 2 )) && compadd claude-code codex || _arguments '--write[install the configuration in your home directory]' ;;
                 run) _arguments -S '--timeout[run anyway after this long]:duration:' '--no-wait[check once and run regardless]' '*::command:_normal' ;;
             esac
             ;;
@@ -149,6 +154,7 @@ complete -c throt -n __fish_use_subcommand -a pause -d 'pause a heavy workload'
 complete -c throt -n __fish_use_subcommand -a resume -d 'resume a paused workload'
 complete -c throt -n __fish_use_subcommand -a run -d 'wait for heavy-job capacity, then run a command'
 complete -c throt -n __fish_use_subcommand -a stats -d 'per-agent resource usage since throtd started'
+complete -c throt -n __fish_use_subcommand -a learned -d 'list or forget the commands throtd learned heavy'
 complete -c throt -n __fish_use_subcommand -a reload -d 'make throtd re-read its config file'
 complete -c throt -n __fish_use_subcommand -a config -d 'check or show the config file'
 complete -c throt -n __fish_use_subcommand -a doctor -d 'print a sanitized diagnostic report'
@@ -165,12 +171,16 @@ complete -c throt -n '__fish_seen_subcommand_from completion' -x -a 'bash zsh fi
 complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show' -x -a 'check show'
 complete -c throt -n '__fish_seen_subcommand_from config' -l config -r -F -d 'path to config file'
 complete -c throt -n '__fish_seen_subcommand_from config status version' -l json -d 'print JSON'
+complete -c throt -n '__fish_seen_subcommand_from status' -l idle -d 'list agent sessions and which look idle'
 complete -c throt -n '__fish_seen_subcommand_from update' -l check -d 'only report whether an update is available'
 complete -c throt -n '__fish_seen_subcommand_from update' -l version -x -d 'install this release'
 complete -c throt -n '__fish_seen_subcommand_from update' -l pre -d 'include prereleases'
 complete -c throt -n '__fish_seen_subcommand_from update' -l yes -d 'do not ask for confirmation'
+complete -c throt -n '__fish_seen_subcommand_from learned' -l forget -x -d 'forget one learned command'
+complete -c throt -n '__fish_seen_subcommand_from learned' -l clear -d 'forget every learned command'
 complete -c throt -n '__fish_seen_subcommand_from hook' -x -a 'claude-code'
 complete -c throt -n '__fish_seen_subcommand_from setup' -x -a 'claude-code codex'
+complete -c throt -n '__fish_seen_subcommand_from setup' -l write -d 'install the configuration in your home directory'
 complete -c throt -n '__fish_seen_subcommand_from run' -l timeout -x -d 'run anyway after this long'
 complete -c throt -n '__fish_seen_subcommand_from run' -l no-wait -d 'check once and run regardless'
 complete -c throt -n '__fish_seen_subcommand_from run' -a '(__fish_complete_command)'

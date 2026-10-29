@@ -102,7 +102,7 @@ func TestNoColorHasNoEscapes(t *testing.T) {
 		}
 		out := m.View().Content
 		// Every state stays readable as text.
-		assertContains(t, out, "pressure CRITICAL", "DEGRADED", "STOPPED  2 processes", "QUEUED", "PAUSED",
+		assertContains(t, out, "CRITICAL", "DEGRADED", "STOPPED  2 processes", "QUEUED", "PAUSED",
 			"> ", "▸ AGENTS", "FAIL", "SCHED", "CTL")
 	}
 	// With color the same screen is styled.
@@ -138,47 +138,53 @@ func TestBackgroundColorSwitchesPalette(t *testing.T) {
 
 func TestSchedulerLine(t *testing.T) {
 	c := &fakeClient{status: richStatus(), events: classEvents()}
-	m := newModel(t, c, 140, 50)
-	line := lineWith(t, view(m), "SCHEDULER")
-	for _, want := range []string{"SCHEDULER  enforce, limit 3 (adaptive, start 2, max 8), per-agent 2, 1 queued, 2 reserved"} {
+	// One column: the SCHEDULER line of the SYSTEM panel.
+	m := newModel(t, c, 79, 50)
+	line := strings.Join(panelBody(t, view(m), "SYSTEM"), " ")
+	for _, want := range []string{"SCHEDULER  enforce, limit 3 (adaptive, start 2, max 8), per-agent 2,", "1 queued, 2 reserved"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("scheduler line %q lacks %q", line, want)
 		}
 	}
 	assertContains(t, view(m), "STOPPED  2 processes not paused by throtd (see throt doctor)")
+	// The dashboard's SCHEDULER panel: the mode, then the items as fit.
+	for w, limit := range map[int]string{140: "limit 3 (2–8)", 200: "limit 3 (adaptive, start 2, max 8)"} {
+		body := strings.Join(panelBody(t, view(update(t, m, tea.WindowSizeMsg{Width: w, Height: 50})), "SCHEDULER"), "\n")
+		assertContains(t, body, "ENFORCE\n"+limit, "1 queued", "per-agent 2", "2 reserved")
+	}
 
 	// A fixed limit shows no adaptive range; one orphan is singular.
 	st := richStatus()
 	st.Scheduler.Adaptive, st.Scheduler.StartLimit, st.Scheduler.MaxLimit, st.Scheduler.PerAgentLimit = false, 0, 0, 0
 	st.Scheduler.Leases = nil
 	st.OrphanCount = 1
-	m = newModel(t, &fakeClient{status: st}, 140, 50)
+	m = newModel(t, &fakeClient{status: st}, 79, 50)
 	line = lineWith(t, view(m), "SCHEDULER")
 	if strings.Contains(line, "adaptive") || strings.Contains(line, "per-agent") || !strings.Contains(line, "enforce, limit 3, 1 queued, 0 reserved") {
 		t.Errorf("fixed scheduler line = %q", line)
 	}
 	assertContains(t, view(m), "STOPPED  1 process not")
 
-	// Off: no scheduler line, and no orphan line without orphans.
+	// Off: no scheduler line, and no orphan line without orphans; the
+	// dashboard's panel says OFF.
 	st.Scheduler = app.SchedulerStatus{Mode: scheduler.Mode("off")}
 	st.OrphanCount = 0
-	out := view(newModel(t, &fakeClient{status: st}, 140, 50))
+	out := view(newModel(t, &fakeClient{status: st}, 79, 50))
 	if strings.Contains(out, "SCHEDULER") || strings.Contains(out, "STOPPED") {
 		t.Errorf("scheduler off or no orphans still shown:\n%s", out)
+	}
+	out = view(newModel(t, &fakeClient{status: st}, 140, 50))
+	if body := panelBody(t, out, "SCHEDULER"); body[0] != "OFF" || strings.Contains(out, "STOPPED") {
+		t.Errorf("scheduler off: panel %q", body)
 	}
 }
 
 // timelineLines returns the event lines of the timeline.
 func timelineLines(t *testing.T, out string) []string {
 	t.Helper()
-	i := strings.Index(out, "TIMELINE")
-	if i < 0 {
-		t.Fatalf("no timeline:\n%s", out)
-	}
-	lines := strings.Split(out[i:], "\n")
 	var evs []string
-	for _, l := range lines[1:] {
-		if !strings.HasPrefix(l, "  ") || strings.TrimSpace(l) == "" {
+	for _, l := range panelBody(t, out, "EVENTS") {
+		if strings.TrimSpace(l) == "" {
 			break
 		}
 		evs = append(evs, l)
@@ -200,8 +206,8 @@ func TestTimelineTags(t *testing.T) {
 	}
 	for _, l := range lines {
 		for k, tag := range want {
-			if strings.Contains(l, " "+string(k)+" ") && l[12:12+eventTagWidth] != tag {
-				t.Errorf("line %q: tag %q, want %q", l, l[12:12+eventTagWidth], tag)
+			if strings.Contains(l, " "+string(k)+" ") && l[10:10+eventTagWidth] != tag {
+				t.Errorf("line %q: tag %q, want %q", l, l[10:10+eventTagWidth], tag)
 			}
 		}
 	}
@@ -218,7 +224,7 @@ func TestTimelineFilter(t *testing.T) {
 	}
 	// Keys type while filtering: q does not quit, s does not sort.
 	m = press(t, m, "S", "c", "h", "q")
-	if m.filter != "Schq" || m.sortBy[paneAgents] != sortDaemon {
+	if m.filter != "Schq" || m.sortBy[paneAgents] != sortAuto {
 		t.Fatalf("filter = %q, sort %v", m.filter, m.sortBy[paneAgents])
 	}
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})

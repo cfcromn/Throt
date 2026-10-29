@@ -1,5 +1,7 @@
 # Throt
 
+**English** | [한국어](README.ko.md)
+
 [![CI](https://github.com/cfcromn/Throt/actions/workflows/ci.yml/badge.svg)](https://github.com/cfcromn/Throt/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -32,7 +34,7 @@ Principles:
 
 Throt is not a coding agent, a container orchestrator, or a cloud scheduler, and it never kills processes: it only pauses and resumes them.
 
-**Status: pre-1.0.** The latest release is v0.9.0-rc.1, a release candidate. macOS and Linux (amd64/arm64). Expect breaking changes before 1.0; the policy from 1.0 on is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#compatibility).
+**Status: 1.0 release candidate.** The latest release is v1.0.0-rc.1. macOS and Linux (amd64/arm64). The [compatibility policy](docs/ARCHITECTURE.md#compatibility) applies: nothing documented breaks within 1.x.
 
 ## Quickstart
 
@@ -41,9 +43,9 @@ Throt is not a coding agent, a container orchestrator, or a cloud scheduler, and
    ```bash
    V=$(gh release list -R cfcromn/Throt -L 1 --json tagName -q '.[0].tagName')
    gh release download "$V" -R cfcromn/Throt -p 'throt_*_darwin_arm64.tar.gz' -p checksums.txt
-   shasum -a 256 --ignore-missing -c checksums.txt   # Linux: sha256sum --ignore-missing -c checksums.txt
-   tar -xzf throt_*_darwin_arm64.tar.gz throt throtd
-   mkdir -p ~/.local/bin && mv throt throtd ~/.local/bin/   # any directory on your PATH
+   shasum -a 256 --ignore-missing -c checksums.txt &&   # Linux: sha256sum --ignore-missing -c checksums.txt
+     tar -xzf throt_*_darwin_arm64.tar.gz throt throtd &&
+     mkdir -p ~/.local/bin && mv throt throtd ~/.local/bin/   # any directory on your PATH
    ```
 
 2. **Start the daemon** in its own terminal (or [at login](#run-at-login)). It only observes until you turn the scheduler on.
@@ -70,7 +72,7 @@ Throt is not a coding agent, a container orchestrator, or a cloud scheduler, and
    throt events -f      # watch; decisions appear when agents' heavy jobs compete for slots
    ```
 
-5. **Enforce** once the decisions look right: set `"mode": "enforce"` in the file, then run `throt config check` and `throt reload` again. New heavy workloads beyond the limit are now paused (SIGSTOP) until a slot frees up. Stopping `throtd` resumes everything it paused.
+5. **Enforce** once the decisions look right: set `"mode": "enforce"` in the file, then run `throt config check` and `throt reload` again. New heavy workloads beyond the limit are now paused (SIGSTOP) until a slot frees up, and every agent-owned heavy workload runs at background CPU and I/O priority, so your own apps stay responsive while builds keep every core busy. Stopping `throtd` resumes everything it paused and restores the priorities it lowered, except that on Linux the nice value usually stays until the process exits (see `scheduler.background`).
 
 ## Install and update
 
@@ -165,8 +167,10 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 | Command | What it does |
 |---|---|
 | `throt`, `throt top` | Terminal UI. Quitting it never affects `throtd`. |
-| `throt status` | Pressure and its reason, host resources, agents, heavy workloads, scheduler state, stopped processes. |
+| `throt status [--json]` | Pressure and its reason, host resources, agents, heavy workloads, scheduler state, stopped processes. |
+| `throt status --idle` | Every agent session by memory with its age, CPU, and whether it looks idle (under 1% CPU and no heavy workload over three samples). Report only: it never stops a process. |
 | `throt stats [--json]` | Per agent: CPU time, peak memory, heavy jobs and time queued since `throtd` started. |
+| `throt learned [--forget SIGNATURE \| --clear]` | The commands `throtd` learned heavy, which the Claude Code hook then waits for; `--forget` or `--clear` drops them. See [Learned heavy commands](#learned-heavy-commands). |
 | `throt events [-f] [-n N]` | Recent daemon events as JSON lines (default 50); `-f` keeps printing new ones. |
 | `throt explain PID` | Why a heavy workload is running, paused or queued. |
 | `throt pause PID` | Pause (SIGSTOP) a heavy workload owned by one of your agents. |
@@ -180,11 +184,13 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 | `throt version [--json]` | Client version; `--json` adds the protocol, Go and `throtd` versions. |
 | `throt update` | Install a newer (or older) release. See [Update and roll back](#update-and-roll-back). |
 | `throt mcp` | Read-only MCP server on stdio for coding agents. |
-| `throt setup claude-code`, `throt setup codex` | Print the configuration to paste into a coding agent. |
+| `throt setup claude-code\|codex [--write]` | Print the configuration to paste into a coding agent; `--write` installs it in your home directory instead (it only adds, and keeps a `.throt-backup` of each file it changes). |
 | `throt hook claude-code [--max-wait D]` | The Claude Code hook. |
 | `throt completion bash\|zsh\|fish` | Shell completion script. |
 
 Global flags go before the command: `-config PATH` uses another config file, and `-n N` sets how many events `throt events` prints. `throt -h` lists every command, and `-h` after any command prints that command's usage. `throtd -h` lists the daemon's flags, and `throtd -version` prints its version.
+
+Exit codes: 0 on success, 1 on an error, 2 on a usage error, 10 from `throt update --check` when an update is available; `throt run` exits with the command's status (126, 127 when it cannot run). `throt hook claude-code` always exits 0. The JSON outputs, event kinds, reason codes and exit codes are listed under [Compatibility](docs/ARCHITECTURE.md#compatibility).
 
 Shell completion: add `source <(throt completion zsh)` (or `bash`) to your shell's rc file, or run `throt completion fish | source`. It completes heavy-workload PIDs after `pause`, `resume` and `explain`.
 
@@ -192,31 +198,43 @@ Shell completion: add `source <(throt completion zsh)` (or `bash`) to your shell
 
 ```text
 $ throt
-SYSTEM  pressure HIGH  latency 4ms ▁▁▂▁▁▃▂▁▁▁▂▁▁▁▂▁
-  why: memory 90%+ used  (memory_used>=0.9)
-CPU   ██████████████████████████████░░░░░░░░░░   74%  ▃▄▄▅▆▆▇▆▅▆▆▇▆▅▆▆  load 1.12/cpu
-MEM   ██████████████████████████████████████░░   95%  ▆▆▆▆▇▇▇▇▇▇▇▇▇███  30.5 GiB / 32.0 GiB
-SWAP  ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░   35%  ▁▁▁▁▁▂▅█▃▁▁▁▁▁▁▁  1.4 GiB / 4.0 GiB
-▸ AGENTS (3)
-  AGENT                                 PID    CPU▼        MEM  CHILDREN
-> codex-1                              4120    231%    2.8 GiB         5
-  claude-1                             3988    104%    1.8 GiB         7
-  claude-2                             5310     12%    921 MiB         2
-  HEAVY WORKLOADS (2)
-  OWNER               PID  PROCESS           CLASS               CPU        MEM
-  codex-1            4312  java              build              190%    2.3 GiB
-  claude-1           4471  buildkitd         container-build     60%    420 MiB
-TIMELINE
-  14:02:52  pressure_changed    pressure elevated -> high
-  14:02:13  agent_discovered    agent_discovered codex-1
-  14:02:11  daemon_started      listening on /run/user/501/throt/throtd.sock
-
-q quit  tab focus  j/k move  enter open  s sort  ? help
+╭─ PRESSURE ────────╮ ╭─ CPU ──────────╮ ╭─ MEMORY ──────╮ ╭─ SWAP ────────╮ ╭─ SCHEDULER ─────────╮
+│  ELEVATED         │ │ 31%            │ │ 88%           │ │ 91%           │ │ OBSERVE             │
+│ why: kernel memo… │ │ load 0.62/cpu  │ │ 21.1/24.0 GiB │ │ 16.4/18.0 GiB │ │ limit 3 (2–10)      │
+│ latency 6ms       │ │                │ │ kernel: warn… │ │ growth 4 MiB… │ │ 0 would queue       │
+│ ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃ │ │ ▃▄▄▅▅▅▆▆▆▆▅▅▅▅ │ │ ▇▇▇▇▇▇▇▇▇▇▇▇▇ │ │ █████████████ │ │ 0 reserved          │
+╰───────────────────╯ ╰────────────────╯ ╰───────────────╯ ╰───────────────╯ ╰─────────────────────╯
+╭─ CPU % · last 5m ─────────────╮ ╭─ MEMORY % · last 5m ──────────╮ ╭─ SWAP % · last 5m ───────────╮
+│ 100%┤                         │ │ 100%┤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣴⣶ │ │ 100%┤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ │
+│  50%┤⣶⣿  ⢰⣾⣇  ⣴⣾⡄ ⢠⣷⣶  ⣸⣷⡆  ⣿ │ │  50%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │ │  50%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+│   0%┤⣿⣿⣿⣰⣾⣿⣿⣧⣶⣿⣿⣿⣶⣾⣿⣿⣶⣼⣿⣿⣷⣆⣿⣿ │ │   0%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │ │   0%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+╰───────────────────────────────╯ ╰───────────────────────────────╯ ╰──────────────────────────────╯
+╭─ MEMORY BY OWNER ────────────────╮ ┏━ ▸ AGENTS (53)  total 339% CPU, 9.0 GiB ━━━━━━━━━━━━━━━━━━━━┓
+│ ● agents 9.0 GiB  ○ outside 9.9… │ ┃   AGENT        PID   CPU     MEM▼  CHILDREN                 ┃
+│ ● codex-1        ██████  2.2 GiB │ ┃ > codex-1    41350  190%  2.2 GiB        14                 ┃
+│ ○ com.apple.Vir… █████▉  2.2 GiB │ ┃   codex-2    41357   42%  1.1 GiB         6                 ┃
+│ ● codex-2        ██▉░░░  1.1 GiB │ ┃   codex-3    41364    8%  640 MiB         3                 ┃
+│ ○ Browser ×19    ██░░░░  744 MiB │ ┃   claude-5   41028    2%  112 MiB         2                 ┃
+│ ○ Orca ×13       █▊░░░░  650 MiB │ ┃   claude-10  41063    1%  112 MiB         2                 ┃
+│ ● codex-3        █▋░░░░  640 MiB │ ┃   +48 more (each ≤3% CPU, ≤112 MiB; 96% CPU, 4.9 GiB toget… ┃
+│ ○ WindowServer   █▋░░░░  610 MiB │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+│ ○ Slack Helper … █▏░░░░  420 MiB │ ╭─ HEAVY WORKLOADS ───────────────────────────────────────────╮
+│ ● claude-5       ▎░░░░░  112 MiB │ │   OWNER  PID  PROCESS   CLASS   CPU  MEM▼  STATE            │
+│ +49 agents 5.0 GiB · ○ other 5.… │ │   (no heavy workloads)                                      │
+╰──────────────────────────────────╯ ╰─────────────────────────────────────────────────────────────╯
+╭─ EVENTS ─────────────────────────────────────────────────────────────────────────────────────────╮
+│ 09:00:09  SCHED  queued gradle (pid 2)                                                           │
+│ 09:00:09  SCHED  queued gradle (pid 1)                                                           │
+│ 09:00:09         pressure normal -> elevated                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+tab focus  j/k move  enter open  s sort  / filter  ? help  q quit
 ```
 
-The `why:` line names the signal behind the pressure level. CPU is a percentage of one core (two busy cores show 200%). Sparklines show the last 60 refreshes (one per second) of CPU, memory, swap growth and foreground latency; the TUI keeps that history itself and loses it when it exits. Metrics the platform cannot provide show as `n/a`. If `throtd` is not running, the TUI says so and reconnects when it starts. Narrow terminals drop the sparklines first (below 55 columns), then columns; below 40×12 it asks for a larger window.
+The default screen is a dashboard of panels that fills the window. The top row has a stat panel per signal: `PRESSURE` (the level, in its color, and why), `CPU`, `MEMORY`, `SWAP`, `LATENCY` (from 120 columns; narrower, in the `PRESSURE` panel) and `SCHEDULER` (mode, limit, queued and reserved work). Values turn yellow from 70% and red from 85%, are drawn in big digits from 140 columns, and each panel ends with a sparkline of the latest refreshes (one per second; for `SWAP`, swap growth; for `PRESSURE`, the level). Below them, CPU, memory and swap use are charted over the last 5 minutes, which the TUI keeps itself and loses when it exits. `MEMORY BY OWNER` puts agents (`●`) and the processes outside every agent (`○`, grouped by name, at most 5 names, no arguments or paths) on one bar chart, largest first, with the rest summed up, so memory the agents do not explain is visible. Beside it are the `AGENTS` and `HEAVY WORKLOADS` tables (the focused one has a heavy border and `▸`), and `EVENTS` takes the rest of the height.
 
-When the scheduler is on, a `SCHEDULER` line shows its mode, the current adaptive limit with its start and ceiling, the per-agent cap, and queued and reserved counts; a `STOPPED` line counts processes throtd did not pause (see `throt doctor`). Timeline events are tagged `CTL`, `SCHED` and `FAIL`. Every state is shown in text as well as color, and `NO_COLOR` or `TERM=dumb` turns color off entirely.
+It opens with a short splash (the version and whether `throtd` answers) that any key dismisses; it also goes once `throtd` has answered and 1.5 s have passed. CPU is a percentage of one core (two busy cores show 200%); an agent's CPU and memory include all the processes it owns. Tables sort by memory while the pressure reason is a memory or swap signal and by CPU otherwise. Beyond the first 9 agents, the rest fold into one `+N more` row; moving the selection past them scrolls through all of them. Bursts of agents or heavy workloads found or lost in the same second are one event line. Metrics the platform cannot provide show as `n/a`. If `throtd` is not running, the TUI says so and reconnects when it starts. Below 80 columns the panels stack in one column, with CPU, memory and swap as bars in a `SYSTEM` panel; short terminals drop the charts, events and memory panel first, and drop the borders when rows are scarce. Below 40×10 it asks for a larger window.
+
+A `STOPPED` line counts processes throtd did not pause (see `throt doctor`). Events are tagged `CTL`, `SCHED` and `FAIL`. Every state is shown in text as well as color, colors keep their contrast on light and dark backgrounds, and `NO_COLOR` or `TERM=dumb` turns color off entirely.
 
 | Key | Action |
 |---|---|
@@ -225,32 +243,51 @@ When the scheduler is on, a `SCHEDULER` line shows its mode, the current adaptiv
 | `enter` | On an agent: open its drilldown (PID, CPU, memory, children, and each heavy workload it owns with its state: running, `PAUSED`, `QUEUED`). On a heavy workload: toggle its details. |
 | `esc` | Leave the drilldown, help, or filter. |
 | `p` / `r` | Pause or resume the selected heavy workload, after a `y/n` confirmation. |
-| `s` | Cycle the sort column: CPU, memory, name, then `throtd`'s order (`▼` descending, `▲` ascending). |
-| `/` | Filter the timeline by event kind (case-insensitive substring); `enter` keeps it, `esc` clears it. |
+| `s` | Cycle the sort column: auto (memory under memory pressure, else CPU), CPU, memory, name, then `throtd`'s order (`▼` descending, `▲` ascending). |
+| `/` | Filter the events by kind or text (case-insensitive substring); `enter` keeps it, `esc` clears it. |
 | `?` | Help. |
 | `q`, `ctrl+c` | Quit. |
 
 ### Coding agents: MCP, Claude Code hook, Codex
 
-**MCP.** `throt mcp` is a read-only [MCP](https://modelcontextprotocol.io) server on stdio, so agents can check pressure and capacity before starting a big build. Its tools: `throt_status` (pressure, resources, agents, heavy workloads), `throt_capacity` (an advisory `ok_to_start` with a reason and suggestion, for the agent that launched the server by default), `throt_events`, `throt_stats`, `throt_explain` (why a PID is running, paused or queued), and `throt_wait_for_capacity` (polls the capacity verdict once a second for up to `max_wait_seconds`, 1–600, default 60; cancellable). None of them pauses, resumes or changes configuration. `throtd` must be running. Tool output, process names and PIDs included, goes into the agent's context and so reaches your model provider. The server speaks MCP `2026-07-28` (per-request version in `_meta`, `server/discover`) as well as the `initialize` revisions `2025-11-25`, `2025-06-18` and `2024-11-05`; it has tools only.
+**MCP.** `throt mcp` is a read-only [MCP](https://modelcontextprotocol.io) server on stdio, so agents can check pressure and capacity before starting a big build. Its tools: `throt_status` (pressure, resources, agents, heavy workloads), `throt_capacity` (an advisory `ok_to_start` with a reason and suggestion, for the agent that launched the server by default), `throt_events`, `throt_stats`, `throt_explain` (why a PID is running, paused or queued), and `throt_wait_for_capacity` (polls the capacity verdict once a second for up to `max_wait_seconds`, 1–600, default 60; cancellable). None of them pauses, resumes or changes configuration. `throtd` must be running. Tool output, process names and PIDs included, goes into the agent's context and so reaches your model provider. The server speaks MCP `2026-07-28` (per-request version in `_meta`, `server/discover`) as well as the `initialize` revisions `2025-11-25`, `2025-06-18` and `2024-11-05`; it has tools only. Every tool returns text and structured content, described by its `outputSchema` ([fields](docs/ARCHITECTURE.md#compatibility)).
 
 ```bash
 claude mcp add --scope user throt -- throt mcp
 ```
 
-**Claude Code hook.** `throt setup claude-code` prints a `settings.json` hook and the MCP config to paste; it writes no file. The hook (`throt hook claude-code --max-wait D`, a [`PreToolUse`](https://code.claude.com/docs/en/hooks) hook on `Bash`) makes Claude Code wait for capacity without being told:
-- It waits only when the Bash command is a single heavy tool (by the names Throt classifies as heavy), optionally after `cd DIR &&`, variable assignments or `time`. It then polls `throtd` once per second until a heavy job is OK to start for the calling agent, or `D` passes (default 50s; the setup snippet uses 110s with a 120s hook `timeout`, because a hook that times out blocks the call).
-- Everything else passes at once without contacting `throtd`: pipes, `;`, `||`, `&`, redirections, subshells, substitutions, heredocs, comments, a heavy tool after another command (`make && ./run`), `throt run` itself, input it cannot parse, and [light invocations](#the-claude-code-hook-delays-commands) such as `--version` or `go env`. So does everything when `throtd` is down.
+**Claude Code hook.** `throt setup claude-code` prints a `settings.json` hook and the MCP config to paste. `throt setup claude-code --write` adds the hook to `~/.claude/settings.json` itself, unless a hook there already runs `throt hook claude-code`: it keeps every other setting (keys come out sorted and re-indented), keeps the old file as `settings.json.throt-backup`, and refuses, changing nothing, if the file is not valid JSON. The hook (`throt hook claude-code --max-wait D`, a [`PreToolUse`](https://code.claude.com/docs/en/hooks) hook on `Bash`) makes Claude Code wait for capacity without being told:
+- It waits only when the Bash command is a single heavy tool (by the names Throt classifies as heavy, plus the `gradlew` and `mvnw` wrappers and `docker build`, `docker buildx build` and `docker compose build`) or a command `throtd` [learned heavy](#learned-heavy-commands), optionally after `cd DIR &&`, variable assignments or `time`. It then polls `throtd` once per second until a heavy job is OK to start for the calling agent, or `D` passes (default 50s; the setup snippet uses 110s with a 120s hook `timeout`, because a hook that times out blocks the call).
+- Everything else passes at once: pipes, `;`, `||`, `&`, redirections, subshells, substitutions, heredocs, comments, a heavy tool after another command (`make && ./run`), `throt run` itself, input it cannot parse, and [light invocations](#the-claude-code-hook-delays-commands) such as `--version` or `go env`. So does everything when `throtd` is down. Of these, only a single simple command other than a common light tool (`ls`, `git`, `grep`, `cat`, …) contacts `throtd`, once, to report its signature.
 - It never changes, approves or denies the command, so your permission rules apply unchanged. After it waited, it shows a one-line `systemMessage`.
 - It is advisory: it reserves no slot, so two commands let through at the same moment can both start. Use `throt run --` for a reserved slot. Do not add permission allow rules for `throt run`: such a rule would allow every command run through it.
 
-**Codex.** `throt setup codex` prints the block for `~/.codex/config.toml` and an `AGENTS.md` paragraph:
+#### Learned heavy commands
+
+Commands Throt does not know by name, such as `python train.py`, `./scripts/build.sh` or `npx playwright test`, are caught as heavy workloads only once they run (class `command`), and a build that is paused then keeps its memory. So `throtd` learns them: before a single simple command, the hook (and `throt run`) reports its *signature* to `throtd`, the program's base name and the base name of its first argument that is not a flag (`python train.py`, `build.sh`, `npx playwright`). When a heavy workload of that agent starts within 10s, and no other reported command of the agent could have started it, the signature is learned, and from then on the hook waits for capacity before it, as for `make`. A learned command that then runs three times in a row without becoming heavy is forgotten. Up to 256 are kept (the one heavy longest ago goes first), with the peak memory seen, in `learned.json` next to the socket, so they survive a restart.
+
+`throt learned` lists them; `throt learned --forget 'python train.py'` or `--clear` drops them. Learning needs `throtd` 1.0.0-rc.1 or later; with an older or stopped `throtd` the hook behaves as before. A command that starts long after the hook ran (while you approve it) is not learned.
+
+**Codex.** `throt setup codex` prints the block for `~/.codex/config.toml` and an `AGENTS.md` paragraph; `throt setup codex --write` appends each to `~/.codex/config.toml` and `~/.codex/AGENTS.md` (or under `$CODEX_HOME`) unless it is already there, with the same backups:
 
 ```toml
 [mcp_servers.throt]
 command = "throt"
 args = ["mcp"]
 ```
+
+#### Gradle, Maven and Docker
+
+For agents that run `./gradlew test` or `./mvnw verify`, often with Testcontainers starting databases in Docker, set up admission before start:
+
+```bash
+throt setup claude-code --write
+throt setup codex --write
+mkdir -p ~/.gradle
+printf '\norg.gradle.daemon=false\nkotlin.compiler.execution.strategy=in-process\n' >> ~/.gradle/gradle.properties
+```
+
+and run `throtd` with `scheduler.mode` `enforce` and a small fixed limit, such as `"heavy_limit": 3, "adaptive": false, "per_agent_limit": 1`. Holding a build back before it starts is what saves memory, because nothing has been allocated yet; a build paused after it started keeps all of its memory. Gradle normally hands the build to a detached daemon whose parent is `launchd` or `init`, so Throt cannot tell which agent it belongs to and never queues it; with `org.gradle.daemon=false` the build runs under the agent (`throt doctor` flags busy unattributed `java`). The Kotlin Gradle plugin starts its own compiler daemon regardless; `kotlin.compiler.execution.strategy=in-process` runs the compiler inside the build instead. Containers run in Docker's VM, where Throt sees no process at all, so gating the `./gradlew test` that starts them is the only way to hold them back.
 
 ### Wait before starting: `throt run`
 
@@ -285,10 +322,12 @@ The config file is optional: `~/.config/throt/config.json`, or `$XDG_CONFIG_HOME
 
 `profile` presets the scheduler limits; keys you set explicitly win. A profile never turns the scheduler on.
 
+Turn on `enforce` (with `balanced`) when agents' builds together can run out of memory: in the [benchmarks](docs/ARCHITECTURE.md#benchmarks) that is where it finished all jobs but one capped job in one macOS run while the baseline swapped until jobs hit their cap or the OOM killer took them. When only the CPUs are busy it neither helps nor hurts measurably.
+
 | Profile | Heavy limit | Adaptive |
 |---|---|---|
 | `performance` | Fixed at CPUs/2 (at least 2). | No |
-| `balanced` (default) | Starts at CPUs/4 (at least 2), grows up to one per CPU (2 to 64). | Yes |
+| `balanced` (default) | Starts at CPUs/4 (at least 2) and grows to one per CPU while the machine copes; beyond that, up to four per CPU (at most 64), only for waiting jobs that fit in free memory. | Yes |
 | `cool` | 1, and may pause one workload under critical pressure (`pause_on_critical`). | Yes |
 
 ### Keys
@@ -299,8 +338,9 @@ The config file is optional: `~/.config/throt/config.json`, or `$XDG_CONFIG_HOME
 | `profile` | `balanced` | See [Profiles](#profiles). |
 | `scheduler.heavy_limit` | from the profile | The fixed limit, or with `adaptive` the ceiling (1 to 64). |
 | `scheduler.start_limit` | from the profile | Where the adaptive limit starts (0 to `heavy_limit`; 0 means from the profile, capped at `heavy_limit`). Ignored without `adaptive`. |
-| `scheduler.adaptive` | from the profile | Halve the limit under high pressure; raise it by one per 30s, up to `heavy_limit`, while the machine copes, or at once for waiting jobs that fit in free memory. |
+| `scheduler.adaptive` | from the profile | Halve the limit under high pressure; raise it by one per 30s, up to one per CPU, while the machine copes, or at once, up to `heavy_limit`, for waiting jobs that fit in free memory. |
 | `scheduler.per_agent_limit` | `0` (no cap) | Most heavy workloads one agent may run, so one agent can't take every slot (0 to 64). |
+| `scheduler.background` | `true` | In `enforce` mode, run every agent-owned heavy workload at background priority: on macOS the background state of `taskpolicy -b` (lowest CPU priority, efficiency cores on Apple silicon, throttled disk I/O), on Linux nice +10 and the lowest best-effort I/O priority. Throt restores them when you leave `enforce`, turn this off, or stop `throtd`; on Linux the nice value usually stays until the process exits, since only root may raise priority again. Profiles don't change it. |
 | `scheduler.resume_cooldown` | `10s` | Minimum spacing between resumes (and preemptions) while pressure is high, critical, or elevated by memory, swap or latency, and after a pressure pause; free slots are refilled at once at normal or CPU-only pressure, or when a job exited. At most `10m`. |
 | `scheduler.max_queue_wait` | `5m` | Work queued this long gets the next free slot even under high pressure, so the queue can't starve (at least 1s). |
 | `scheduler.pause_on_critical` | `false` | Under critical pressure, pause the youngest running heavy workload, never the last one. |
@@ -317,18 +357,29 @@ Custom `agents` match exact executable names among your own processes. Generic r
 
 - `throt config check [--config PATH]` loads the file exactly as `throtd` does, prints `ok` and each value that differs from the defaults (marked `file` or `profile`), and exits 1 with the error for an invalid or missing file. It warns, without failing, about `enforce` with a fixed `heavy_limit` of at least the CPU count, `pause_on_critical` with mode `off`, and a custom agent that shadows a built-in one.
 - `throt config show [--json]` prints the effective config and the source of every value: `default`, `profile` or `file`.
-- `throt reload` (or SIGHUP) applies `scheduler.*`, `profile` and `agents` live and prints each `applied:` change. `socket_path`, `sample_interval` and `event_history` are reported as `requires restart`. A file that fails to load changes nothing. Leaving `enforce` resumes everything the scheduler queued, never your manual pauses.
+- `throt reload` (or SIGHUP) applies `scheduler.*`, `profile` and `agents` live and prints each `applied:` change. `socket_path`, `sample_interval` and `event_history` are reported as `requires restart`. A file that fails to load changes nothing. Leaving `enforce` resumes everything the scheduler queued, never your manual pauses, and restores the priorities Throt lowered.
 
 **Logging.** `throtd` logs to stderr. Flags: `-config PATH`, `-version`, `-log-format text|json` (default `text`), `-log-level debug|info|warn|error` (default `info`). `info` covers daemon lifecycle, agents appearing and leaving, pressure changes, scheduler decisions and control actions; `debug` adds each heavy workload start and exit and each admission lease. The event log (`throt events`) records everything regardless of the log level.
 
 ## How it decides
 
-- **Attribution.** A process belongs to the nearest ancestor (or itself) that an agent adapter matches by exact executable name; anything else stays unattributed, and unattributed work is never controlled. Heavy workloads (build, test, container-build) are recognized by executable name, and a build folds in the compilers it spawns. Only executable names are read, never arguments or environment.
+- **Attribution.** A process belongs to the nearest ancestor (or itself) that an agent adapter matches by exact executable name; anything else stays unattributed, and unattributed work is never controlled. Heavy workloads (build, test, container-build) are recognized by executable name, and a build folds in the compilers it spawns. Only executable names are read from the OS, never arguments or environment; the only command text `throtd` gets is the [signature](#learned-heavy-commands) the hook and `throt run` send it.
 - **Pressure.** Window medians of memory, swap growth, CPU, load and foreground latency (how late a 10ms timer fires), plus the kernel's own signal where there is one (the memory-pressure verdict on macOS, PSI on Linux), give `normal`, `elevated`, `high` or `critical`, with hysteresis so a blip doesn't count. Busy CPUs alone never go above elevated: saturated cores are throughput, and the latency probe measures their effect on you.
 - **Scheduling** (only with `scheduler.mode` set). Throt can only act on processes that exist, so a new heavy workload that appears while every slot is taken is paused within one sample interval and resumed when a slot opens. Work already running is never queued. High pressure blocks new starts; queued work and `throt run` callers share one first-come line. Every decision is an event with a reason code.
 - **Control.** Pause and resume act only on heavy workloads of your own agents, and each signal is sent only after the process's identity (PID, start time, uid) is verified. Paused processes are recorded in `paused.json` before they are stopped, so a restarted `throtd` resumes them.
 
-The scheduler stays off by default: in the benchmarks it trades some burst throughput for much better tail latency, which is a choice to make per workload. Details, benchmark results and the local protocol are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), see [Scheduler](docs/ARCHITECTURE.md#scheduler), [Control](docs/ARCHITECTURE.md#control) and [Results](docs/ARCHITECTURE.md#results).
+The scheduler stays off by default. In the benchmarks it pays off when builds together run out of memory and makes no measurable difference when only the CPUs are busy; pausing your agents' work is still your choice to make (see [Profiles](#profiles)). Details, benchmark results and the local protocol are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), see [Scheduler](docs/ARCHITECTURE.md#scheduler), [Control](docs/ARCHITECTURE.md#control) and [Results](docs/ARCHITECTURE.md#results).
+
+## Known limitations
+
+- **Attribution is by executable name and ancestry.** An agent started as `node script.js` or `python3 -m …` is not recognized; give it a wrapper with its own name and a [custom rule](#an-agent-is-not-detected). Names are not authenticated: any program called `claude` counts as one.
+- **Heavy work is recognized by name, or by use.** A busy command an agent runs through its shell counts whatever it is called (at least one core or 1 GiB); the `throt run` and Claude Code hook gates before a command starts go by name, or by a [signature learned](#learned-heavy-commands) from earlier runs, so an unknown command's first heavy run is not held back before it starts. `npm`, `pnpm`, `yarn`, `bun`, `java` and `dotnet` count only while busy, but other long-lived processes with a build tool's name (`next dev`, `vite`) hold a heavy slot for as long as they run.
+- **Throt acts on processes that already exist.** A burst of new builds runs for up to one sample interval (2 s by default) before the extra ones are paused, and a process shorter than one interval is never seen.
+- **Pausing does not free memory.** A paused build keeps what it allocated; the kernel can swap it out, but in a container with little or no swap a job paused right after it started can still be OOM-killed. Only admission before start (the Claude Code hook, `throt run --`) keeps memory free; see [Gradle, Maven and Docker](#gradle-maven-and-docker).
+- **Build daemons and containers are invisible to attribution.** A Gradle or Kotlin daemon is a detached `java` process that no agent owns, so builds it runs are never queued (set `org.gradle.daemon=false`, and for Kotlin `kotlin.compiler.execution.strategy=in-process`). Containers, Testcontainers' included, run in Docker's VM (on macOS) or under `containerd`, outside every agent's process tree; only the command that starts them can be gated.
+- **Signals are verified, then sent.** On macOS and on Linux without pidfd, a PID could in theory be reused between the identity check and the signal; see [SECURITY.md](SECURITY.md).
+- **Leases and statistics live in memory.** A restarted `throtd` forgets `throt run` reservations and `throt stats` (paused work is recorded on disk and resumed).
+- **Platforms.** macOS and Linux only. On Linux, cgroup v1 and `cpuset` limits are not read, and there is no kernel memory verdict besides PSI.
 
 ## Troubleshooting
 
@@ -408,12 +459,13 @@ Generic runtimes and build tools are refused, for example `agents.myagent: "node
 
 **Symptom.** Bash commands in Claude Code take a while to start, followed by `throt: waited 40s for a heavy-job slot` or `throt: no heavy-job slot after 110s (REASON); running anyway`.
 
-**Cause.** The hook waits, up to `--max-wait`, whenever the command is a lone heavy tool and the capacity verdict says no: pressure is high, all heavy slots are in use, jobs are already queued, or the agent hit its `per_agent_limit`. The reason in the message says which.
+**Cause.** The hook waits, up to `--max-wait`, whenever the command is a lone heavy tool or a [learned heavy command](#learned-heavy-commands) (the message then says `learned heavy`) and the capacity verdict says no: pressure is high, all heavy slots are in use, jobs are already queued, or the agent hit its `per_agent_limit`. The reason in the message says which.
 
 **Fix.**
 - Run `throt status` to see the pressure and slots. With `scheduler.mode` off only high pressure makes it wait.
+- A learned command that should not wait: `throt learned --forget 'SIGNATURE'` (it is learned again if it starts a heavy workload again).
 - Shorten the wait in the hook command, for example `throt hook claude-code --max-wait 30s` (keep it below the hook `timeout`), or set `--max-wait 0` to never wait.
-- Light invocations never wait: a first argument such as `-v`, `--version`, `version`, `-h`, `--help`, `help`, `-n` or `--dry-run`, and read-only subcommands such as `go env`, `go list`, `go mod`, `npm view`, `npm ls`, `cargo metadata` and `gradle tasks`. Other read-only subcommands still wait.
+- Light invocations never wait: a first argument such as `-v`, `--version`, `version`, `-h`, `--help`, `help`, `-n` or `--dry-run`, and read-only subcommands such as `go env`, `go list`, `go mod`, `npm view`, `npm ls`, `cargo metadata` and `gradle tasks` (or `./gradlew tasks`, `dependencies`, `--stop`, `--status`). Other read-only subcommands still wait, and so do Docker image builds; other `docker` commands, `docker compose up` included, never wait.
 
 ## Roadmap
 
@@ -430,7 +482,7 @@ Outcomes, not dates.
 | v0.7 Admission leases | Race-free admission, no hidden stopped work | admission leases for `throt run`, reporting of stopped processes Throt did not pause | shipped |
 | v0.8 Integration and readiness | Wait for capacity without being told | Claude Code hook, `throt setup`, `throt config check`/`show`, `throt version --json`, log levels, soak test | shipped (v0.8.0-rc.1) |
 | v0.9 Evidence and upkeep | Measure on real machines and stay current | `throt update`, real-machine CPU and memory benchmarks, soak on CI runners, an adaptive limit that grows under CPU-only load, `start_limit`, MCP `2026-07-28` with `throt_wait_for_capacity` and `throt_explain`, TUI scheduler line and event filter | shipped (v0.9.0-rc.1) |
-| 1.0 | Turn the scheduler on confidently under an explicit profile | stable compatibility policy, real-machine benchmarks; the scheduler stays opt-in, as the benchmark evidence decided | planned |
+| 1.0 | Turn the scheduler on confidently under an explicit profile | stable compatibility policy, real-machine benchmarks; the scheduler stays opt-in, as the benchmark evidence decided | shipped (v1.0.0-rc.1) |
 
 **1.0** means the scheduler is ready to turn on with confidence under an explicit `scheduler.mode` and `profile`; it stays off by default (see "Default decision" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#results)). It requires two supported OS families, the [compatibility policy](docs/ARCHITECTURE.md#compatibility) in force, no known process-loss bug, reproducible benchmarks, and a security review of IPC and process-control boundaries.
 

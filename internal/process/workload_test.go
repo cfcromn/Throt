@@ -51,7 +51,7 @@ func TestWorkload(t *testing.T) {
 			name: "nested agent subtree is excluded",
 			procs: []ps{
 				{pid: 10, ppid: 1, name: "claude"},
-				{pid: 20, ppid: 10, name: "npm"},
+				{pid: 20, ppid: 10, name: "make"},
 				{pid: 21, ppid: 20, name: "node"},
 				{pid: 22, ppid: 20, name: "codex"},
 				{pid: 23, ppid: 22, name: "sh"},
@@ -59,7 +59,7 @@ func TestWorkload(t *testing.T) {
 			},
 			key: key(20, 0),
 			want: WorkloadTarget{
-				Key: key(20, 0), Name: "npm", Class: domain.ClassBuild, Owner: "claude-1",
+				Key: key(20, 0), Name: "make", Class: domain.ClassBuild, Owner: "claude-1",
 				Members: []Member{mem(20, 0, 0), mem(21, 0, 0)},
 			},
 			wantOK: true,

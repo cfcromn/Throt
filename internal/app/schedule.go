@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"runtime"
+	"slices"
 	"strconv"
 	"time"
 
@@ -42,9 +45,12 @@ func newScheduler(c config.Scheduler) *scheduler.Scheduler {
 
 func schedulerPolicy(c config.Scheduler) scheduler.Policy {
 	return scheduler.Policy{
-		Mode:            scheduler.Mode(c.Mode),
-		HeavyLimit:      c.HeavyLimit,
-		StartLimit:      c.StartLimit,
+		Mode:       scheduler.Mode(c.Mode),
+		HeavyLimit: c.HeavyLimit,
+		StartLimit: c.StartLimit,
+		// Without memory evidence the limit grows no further than one
+		// workload per CPU; see scheduler.Policy.BlindLimit.
+		BlindLimit:      max(2, runtime.NumCPU()),
 		ResumeCooldown:  time.Duration(c.ResumeCooldown),
 		PauseOnCritical: c.PauseOnCritical,
 		MaxQueueWait:    time.Duration(c.MaxQueueWait),
@@ -79,7 +85,7 @@ func (d *Daemon) schedule(parent context.Context, in scheduler.Input, orphans []
 		case !inSnapshot[p.Key]:
 			// The top process exited (e.g. killed while stopped); its
 			// children would otherwise stay stopped with nobody to resume them.
-			d.schedulerResume(parent, p.Key, p.Name, p.Owner, "top_exited")
+			d.schedulerResume(parent, p.Key, p.Name, p.Owner, ReasonTopExited)
 		default:
 			in.Paused = append(in.Paused, p.Key)
 		}
@@ -116,15 +122,28 @@ func (d *Daemon) schedulerPause(parent context.Context, dec scheduler.Decision) 
 	}
 	if len(target.Members) > maxQueueMembers {
 		d.emit(domain.EventControlRefused, fmt.Sprintf("scheduler %s %s refused: %d processes exceeds %d", dec.Action, dec.Name, len(target.Members), maxQueueMembers),
-			map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action), "reason": "too_many_members"})
+			map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action), "reason": control.ReasonTooManyMembers})
 		return
 	}
 	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
 	defer cancel()
-	if err := d.ctl.PauseAs(ctx, target, control.OriginScheduler); err != nil {
-		d.emit(domain.EventControlFailed, fmt.Sprintf("scheduler %s %s failed: %v", dec.Action, dec.Name, err),
-			map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action)})
+	err := d.ctl.PauseAs(ctx, target, control.OriginScheduler)
+	if err == nil {
+		return
 	}
+	if errors.Is(err, domain.ErrProcessGone) && !d.recorded(dec.Key) {
+		// The top process exited between the snapshot and the pause, and
+		// the rollback was complete: like a workload that exited before
+		// the round, there is nothing to queue and nothing failed.
+		return
+	}
+	d.emit(domain.EventControlFailed, fmt.Sprintf("scheduler %s %s failed: %v", dec.Action, dec.Name, err),
+		map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action)})
+}
+
+// recorded reports whether the controller holds a record for key.
+func (d *Daemon) recorded(key domain.ProcessKey) bool {
+	return slices.ContainsFunc(d.ctl.Paused(), func(w control.PausedWorkload) bool { return w.Key == key })
 }
 
 // schedulerResume resumes a scheduler-paused workload. A non-empty reason

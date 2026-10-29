@@ -50,7 +50,7 @@ func TestCollect(t *testing.T) {
 	}
 	// Without a host CPU counter, throtd derives CPU from the process
 	// table, so doctor must not list it as missing.
-	if len(r.Host.Missing) != 0 || r.Host.Derived[domain.MetricCPU] != "derived from process CPU by throtd" {
+	if len(r.Host.Missing) != 0 || r.Host.Derived[domain.MetricCPU] != "measured by throtd (iostat on macOS, else process CPU)" {
 		t.Errorf("host = %+v, want cpu derived, nothing missing", r.Host)
 	}
 	b, _ := json.Marshal(r)
@@ -177,5 +177,42 @@ func TestCollectCPUMissingWithoutProcesses(t *testing.T) {
 	})
 	if len(r.Host.Missing) != 1 || r.Host.Missing[0] != domain.MetricCPU || r.Host.Derived != nil {
 		t.Errorf("host = %+v, want cpu missing", r.Host)
+	}
+}
+
+func TestCollectUnattributedJava(t *testing.T) {
+	heavy := []process.WorkloadView{
+		{Key: domain.ProcessKey{PID: 40}, Name: "java", CPU: 2.5},
+		{Key: domain.ProcessKey{PID: 41}, Name: "java", Owner: "claude-1", CPU: 3}, // under an agent
+		{Key: domain.ProcessKey{PID: 42}, Name: "java"},                            // idle
+		{Key: domain.ProcessKey{PID: 43}, Name: "secret-tool", CPU: 4},             // not java
+		{Key: domain.ProcessKey{PID: 44}, Name: "java", CPU: 1},
+		{Key: domain.ProcessKey{PID: 45}, Name: "java", CPU: 1},
+		{Key: domain.ProcessKey{PID: 46}, Name: "java", CPU: 1}, // over the cap
+	}
+	collect := func(heavy []process.WorkloadView) Report {
+		return Collect(context.Background(), Inputs{
+			Ping:      func(context.Context) (app.PingResult, error) { return app.PingResult{Version: "v1"}, nil },
+			Status:    func(context.Context) (app.StatusResult, error) { return app.StatusResult{Heavy: heavy}, nil },
+			Host:      fakeHost{},
+			Processes: fakeProcs{},
+		})
+	}
+	r := collect(heavy)
+	if len(r.Findings) != maxDaemonFindings {
+		t.Fatalf("findings = %q", r.Findings)
+	}
+	want := "unattributed java (pid 40, 250% CPU) is probably a Gradle or Kotlin daemon: builds there cannot be queued; " +
+		"set org.gradle.daemon=false in ~/.gradle/gradle.properties so they run under the agent " +
+		"(for the Kotlin daemon also kotlin.compiler.execution.strategy=in-process)"
+	if r.Findings[0] != want || !strings.Contains(r.Findings[1], "pid 44,") || !strings.Contains(r.Findings[2], "pid 45,") {
+		t.Errorf("findings = %q", r.Findings)
+	}
+	if b, _ := json.Marshal(r); strings.Contains(string(b), "secret-tool") {
+		t.Errorf("report leaks a process name: %s", b)
+	}
+	r = collect(heavy[1:4])
+	if b, _ := json.Marshal(r); r.Findings != nil || strings.Contains(string(b), "findings") {
+		t.Errorf("findings without busy unattributed java: %s", b)
 	}
 }

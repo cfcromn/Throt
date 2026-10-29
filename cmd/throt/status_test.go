@@ -141,3 +141,15 @@ func TestParseResumeArgs(t *testing.T) {
 		}
 	}
 }
+
+// TestPrintStatusBackground checks that a heavy workload throtd runs at
+// background priority says so.
+func TestPrintStatusBackground(t *testing.T) {
+	st := app.StatusResult{Host: &domain.HostSample{MemTotal: 1 << 30}, Scheduler: app.SchedulerStatus{Mode: scheduler.ModeEnforce, HeavyLimit: 3},
+		Heavy: []process.WorkloadView{{Key: domain.ProcessKey{PID: 77}, Name: "java", Class: domain.ClassBuild, Owner: "codex-1", Background: true}}}
+	var buf bytes.Buffer
+	printStatus(&buf, st)
+	if !strings.Contains(buf.String(), "running (background)") {
+		t.Errorf("output lacks the background state:\n%s", buf.String())
+	}
+}

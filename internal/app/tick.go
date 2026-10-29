@@ -68,13 +68,38 @@ func (d *Daemon) tick(parent context.Context) {
 			Waiters:        waiters,
 		}, r.stoppedOrphans)
 		d.account(s.now, r.snap)
+		d.learnFrom(s.now, r.snap.Heavy)
 		d.watch = d.refillWatch(r.snap.Heavy, len(waiters))
+		d.procsFailingSince = time.Time{}
+		d.background(parent, s.procs, &r)
 	} else {
 		// No round ran, so there is no current would_queue to show.
 		d.wouldQueue = d.wouldQueue[:0]
 		d.watch = nil
+		d.failOpenQueued(parent, s.now)
+		d.background(parent, nil, nil)
 	}
 	d.publishScheduler()
+}
+
+// failOpenQueued resumes the scheduler's queued work once process sampling
+// has failed for max_queue_wait. Without a snapshot no round runs, so no
+// round could resume it either, and queued work must not stay stopped
+// while Throt cannot see the processes.
+func (d *Daemon) failOpenQueued(ctx context.Context, now time.Time) {
+	if d.procsFailingSince.IsZero() {
+		d.procsFailingSince = now
+		return
+	}
+	if now.Sub(d.procsFailingSince) < d.sched.Policy().MaxQueueWait {
+		return
+	}
+	for _, w := range d.ctl.Paused() {
+		// A resuming record is already retried by retryResumes.
+		if w.By == control.OriginScheduler && w.State == control.StatePaused {
+			d.schedulerResume(ctx, w.Key, w.Name, w.Owner, ReasonProcessesUnavailable)
+		}
+	}
 }
 
 // sample is one tick's raw readings.
@@ -181,8 +206,9 @@ func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level
 		d.status.Host = &host
 	}
 	if s.perr == nil {
-		d.status.Agents, d.status.Heavy = r.snap.Agents, r.snap.Heavy
+		d.status.Agents, d.status.Heavy = r.snap.Agents, d.withBackground(r.snap.Heavy)
 		d.status.Orphans, d.status.OrphanCount = r.orphans, r.orphanCount
+		d.status.UnattributedMemory, d.status.UnattributedRSS = r.snap.Unattributed, r.snap.UnattributedRSS
 		d.stopped = r.snap.Stopped
 		ended = d.leases.observe(s.sampled, s.now, s.procs, r.snap.Heavy)
 		d.waiting.prune(s.now, s.sampled, s.procs)
@@ -198,6 +224,12 @@ func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level
 func (d *Daemon) publishScheduler() {
 	sched := d.schedulerStatus()
 	line, linePolicy := d.sched.Queued(), d.sched.Policy()
+	if linePolicy.Mode == scheduler.ModeEnforce {
+		// Only work the controller still holds waits in line: work resumed
+		// outside a round (failOpenQueued) stays queued in the scheduler
+		// until the next round, which may be far off while sampling fails.
+		line = slices.DeleteFunc(line, func(w scheduler.Waiter) bool { return !slices.Contains(sched.Queued, w.Key) })
+	}
 	d.mu.Lock()
 	d.status.Scheduler = sched
 	d.queuedLine, d.linePolicy = line, linePolicy

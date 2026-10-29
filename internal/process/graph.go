@@ -59,6 +59,20 @@ type WorkloadView struct {
 	// CPU (cores) and RSS (bytes) include collapsed descendants.
 	CPU float64 `json:"cpu"`
 	RSS uint64  `json:"rss"`
+	// Background is set by throtd when the workload runs at background
+	// priority (scheduler.background); the graph leaves it false.
+	Background bool `json:"background,omitempty"`
+}
+
+// MaxUnattributed bounds Snapshot.Unattributed.
+const MaxUnattributed = 5
+
+// NameUsage is the memory of the live processes with one name that no agent
+// owns. It carries the executable name only: no arguments, no path.
+type NameUsage struct {
+	Name      string `json:"name"`
+	Processes int    `json:"processes"`
+	RSS       uint64 `json:"rss"`
 }
 
 // Snapshot is an immutable view of the graph after the latest Update. It
@@ -71,6 +85,12 @@ type Snapshot struct {
 	// Stopped lists every stopped process (domain.StateStopped) by PID, for
 	// FindOrphans. It is bounded by the process table.
 	Stopped []StoppedView `json:"stopped,omitempty"`
+	// Unattributed lists the names with the most resident memory among
+	// processes no agent owns, at most MaxUnattributed, by RSS descending
+	// then name; UnattributedRSS totals all such processes. Together with
+	// the agents they show where the host's memory goes.
+	Unattributed    []NameUsage `json:"unattributed,omitempty"`
+	UnattributedRSS uint64      `json:"unattributed_rss,omitempty"`
 	// TotalCPU is the busy fraction of all CPUs across observed processes
 	// since the previous Update, 0..1. Valid only when HasCPU is true.
 	TotalCPU float64 `json:"total_cpu"`
@@ -119,7 +139,52 @@ type proc struct {
 	// stoppedSince is when an Update first saw this process stopped in the
 	// current run of stopped samples; zero while it is not stopped.
 	stoppedSince time.Time
+	// activeAt is when a launcher's or command shell's subtree was last
+	// active (see launcherHeavy); zero if never, and for other processes.
+	activeAt time.Time
+	// title names a command workload by the program its shell runs; empty
+	// for other processes.
+	title string
 }
+
+// name is what workloads and events call p: its title, or its executable.
+func (p *proc) name() string {
+	if p.title != "" {
+		return p.title
+	}
+	return p.s.Name
+}
+
+// A launcher (agent.Launcher: npm, pnpm, yarn, bun, java, dotnet) is heavy
+// only while its subtree, itself included, uses at least launcherCPU cores
+// or launcherRSS bytes, and for launcherHold after that, so a build pausing
+// for I/O is not dropped and rediscovered. A stopped launcher that was heavy
+// stays heavy: a queued build uses no CPU. An idle one, such as an MCP
+// server under npm exec or a Gradle daemon between builds, never takes a
+// heavy slot.
+const (
+	launcherCPU  = 0.5
+	launcherRSS  = 512 << 20
+	launcherHold = time.Minute
+)
+
+// A command shell is a shell an agent started itself, which is how agents
+// run a tool call (Claude Code's Bash tool: claude, then zsh, then the
+// command); an agent's MCP and language servers are its direct children
+// without a shell. Its subtree is a heavy workload of class command,
+// whatever the programs are called, while it uses at least commandCPU cores
+// or commandRSS bytes (with launcherHold and the stopped rule, as for
+// launchers). It is not one while its subtree holds an agent, which must
+// never be paused, nor while a workload already recognized by name runs in
+// it, so known builds keep their own workload; once a command, it stays one
+// and such a build folds into it.
+const (
+	commandCPU = 1.0
+	commandRSS = 1 << 30
+)
+
+// shells are the shells agents run commands through.
+var shells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "fish": true}
 
 // Graph tracks processes across full snapshots. It is not safe for
 // concurrent use; the owner serializes calls and shares Snapshots instead.
@@ -188,6 +253,11 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 		if _, dup := byPID[s.PID]; dup {
 			continue
 		}
+		if s.State == domain.StateZombie {
+			// It has exited and only waits for its parent to reap it, so it
+			// holds no slot and owns nothing: treat it as gone.
+			continue
+		}
 		p := &slab[len(order)]
 		p.s = s
 		old, ok := g.procs[s.Key()]
@@ -195,6 +265,9 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 			d := (s.CPUTime - old.s.CPUTime).Seconds()
 			p.cpu, p.hasCPU = d/dt, true
 			busy += d
+		}
+		if ok {
+			p.activeAt = old.activeAt
 		}
 		if s.State == domain.StateStopped {
 			p.stoppedSince = now
@@ -210,16 +283,20 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 	g.link(order, byPID)
 	for _, p := range order {
 		p.adapter = g.match(p.s)
+	}
+	active := g.launcherActivity(order)
+	for _, p := range order {
 		switch {
 		case p.adapter != "":
 			p.class, p.track = domain.ClassAgent, trackAgent
 		default:
 			p.class = agent.Classify(p.s)
-			if p.class.Heavy() {
+			if p.class.Heavy() && (!agent.Launcher(p.s.Name) || g.launcherHeavy(now, p, active[p])) {
 				p.track = trackHeavy
 			}
 		}
 	}
+	g.markCommands(now, order)
 	for _, p := range order {
 		for q := p; q != nil; q = q.parent {
 			if q.adapter != "" {
@@ -233,6 +310,122 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 	g.procs = next
 	g.snap = g.build(order, busy, dt, rates)
 	return changes
+}
+
+// launcherActivity sums CPU and RSS over the subtree of every launcher and
+// reports which launchers are active now. Each process adds itself to every
+// launcher above it, so nested launchers both count it, up to the nearest
+// agent: a nested agent's subtree is not the launcher's workload (see
+// Workload), so its use must not make the launcher heavy.
+func (g *Graph) launcherActivity(order []*proc) map[*proc]bool {
+	type use struct {
+		cpu float64
+		rss uint64
+	}
+	var sums map[*proc]*use
+	for _, p := range order {
+		for q := p; q != nil && q.adapter == ""; q = q.parent {
+			if !agent.Launcher(q.s.Name) {
+				continue
+			}
+			if sums == nil {
+				sums = map[*proc]*use{}
+			}
+			u := sums[q]
+			if u == nil {
+				u = &use{}
+				sums[q] = u
+			}
+			u.cpu += p.cpu
+			u.rss += p.s.RSS
+		}
+	}
+	active := make(map[*proc]bool, len(sums))
+	for q, u := range sums {
+		active[q] = u.cpu >= launcherCPU || u.rss >= launcherRSS
+	}
+	return active
+}
+
+// commandShell reports whether p is a shell an agent started itself.
+func commandShell(p *proc) bool {
+	return p.adapter == "" && shells[p.s.Name] && p.parent != nil && p.parent.adapter != ""
+}
+
+// markCommands makes busy command shells heavy workloads of class command;
+// see commandCPU.
+func (g *Graph) markCommands(now time.Time, order []*proc) {
+	type use struct {
+		cpu          float64
+		rss          uint64
+		agent, named bool
+		title        string
+	}
+	var sums map[*proc]*use
+	at := func(q *proc) *use {
+		if sums == nil {
+			sums = map[*proc]*use{}
+		}
+		u := sums[q]
+		if u == nil {
+			u = &use{}
+			sums[q] = u
+		}
+		return u
+	}
+	for _, p := range order {
+		if p.adapter != "" {
+			// An agent below a command shell: that shell is never one.
+			for q := p.parent; q != nil && q.adapter == ""; q = q.parent {
+				if commandShell(q) {
+					at(q).agent = true
+				}
+			}
+			continue
+		}
+		for q := p; q != nil && q.adapter == ""; q = q.parent {
+			if !commandShell(q) {
+				continue
+			}
+			u := at(q)
+			u.cpu += p.cpu
+			u.rss += p.s.RSS
+			if p != q && p.track == trackHeavy {
+				u.named = true
+			}
+			// order is by PID, so this is the first program the shell ran.
+			if u.title == "" && p.parent == q && !shells[p.s.Name] {
+				u.title = p.s.Name
+			}
+		}
+	}
+	for q, u := range sums {
+		old := g.procs[q.s.Key()]
+		was := old != nil && old.track == trackHeavy && old.class == domain.ClassCommand
+		if u.agent || u.named && !was {
+			continue
+		}
+		if !g.launcherHeavy(now, q, u.cpu >= commandCPU || u.rss >= commandRSS) {
+			continue
+		}
+		q.class, q.track, q.title = domain.ClassCommand, trackHeavy, u.title
+		if q.title == "" && old != nil {
+			q.title = old.title
+		}
+	}
+}
+
+// launcherHeavy reports whether launcher p is heavy at now, recording its
+// activity; see launcherCPU.
+func (g *Graph) launcherHeavy(now time.Time, p *proc, active bool) bool {
+	if active {
+		p.activeAt = now
+		return true
+	}
+	if old := g.procs[p.s.Key()]; old != nil && old.track == trackHeavy && p.s.State == domain.StateStopped {
+		return true
+	}
+	return !p.activeAt.IsZero() && now.Sub(p.activeAt) < launcherHold
 }
 
 // link sets parent pointers from PPIDs. PPID 0 or 1 (the kernel and init or
@@ -302,7 +495,7 @@ func (g *Graph) lifecycle(next map[domain.ProcessKey]*proc, order []*proc) []Cha
 			delete(g.used[old.adapter], labelNum(old))
 			changes = append(changes, Change{Kind: domain.EventAgentLost, Process: k, Name: old.s.Name, Agent: old.label})
 		case trackHeavy:
-			changes = append(changes, Change{Kind: domain.EventProcessLost, Process: k, Name: old.s.Name})
+			changes = append(changes, Change{Kind: domain.EventProcessLost, Process: k, Name: old.name()})
 		}
 	}
 	// order is sorted by PID, so labels are assigned deterministically.
@@ -315,7 +508,7 @@ func (g *Graph) lifecycle(next map[domain.ProcessKey]*proc, order []*proc) []Cha
 			p.label = g.assign(p.adapter)
 			changes = append(changes, Change{Kind: domain.EventAgentDiscovered, Process: p.s.Key(), Name: p.s.Name, Agent: p.label})
 		case trackHeavy:
-			changes = append(changes, Change{Kind: domain.EventProcessDiscovered, Process: p.s.Key(), Name: p.s.Name})
+			changes = append(changes, Change{Kind: domain.EventProcessDiscovered, Process: p.s.Key(), Name: p.name()})
 		}
 	}
 	slices.SortFunc(changes, compareChanges)
@@ -401,7 +594,7 @@ func (g *Graph) build(order []*proc, busy, dt float64, rates bool) Snapshot {
 		if !ok {
 			i = len(snap.Heavy)
 			heavy[r] = i
-			v := WorkloadView{Key: r.s.Key(), Name: r.s.Name, Class: r.class}
+			v := WorkloadView{Key: r.s.Key(), Name: r.name(), Class: r.class}
 			if r.owner != nil {
 				v.Owner, v.OwnerPID = r.owner.label, r.owner.s.PID
 			}
@@ -426,6 +619,28 @@ func (g *Graph) build(order []*proc, busy, dt float64, rates bool) Snapshot {
 			v.ParentKey = q.s.Key()
 		}
 		snap.Stopped = append(snap.Stopped, v)
+	}
+
+	byName := map[string]int{}
+	for _, p := range order {
+		if p.owner != nil {
+			continue
+		}
+		snap.UnattributedRSS += p.s.RSS
+		i, ok := byName[p.s.Name]
+		if !ok {
+			i = len(snap.Unattributed)
+			byName[p.s.Name] = i
+			snap.Unattributed = append(snap.Unattributed, NameUsage{Name: p.s.Name})
+		}
+		snap.Unattributed[i].Processes++
+		snap.Unattributed[i].RSS += p.s.RSS
+	}
+	slices.SortFunc(snap.Unattributed, func(a, b NameUsage) int {
+		return cmp.Or(cmp.Compare(b.RSS, a.RSS), cmp.Compare(a.Name, b.Name))
+	})
+	if len(snap.Unattributed) > MaxUnattributed {
+		snap.Unattributed = slices.Clone(snap.Unattributed[:MaxUnattributed])
 	}
 
 	slices.SortFunc(snap.Agents, func(a, b AgentView) int {
@@ -458,6 +673,7 @@ func (g *Graph) Snapshot() Snapshot {
 	s.Agents = slices.Clone(s.Agents)
 	s.Heavy = slices.Clone(s.Heavy)
 	s.Stopped = slices.Clone(s.Stopped)
+	s.Unattributed = slices.Clone(s.Unattributed)
 	return s
 }
 
@@ -499,7 +715,7 @@ func (g *Graph) Workload(key domain.ProcessKey) (WorkloadTarget, bool) {
 			children[p.parent] = append(children[p.parent], p)
 		}
 	}
-	t := WorkloadTarget{Key: key, Name: r.s.Name, Class: r.class}
+	t := WorkloadTarget{Key: key, Name: r.name(), Class: r.class}
 	if r.owner != nil {
 		t.Owner = r.owner.label
 	}

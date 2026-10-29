@@ -15,17 +15,32 @@ import (
 	"github.com/cfcromn/Throt/internal/transport"
 )
 
-// cmdStatus is 'throt status [--json]'.
+// cmdStatus is 'throt status [--json | --idle]'.
 func cmdStatus(ctx context.Context, e env, args []string) error {
-	asJSON := false
+	asJSON, idle := false, false
 	switch {
 	case len(args) == 0:
 	case len(args) == 1 && (args[0] == "--json" || args[0] == "-json"):
 		asJSON = true
+	case len(args) == 1 && (args[0] == "--idle" || args[0] == "-idle"):
+		idle = true
 	default:
-		return usageLine("usage: throt status [--json]")
+		return usageLine("usage: throt status [--json | --idle]")
 	}
 	cfg := e.clientConfig()
+	if idle {
+		gap := time.Duration(cfg.SampleInterval)
+		samples, err := observeStatus(ctx, idleSamples, gap, func(ctx context.Context, st *app.StatusResult) error {
+			ctx, cancel := context.WithTimeout(ctx, callTimeout)
+			defer cancel()
+			return transport.Call(ctx, cfg.SocketPath, "status", nil, st)
+		})
+		if err != nil {
+			return err
+		}
+		printIdle(e.stdout, idleSessions(samples, time.Now()), (idleSamples-1)*gap)
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	var st app.StatusResult
@@ -135,6 +150,8 @@ func printStatus(w io.Writer, st app.StatusResult) {
 			state = "PAUSED"
 		case slices.ContainsFunc(st.Scheduler.WouldQueue, func(k domain.ProcessKey) bool { return k.PID == h.Key.PID }):
 			state = "running (would queue)"
+		case h.Background:
+			state = "running (background)"
 		}
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%.0f%%\t%s\t%s\n", owner, h.Key.PID, h.Name, h.Class, h.CPU*100, gib(h.RSS), state)
 	}

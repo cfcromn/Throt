@@ -2,7 +2,8 @@ name: Soak
 
 # The soak test (internal/e2e TestSoak) on hosted runners: 10 minutes of
 # enforce-mode churn, a throtd crash and restart, and checks for stranded
-# work, leaks, latency and the heavy limit. It runs on demand
+# work, leaks, latency and the heavy limit; and every fuzz target for 30s,
+# since CI runs only their seed corpora. It runs on demand
 # (gh workflow run soak.yml) and weekly, never on push or pull request.
 on:
   workflow_dispatch:
@@ -60,3 +61,52 @@ jobs:
           name: soak-${{ matrix.os }}
           path: ${{ runner.temp }}/soak-${{ matrix.os }}
           if-no-files-found: warn
+
+  fuzz:
+    runs-on: ubuntu-latest
+    # About 40 targets at 30s each.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Fuzz
+        # A failing input is written to the package's testdata/fuzz, which
+        # the next step uploads to reproduce it with plain go test. A run
+        # that fails without writing one only with the fuzzer's "context
+        # deadline exceeded" (a worker missed the -fuzztime deadline) found
+        # nothing and is only a warning; any other failure fails the job,
+        # and so does a package or target listing that fails.
+        run: |
+          failed=0
+          log="$RUNNER_TEMP/fuzz.log"
+          pkgs=$(go list ./...)
+          for pkg in $pkgs; do
+            targets=$(go test -list '^Fuzz' "$pkg")
+            for target in $(printf '%s\n' "$targets" | grep '^Fuzz' || true); do
+              echo "::group::$pkg $target"
+              if go test -run '^$' -fuzz "^${target}\$" -fuzztime 30s "$pkg" >"$log" 2>&1; then rc=0; else rc=$?; fi
+              cat "$log"
+              if [ "$rc" -ne 0 ]; then
+                if [ -n "$(git status --porcelain --untracked-files=all -- '*testdata/fuzz/*')" ]; then
+                  echo "::error::$pkg $target found a failing input"
+                  failed=1
+                elif grep -q 'context deadline exceeded' "$log"; then
+                  echo "::warning::$pkg $target failed without a failing input (fuzzer deadline)"
+                else
+                  echo "::error::$pkg $target failed"
+                  failed=1
+                fi
+              fi
+              echo "::endgroup::"
+            done
+          done
+          exit $failed
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: fuzz-failures
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: ignore

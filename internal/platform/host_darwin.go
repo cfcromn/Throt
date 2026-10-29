@@ -14,17 +14,30 @@ import (
 )
 
 // NewHostSampler returns a sampler for the current OS. On macOS it reads
-// sysctl values only (no cgo, no Mach calls), including the kernel's
-// memory-pressure verdict.
+// sysctl values (no cgo, no Mach calls), including the kernel's
+// memory-pressure verdict, and host CPU from a long-lived iostat child.
 //
-// CPU is always reported as missing: the per-CPU tick counters are only
-// available through Mach host_statistics/host_processor_info, which require
-// cgo or libSystem trampolines, and no sysctl exposes them.
-func NewHostSampler() HostSampler { return &darwinSampler{} }
+// The per-CPU tick counters are only available through Mach
+// host_statistics/host_processor_info, which require cgo or libSystem
+// trampolines, and no sysctl exposes them; iostat reads them for us. While
+// it has no fresh reading CPU is reported missing, and the daemon falls
+// back to the sum of per-process CPU deltas (app.hostReading), which reads
+// low when many processes live shorter than one sample interval.
+//
+// The sampler implements io.Closer; Close stops iostat (CloseHostSampler).
+func NewHostSampler() HostSampler { return &darwinSampler{cpu: newIostatCPU()} }
 
-// darwinSampler is stateless today, but like every HostSampler it is not
-// safe for concurrent use so that CPU deltas can be added later.
-type darwinSampler struct{}
+// darwinSampler is not safe for concurrent use, like every HostSampler.
+type darwinSampler struct {
+	cpu *iostatCPU
+}
+
+// Close stops the iostat child and its reader goroutine. SampleHost still
+// works afterwards, without CPU.
+func (s *darwinSampler) Close() error {
+	s.cpu.close()
+	return nil
+}
 
 func (s *darwinSampler) SampleHost(ctx context.Context) (domain.HostSample, error) {
 	if err := ctx.Err(); err != nil {
@@ -33,7 +46,11 @@ func (s *darwinSampler) SampleHost(ctx context.Context) (domain.HostSample, erro
 	out := domain.HostSample{Time: time.Now()}
 	var fails sampleErrors
 
-	fails.fail(domain.MetricCPU, errors.New("cpu ticks need Mach host_statistics, unavailable without cgo"))
+	if busy, ok, err := s.cpu.busy(out.Time); ok {
+		out.CPUUsage = busy
+	} else {
+		fails.fail(domain.MetricCPU, err)
+	}
 
 	if load, err := darwinLoad1(); err != nil {
 		fails.fail(domain.MetricLoad, err)

@@ -257,6 +257,12 @@ func TestSampleProcessesMatchesReferenceOnProc(t *testing.T) {
 		if !ok || gi.key != wi.key {
 			continue // exited or reused between the reads
 		}
+		if wi.ppid == 2 {
+			// Kernel threads (children of kthreadd) rename themselves with
+			// the work they do, e.g. kworker/u16:2-flush-259:0, so their
+			// name may change between the two reads.
+			gi.name = wi.name
+		}
 		if gi != wi {
 			t.Errorf("pid %d: got %+v, reference %+v", pid, gi, wi)
 		}

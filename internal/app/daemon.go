@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/agent"
@@ -39,6 +40,12 @@ type StatusResult struct {
 	// all. Throt reports them and never resumes one unasked.
 	Orphans     []process.Orphan `json:"orphans,omitempty"`
 	OrphanCount int              `json:"orphan_count,omitempty"`
+	// UnattributedMemory lists the process names with the most resident
+	// memory outside every agent (at most process.MaxUnattributed);
+	// UnattributedRSS totals every process outside the agents. Names only:
+	// no arguments, no paths.
+	UnattributedMemory []process.NameUsage `json:"unattributed_memory,omitempty"`
+	UnattributedRSS    uint64              `json:"unattributed_rss,omitempty"`
 }
 
 // StatsResult is returned by the "stats" method: per-agent usage since the
@@ -75,6 +82,10 @@ type Daemon struct {
 	exits ExitChecker
 	// refillEvery is how often exits is polled; tests shorten it.
 	refillEvery time.Duration
+	// pri lowers heavy workloads to background priority; nil when sig
+	// cannot. bgEnabled is scheduler.background, set by Reload.
+	pri       Prioritizer
+	bgEnabled atomic.Bool
 
 	graphMu sync.Mutex // guards graph; held briefly, never while signaling
 	graph   *process.Graph
@@ -94,6 +105,11 @@ type Daemon struct {
 	// watch holds the running heavy workloads whose exit the loop polls
 	// for while work waits for a slot (see refillWatch); nil otherwise.
 	watch []domain.ProcessKey
+	// procsFailingSince is when the current run of failed process samples
+	// began; zero while sampling works.
+	procsFailingSince time.Time
+	// prio holds the processes lowered to background priority.
+	prio priorities
 
 	// mu guards status, leases, and stopped together, so an acquire checks
 	// and grants against one consistent view, and a tick replaces the heavy
@@ -113,6 +129,12 @@ type Daemon struct {
 
 	statsMu sync.Mutex // guards acct; held briefly
 	acct    *stats.Accountant
+
+	// learnMu guards learn, the learned heavy commands; held briefly.
+	// learnSaveMu orders writes of learned.json.
+	learnMu     sync.Mutex
+	learn       *learner
+	learnSaveMu sync.Mutex
 
 	// cfgPath is the file Reload re-reads; empty disables reloading.
 	cfgPath string
@@ -151,9 +173,11 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		failing:  map[string]bool{},
 		failures: map[string]string{},
 		acct:     stats.New(),
+		learn:    newLearner(),
 		sig:      sig,
 		uid:      uint32(os.Getuid()),
 		reported: map[domain.ProcessKey]bool{},
+		prio:     newPriorities(),
 		live:     cfg,
 		policyCh: make(chan scheduler.Policy, 1),
 
@@ -165,6 +189,8 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 	d.ctl = control.New(sig, d.uid, time.Now, d.saveState)
 	d.ident, _ = sig.(ProcessIdentifier)
 	d.exits, _ = sig.(ExitChecker)
+	d.pri, _ = sig.(Prioritizer)
+	d.bgEnabled.Store(cfg.Scheduler.Background)
 	d.linePolicy = d.sched.Policy()
 	return d
 }
@@ -186,16 +212,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.started = time.Now()
 	d.emit(domain.EventDaemonStarted, "listening on "+d.cfg.SocketPath, nil)
 	d.recoverPaused(ctx)
-	srv := transport.NewServer(map[string]transport.Handler{
-		"ping":    d.ping,
-		"events":  d.recentEvents,
-		"status":  d.currentStatus,
-		"stats":   d.currentStats,
-		"pause":   d.pause,
-		"resume":  d.resume,
-		"reload":  d.reload,
-		"acquire": d.acquire,
-	}, transport.WithPrivileged(privilegedMethods()...))
+	d.loadLearned()
+	srv := transport.NewServer(d.handlers(), transport.WithPrivileged(privilegedMethods()...))
 
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
@@ -207,6 +225,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	err = srv.Serve(ctx, l)
 	cancel()
 	wg.Wait()
+	d.saveLearned()
+	// The sampling goroutine has stopped, so d.prio is ours now.
+	if len(d.prio.workloads) > 0 {
+		d.restorePriorities(ctx, RestoreShutdown)
+	}
 	msg, attrs := "shutdown", map[string]string(nil)
 	// Fail open: never leave work paused behind us.
 	if n := d.resumeAll(); n > 0 {
@@ -225,9 +248,28 @@ func (d *Daemon) workload(key domain.ProcessKey) (process.WorkloadTarget, bool) 
 	return d.graph.Workload(key)
 }
 
+// handlers returns the methods of local protocol v1.
+func (d *Daemon) handlers() map[string]transport.Handler {
+	return map[string]transport.Handler{
+		"ping":    d.ping,
+		"events":  d.recentEvents,
+		"status":  d.currentStatus,
+		"stats":   d.currentStats,
+		"pause":   d.pause,
+		"resume":  d.resume,
+		"reload":  d.reload,
+		"acquire": d.acquire,
+		"expect":  d.expect,
+		"learned": d.learnedSignatures,
+	}
+}
+
 // privilegedMethods may only be called by the user running the daemon: they
-// signal processes, change its configuration, or reserve heavy slots.
-func privilegedMethods() []string { return []string{"pause", "resume", "reload", "acquire"} }
+// signal processes, change its configuration, reserve heavy slots, or
+// carry command signatures.
+func privilegedMethods() []string {
+	return []string{"pause", "resume", "reload", "acquire", "expect", "learned"}
+}
 
 // Adapters returns the agent adapters for a config: custom agents first, so
 // they win over built-in names.

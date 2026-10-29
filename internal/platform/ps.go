@@ -179,16 +179,18 @@ func (c *psNameCache) name(procs []domain.ProcessSample, lookup psNameLookup) er
 // title with arguments ("npm run build", "x --token=..."), to an executable
 // name. A bare first word is the name; for a path, everything from the first
 // " -" (flags) is dropped and the base name's first word is kept.
+// Control characters become '?', as on Linux, so a process cannot put
+// terminal escapes into names that throt prints.
 // ponytail: heuristic; paths with spaces in the final element keep only
 // their first word, which is harmless for unknown processes.
 func psName(comm string) string {
 	first, _, _ := strings.Cut(comm, " ")
 	if !strings.Contains(first, "/") {
-		return first
+		return sanitizeComm([]byte(first))
 	}
 	exe, _, _ := strings.Cut(comm, " -")
 	base, _, _ := strings.Cut(path.Base(exe), " ")
-	return base
+	return sanitizeComm([]byte(base))
 }
 
 // parsePSStatLine parses one psStatColumns line: pid ppid uid rss state

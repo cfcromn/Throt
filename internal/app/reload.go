@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/cfcromn/Throt/internal/config"
@@ -24,6 +25,18 @@ type ReloadResult struct {
 // ReasonEnforceDisabled is the reason code for resuming queued work when
 // the scheduler leaves enforce mode.
 const ReasonEnforceDisabled = "enforce_disabled"
+
+// ReasonTopExited is the reason code for resuming a queued workload whose
+// top process exited, so its children are not left stopped.
+const ReasonTopExited = "top_exited"
+
+// ReasonProcessesUnavailable is the reason code for resuming queued work
+// after process sampling has failed for max_queue_wait.
+const ReasonProcessesUnavailable = "processes_unavailable"
+
+// DecisionReasons lists every reason code of scheduler_decision events:
+// the scheduler's, and those of resumes the daemon decides itself.
+var DecisionReasons = append(slices.Clone(scheduler.DecisionReasons), ReasonEnforceDisabled, ReasonTopExited, ReasonProcessesUnavailable)
 
 // restartOnly reports keys fixed for the daemon's lifetime: the socket and
 // its lock, the sampling ticker, and the event ring's capacity.
@@ -81,7 +94,11 @@ func (d *Daemon) Reload() (ReloadResult, error) {
 	}
 	// New adapters can split a workload into new keys; re-sending the
 	// policy rebaselines the scheduler so running work is never queued.
-	if next.Scheduler != d.live.Scheduler || agentsChanged {
+	// scheduler.background is not part of the policy: changing it alone
+	// must not rebaseline the scheduler.
+	nextPolicy, livePolicy := next.Scheduler, d.live.Scheduler
+	nextPolicy.Background, livePolicy.Background = false, false
+	if nextPolicy != livePolicy || agentsChanged {
 		select {
 		case <-d.policyCh: // superseded before the tick took it
 		default:
@@ -89,6 +106,7 @@ func (d *Daemon) Reload() (ReloadResult, error) {
 		d.policyCh <- schedulerPolicy(next.Scheduler)
 	}
 	d.live = next
+	d.bgEnabled.Store(next.Scheduler.Background)
 
 	msg := "config reloaded: no changes"
 	if len(res.Changed) > 0 {

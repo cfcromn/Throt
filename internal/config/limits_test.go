@@ -26,9 +26,9 @@ func TestProfileLimits(t *testing.T) {
 		ncpu    int
 		want    limits
 	}{
-		{"balanced", 1, limits{2, 2, true}},
-		{"balanced", 5, limits{5, 2, true}},
-		{"balanced", 16, limits{16, 4, true}},
+		{"balanced", 1, limits{4, 2, true}},
+		{"balanced", 5, limits{20, 2, true}},
+		{"balanced", 16, limits{64, 4, true}},
 		{"balanced", 200, limits{64, 50, true}},
 		{"performance", 1, limits{2, 2, false}},
 		{"performance", 5, limits{2, 2, false}},
@@ -47,7 +47,7 @@ func TestProfileLimits(t *testing.T) {
 		}
 	}
 	// No profile key is balanced.
-	if c, err := loadBody(t, `{}`, 16); err != nil || c.Scheduler.HeavyLimit != 16 || c.Scheduler.StartLimit != 4 {
+	if c, err := loadBody(t, `{}`, 16); err != nil || c.Scheduler.HeavyLimit != 64 || c.Scheduler.StartLimit != 4 {
 		t.Errorf("default profile: %+v, %v", c.Scheduler, err)
 	}
 }
@@ -65,7 +65,7 @@ func TestStartLimitOverrides(t *testing.T) {
 		{name: "heavy_limit above", body: `{"scheduler":{"heavy_limit":12}}`, heavy: 12, start: 4},
 		{name: "cool with a higher ceiling", body: `{"profile":"cool","scheduler":{"heavy_limit":4}}`, heavy: 4, start: 1},
 		{name: "explicit start", body: `{"scheduler":{"heavy_limit":12,"start_limit":6}}`, heavy: 12, start: 6},
-		{name: "start at the ceiling", body: `{"scheduler":{"start_limit":16}}`, heavy: 16, start: 16},
+		{name: "start at the ceiling", body: `{"scheduler":{"start_limit":64}}`, heavy: 64, start: 64},
 		{name: "zero derives", body: `{"scheduler":{"heavy_limit":12,"start_limit":0}}`, heavy: 12, start: 4},
 		{name: "start above the ceiling", body: `{"scheduler":{"heavy_limit":3,"start_limit":4}}`, wantErr: "start_limit must be between 0 and scheduler.heavy_limit (3)"},
 		{name: "start above the profile ceiling", body: `{"profile":"cool","scheduler":{"start_limit":2}}`, wantErr: "start_limit"},

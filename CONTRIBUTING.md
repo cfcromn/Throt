@@ -21,7 +21,7 @@ make race    # tests with the race detector
 make ci      # the unit-test part of CI (gofmt, vet, race tests, build)
 make bench   # real-kernel benchmark, in Docker only
 gh workflow run bench.yml   # the benchmark on Linux and macOS CI runners
-gh workflow run soak.yml    # the soak test on Linux and macOS CI runners
+gh workflow run soak.yml    # the soak test on Linux and macOS CI runners, and 30s of each fuzz target
 ```
 
 **Never run an enforce-mode `throtd`, the e2e suite, or the benchmark on a machine with real agents.** It pauses their real builds. The e2e suite and the benchmark refuse to run outside CI or a container; on macOS, which has no container, they run only on CI. For real-machine numbers, use the `Bench` workflow (on demand and weekly, see Benchmarks in `docs/ARCHITECTURE.md`). Locally, run them in Docker, building the test binary first, because under `go test` the `go` process would own every job:
@@ -65,6 +65,8 @@ docs/          ARCHITECTURE.md
 Use [Conventional Commits](https://www.conventionalcommits.org/): `feat(tui): add pressure timeline`, `fix(darwin): preserve ancestry after parent exit`.
 
 A PR explains the problem, the approach, trade-offs, tests, user-visible changes, and — for process control — risk and rollback. Scheduler-default changes need benchmark evidence. PRs are squash-merged; CI must pass.
+
+`README.ko.md` is a Korean translation of `README.md`: mirror README changes there, or say in the PR that it needs updating if you can't write Korean.
 
 ## Review checklist
 

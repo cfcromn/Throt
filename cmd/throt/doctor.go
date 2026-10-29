@@ -27,6 +27,8 @@ func cmdDoctor(ctx context.Context, e env, args []string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	c := daemonClient{socket: cfg.SocketPath}
+	host := platform.NewHostSampler()
+	defer platform.CloseHostSampler(host)
 	r := doctor.Collect(ctx, doctor.Inputs{
 		ConfigPath: e.cfgPath,
 		SocketPath: cfg.SocketPath,
@@ -38,7 +40,7 @@ func cmdDoctor(ctx context.Context, e env, args []string) error {
 			return p, err
 		},
 		Status:    c.Status,
-		Host:      platform.NewHostSampler(),
+		Host:      host,
 		Processes: platform.NewProcessSampler(),
 		Adapters:  app.Adapters(cfg.Agents),
 		UID:       uint32(os.Getuid()),

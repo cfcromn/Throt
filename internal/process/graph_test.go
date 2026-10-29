@@ -20,6 +20,7 @@ type ps struct {
 	cpu       float64
 	rss       uint64
 	uid       uint32
+	state     domain.ProcessState
 }
 
 func (p ps) sample() domain.ProcessSample {
@@ -31,6 +32,7 @@ func (p ps) sample() domain.ProcessSample {
 		CPUTime: time.Duration(p.cpu * float64(time.Second)),
 		RSS:     p.rss << 20,
 		UID:     p.uid,
+		State:   p.state,
 	}
 }
 
@@ -367,6 +369,41 @@ func TestSnapshots(t *testing.T) {
 	}
 }
 
+func TestUnattributedMemory(t *testing.T) {
+	g := newGraph()
+	procs := []ps{
+		{pid: 10, ppid: 1, name: "claude", rss: 300},
+		{pid: 11, ppid: 10, name: "node", rss: 200}, // owned: not counted
+		{pid: 20, ppid: 1, name: "node", rss: 50},   // same name, outside
+		{pid: 30, ppid: 1, name: "Chrome Helper", rss: 400},
+		{pid: 31, ppid: 1, name: "Chrome Helper", rss: 400},
+		{pid: 40, ppid: 1, name: "VirtualMachine", rss: 4000},
+		{pid: 50, ppid: 1, name: "a", rss: 10},
+		{pid: 51, ppid: 1, name: "b", rss: 10},
+		{pid: 52, ppid: 1, name: "c", rss: 10},
+		{pid: 53, ppid: 1, name: "d", rss: 1},
+	}
+	g.Update(epoch, samples(procs))
+	s := g.Snapshot()
+	want := []NameUsage{
+		{Name: "VirtualMachine", Processes: 1, RSS: 4000 << 20},
+		{Name: "Chrome Helper", Processes: 2, RSS: 800 << 20},
+		{Name: "node", Processes: 1, RSS: 50 << 20},
+		{Name: "a", Processes: 1, RSS: 10 << 20},
+		{Name: "b", Processes: 1, RSS: 10 << 20},
+	}
+	if !reflect.DeepEqual(s.Unattributed, want) {
+		t.Errorf("unattributed = %+v, want %+v", s.Unattributed, want)
+	}
+	if got, want := s.UnattributedRSS, uint64(4881)<<20; got != want {
+		t.Errorf("unattributed rss = %d MiB, want %d MiB", got>>20, want>>20)
+	}
+	s.Unattributed[0].Name = "mutated"
+	if g.Snapshot().Unattributed[0].Name != "VirtualMachine" {
+		t.Error("snapshot shares the unattributed list")
+	}
+}
+
 func TestEmptyGraph(t *testing.T) {
 	s := newGraph().Snapshot()
 	if s.Agents != nil || s.Heavy != nil || s.HasCPU || s.TotalCPU != 0 {
@@ -424,5 +461,179 @@ func TestCustomAdaptersAndOrder(t *testing.T) {
 	want := []Change{ch(agentFound, 7, 0, "node", "wrap-1")}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("changes = %+v, want %+v", got, want)
+	}
+}
+
+// TestLauncherHeavyOnlyWhileActive checks that an idle package-manager
+// launcher (an MCP server under npm exec) is not a heavy workload, a busy
+// one is, it stays heavy for launcherHold after going idle and while
+// stopped, and is dropped after that.
+func TestLauncherHeavyOnlyWhileActive(t *testing.T) {
+	for _, name := range []string{"npm", "java"} {
+		t.Run(name, func(t *testing.T) { testLauncher(t, name) })
+	}
+}
+
+func testLauncher(t *testing.T, name string) {
+	heavy := func(g *Graph) []int {
+		var out []int
+		for _, h := range g.Snapshot().Heavy {
+			out = append(out, h.Key.PID)
+		}
+		return out
+	}
+	g := newGraph()
+	agentP := ps{pid: 10, ppid: 1, name: "claude"}
+	idle := ps{pid: 20, ppid: 10, name: name, rss: 7}
+	idleNode := ps{pid: 21, ppid: 20, name: "node", rss: 60}
+	build := ps{pid: 30, ppid: 10, name: name, rss: 50}
+	node := ps{pid: 31, ppid: 30, name: "node", rss: 300}
+	g.Update(epoch, samples([]ps{agentP, idle, idleNode, build, node}))
+	if got := heavy(g); len(got) != 0 {
+		t.Fatalf("first sample heavy = %v, want none (no CPU rates yet)", got)
+	}
+	node.cpu = 2 // 1 core over 2s, through the child
+	g.Update(epoch.Add(2*time.Second), samples([]ps{agentP, idle, idleNode, build, node}))
+	if got := heavy(g); !reflect.DeepEqual(got, []int{30}) {
+		t.Fatalf("heavy = %v, want [30]: the busy launcher only", got)
+	}
+	// Idle again: held for launcherHold.
+	g.Update(epoch.Add(30*time.Second), samples([]ps{agentP, idle, idleNode, build, node}))
+	if got := heavy(g); !reflect.DeepEqual(got, []int{30}) {
+		t.Fatalf("heavy within hold = %v, want [30]", got)
+	}
+	// Stopped (queued) past the hold: still heavy.
+	stopped := build
+	stopped.state = domain.StateStopped
+	g.Update(epoch.Add(90*time.Second), samples([]ps{agentP, idle, idleNode, stopped, node}))
+	if got := heavy(g); !reflect.DeepEqual(got, []int{30}) {
+		t.Fatalf("stopped launcher heavy = %v, want [30]", got)
+	}
+	// Running and idle past the hold: dropped.
+	g.Update(epoch.Add(100*time.Second), samples([]ps{agentP, idle, idleNode, build, node}))
+	if got := heavy(g); len(got) != 0 {
+		t.Fatalf("idle launcher after hold heavy = %v, want none", got)
+	}
+	// Large memory alone makes it active.
+	node.rss = 600
+	g.Update(epoch.Add(102*time.Second), samples([]ps{agentP, idle, idleNode, build, node}))
+	if got := heavy(g); !reflect.DeepEqual(got, []int{30}) {
+		t.Fatalf("heavy by memory = %v, want [30]", got)
+	}
+}
+
+// TestLauncherIgnoresNestedAgent checks that a nested agent's use does not
+// make the launcher above it heavy: the agent's subtree is not part of the
+// launcher's workload, so the launcher would hold a slot for nothing.
+func TestLauncherIgnoresNestedAgent(t *testing.T) {
+	g := newGraph()
+	outer := ps{pid: 10, ppid: 1, name: "claude"}
+	npm := ps{pid: 20, ppid: 10, name: "npm", rss: 50}
+	inner := ps{pid: 21, ppid: 20, name: "claude", rss: 600}
+	work := ps{pid: 22, ppid: 21, name: "node", rss: 300}
+	g.Update(epoch, samples([]ps{outer, npm, inner, work}))
+	work.cpu = 2 // 1 core over 2s, under the nested agent
+	g.Update(epoch.Add(2*time.Second), samples([]ps{outer, npm, inner, work}))
+	for _, h := range g.Snapshot().Heavy {
+		if h.Key.PID == 20 {
+			t.Fatalf("npm is heavy from the nested agent's use: %+v", g.Snapshot().Heavy)
+		}
+	}
+}
+
+// TestZombieIsGone checks that a heavy process that exited but is not
+// reaped yet (a zombie) is reported lost and holds no heavy slot.
+func TestZombieIsGone(t *testing.T) {
+	g := newGraph()
+	agentP := ps{pid: 10, ppid: 1, name: "claude"}
+	build := ps{pid: 11, ppid: 10, name: "go"}
+	g.Update(epoch, samples([]ps{agentP, build}))
+	if n := len(g.Snapshot().Heavy); n != 1 {
+		t.Fatalf("%d heavy, want 1", n)
+	}
+	build.state = domain.StateZombie
+	changes := g.Update(epoch.Add(2*time.Second), samples([]ps{agentP, build}))
+	if n := len(g.Snapshot().Heavy); n != 0 {
+		t.Fatalf("%d heavy with a zombie build, want 0", n)
+	}
+	if want := []Change{ch(procLost, 11, 0, "go", "")}; !reflect.DeepEqual(changes, want) {
+		t.Fatalf("changes = %v, want %v", changes, want)
+	}
+	if g.Live(key(11, 0)) {
+		t.Error("zombie reported live")
+	}
+}
+
+// TestCommandWorkloads checks that a busy command an agent runs through its
+// shell is a heavy workload whatever it is called, and that idle commands,
+// an agent's own servers, shells hosting an agent, and builds already known
+// by name are not.
+func TestCommandWorkloads(t *testing.T) {
+	heavy := func(g *Graph) map[int]WorkloadView {
+		m := map[int]WorkloadView{}
+		for _, h := range g.Snapshot().Heavy {
+			m[h.Key.PID] = h
+		}
+		return m
+	}
+	claude := ps{pid: 10, ppid: 1, name: "claude"}
+	// claude -> zsh -> python: a busy tool call.
+	shell := ps{pid: 20, ppid: 10, name: "zsh"}
+	train := ps{pid: 21, ppid: 20, name: "python"}
+	// claude -> node: an MCP server, busy but not a tool call.
+	mcp := ps{pid: 30, ppid: 10, name: "node"}
+	// claude -> zsh -> claude: a shell hosting another agent.
+	host := ps{pid: 40, ppid: 10, name: "zsh"}
+	nested := ps{pid: 41, ppid: 40, name: "claude"}
+	worker := ps{pid: 42, ppid: 41, name: "node"}
+	// claude -> bash -> go: a build known by name keeps its own workload.
+	bash := ps{pid: 50, ppid: 10, name: "bash"}
+	build := ps{pid: 51, ppid: 50, name: "go"}
+	// claude -> zsh -> sleep: idle.
+	idle := ps{pid: 60, ppid: 10, name: "zsh"}
+	nap := ps{pid: 61, ppid: 60, name: "sleep"}
+	all := func() []ps { return []ps{claude, shell, train, mcp, host, nested, worker, bash, build, idle, nap} }
+
+	g := newGraph()
+	g.Update(epoch, samples(all()))
+	train.cpu, mcp.cpu, worker.cpu, build.cpu = 4, 4, 4, 4 // 2 cores each over 2s
+	g.Update(epoch.Add(2*time.Second), samples(all()))
+	got := heavy(g)
+	if h, ok := got[20]; !ok || h.Class != domain.ClassCommand || h.Name != "python" || h.Owner != "claude-1" {
+		t.Errorf("busy tool call = %+v, %v; want a command workload named python owned by claude-1", h, ok)
+	}
+	if h, ok := got[51]; !ok || h.Class != domain.ClassBuild {
+		t.Errorf("go build = %+v, %v; want its own build workload", h, ok)
+	}
+	for _, pid := range []int{30, 40, 41, 42, 50, 60, 61} {
+		if h, ok := got[pid]; ok {
+			t.Errorf("pid %d is heavy (%+v), want not", pid, h)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("heavy = %v, want the command and the go build", got)
+	}
+
+	// Idle again: held for launcherHold, kept while stopped, then dropped.
+	g.Update(epoch.Add(30*time.Second), samples(all()))
+	if _, ok := heavy(g)[20]; !ok {
+		t.Error("command dropped within the hold")
+	}
+	shell.state, train.state = domain.StateStopped, domain.StateStopped
+	g.Update(epoch.Add(120*time.Second), samples(all()))
+	if _, ok := heavy(g)[20]; !ok {
+		t.Error("stopped command dropped")
+	}
+	shell.state, train.state = domain.StateRunning, domain.StateRunning
+	g.Update(epoch.Add(122*time.Second), samples(all()))
+	if _, ok := heavy(g)[20]; ok {
+		t.Error("idle command still heavy after the hold")
+	}
+
+	// Memory alone makes a command heavy.
+	train.rss = 1200
+	g.Update(epoch.Add(124*time.Second), samples(all()))
+	if _, ok := heavy(g)[20]; !ok {
+		t.Error("command using 1.2 GiB is not heavy")
 	}
 }

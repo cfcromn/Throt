@@ -53,12 +53,15 @@ const (
 	ClassBuild          WorkloadClass = "build"
 	ClassTest           WorkloadClass = "test"
 	ClassContainerBuild WorkloadClass = "container-build"
+	// ClassCommand is a busy command an agent ran through a shell (one tool
+	// call), whatever its executable (see process.Graph).
+	ClassCommand WorkloadClass = "command"
 )
 
 // Heavy reports whether the class is an expensive workload the scheduler
 // may eventually coordinate.
 func (c WorkloadClass) Heavy() bool {
-	return c == ClassBuild || c == ClassTest || c == ClassContainerBuild
+	return c == ClassBuild || c == ClassTest || c == ClassContainerBuild || c == ClassCommand
 }
 
 const (

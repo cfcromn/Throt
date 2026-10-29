@@ -28,7 +28,11 @@ type tool struct {
 	Title       string          `json:"title"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
-	Annotations map[string]any  `json:"annotations"`
+	// OutputSchema describes the structuredContent of a successful call
+	// (MCP 2025-06-18 and later; earlier clients ignore it). Error results
+	// carry none.
+	OutputSchema json.RawMessage `json:"outputSchema"`
+	Annotations  map[string]any  `json:"annotations"`
 }
 
 // readOnly marks a tool as side-effect free and local.
@@ -50,8 +54,9 @@ func toolList() []tool {
 				"Call it when you need the whole picture: the machine or your commands feel slow, you plan several heavy jobs " +
 				"in parallel, or you need a workload PID for throt_explain or your agent label for throt_capacity. " +
 				"To decide whether to start one heavy job, call throt_capacity instead.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
-			Annotations: readOnly("Throt status"),
+			InputSchema:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			OutputSchema: outputSchema(statusView{}),
+			Annotations:  readOnly("Throt status"),
 		},
 		{
 			Name:  "throt_capacity",
@@ -68,7 +73,8 @@ func toolList() []tool {
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"agent":{"type":"string","minLength":1,"maxLength":128,` +
 				`"description":"Optional agent instance label, e.g. \"claude-1\", to report that agent's running heavy workloads."}},` +
 				`"additionalProperties":false}`),
-			Annotations: readOnly("Throt capacity check"),
+			OutputSchema: outputSchema(capacity.Verdict{}),
+			Annotations:  readOnly("Throt capacity check"),
 		},
 		{
 			Name:  "throt_wait_for_capacity",
@@ -86,7 +92,8 @@ func toolList() []tool {
 				`"description":"Optional agent instance label, e.g. \"claude-1\"; defaults to the agent that launched this server."},` +
 				`"max_wait_seconds":{"type":"integer","minimum":1,"maximum":600,"default":60,` +
 				`"description":"Longest time to wait, in seconds."}},"additionalProperties":false}`),
-			Annotations: readOnly("Throt wait for capacity"),
+			OutputSchema: outputSchema(waitView{}),
+			Annotations:  readOnly("Throt wait for capacity"),
 		},
 		{
 			Name:  "throt_explain",
@@ -99,7 +106,8 @@ func toolList() []tool {
 				"when the PID is not a heavy workload.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"pid":{"type":"integer","minimum":1,"maximum":2147483647,` +
 				`"description":"PID of a heavy workload, as listed by throt_status."}},"required":["pid"],"additionalProperties":false}`),
-			Annotations: readOnly("Throt explain workload"),
+			OutputSchema: outputSchema(explainView{}),
+			Annotations:  readOnly("Throt explain workload"),
 		},
 		{
 			Name:  "throt_events",
@@ -110,7 +118,8 @@ func toolList() []tool {
 				"For one workload, throt_explain picks out its events for you.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":200,"default":20,` +
 				`"description":"How many of the newest events to return."}},"additionalProperties":false}`),
-			Annotations: readOnly("Throt events"),
+			OutputSchema: outputSchema(eventsView{}),
+			Annotations:  readOnly("Throt events"),
 		},
 		{
 			Name:  "throt_stats",
@@ -120,8 +129,9 @@ func toolList() []tool {
 				"heavy jobs spent queued by the scheduler, most CPU time first, plus all-agent and unattributed totals. " +
 				"Call it when asked which agent cost the machine the most, or to report what your own work cost. " +
 				"It does not tell you whether to start a job; use throt_capacity for that.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
-			Annotations: readOnly("Throt usage stats"),
+			InputSchema:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			OutputSchema: outputSchema(statsView{}),
+			Annotations:  readOnly("Throt usage stats"),
 		},
 	}
 }
@@ -493,6 +503,11 @@ func (s *Server) waitForCapacity(ctx context.Context, agent string, limit time.D
 	return textResult(b.String(), v)
 }
 
+// eventsView is the structured content of throt_events.
+type eventsView struct {
+	Events []domain.Event `json:"events"`
+}
+
 func (s *Server) events(ctx context.Context, limit int) toolResult {
 	events, err := s.client.Events(ctx, limit)
 	if err != nil {
@@ -502,7 +517,7 @@ func (s *Server) events(ctx context.Context, limit int) toolResult {
 		events = events[len(events)-limit:]
 	}
 	if len(events) == 0 {
-		return textResult("no events", map[string]any{"events": []domain.Event{}})
+		return textResult("no events", eventsView{Events: []domain.Event{}})
 	}
 	lines := make([]string, 0, len(events))
 	for _, e := range events {
@@ -512,7 +527,7 @@ func (s *Server) events(ctx context.Context, limit int) toolResult {
 		}
 		lines = append(lines, line)
 	}
-	return textResult(strings.Join(lines, "\n"), map[string]any{"events": events})
+	return textResult(strings.Join(lines, "\n"), eventsView{Events: events})
 }
 
 // statsView is the structured content of throt_stats.

@@ -28,6 +28,9 @@ type AcquireParams struct {
 	// must match; elsewhere (a peer in another PID namespace) it is the
 	// process whose identity the daemon resolves.
 	PID int `json:"pid"`
+	// Overdue asks for a lease even past the limit: the caller waited its
+	// whole timeout and runs anyway, and must not be queued after it starts.
+	Overdue bool `json:"overdue,omitempty"`
 }
 
 // AcquireResult is returned by the "acquire" method.
@@ -42,6 +45,10 @@ type AcquireResult struct {
 // ReasonNested grants a caller below a running heavy workload or a lease
 // holder without reserving a slot: its work is part of one already counted.
 const ReasonNested = "nested"
+
+// ReasonOverdue grants a lease past the limit to a caller that waited its
+// whole timeout and runs anyway.
+const ReasonOverdue = "overdue"
 
 // ProcessIdentifier looks up one live process with exactly the start time,
 // uid and parent the daemon's process sampler reports. The platform process
@@ -75,7 +82,7 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 	chain := d.ancestry(ctx, self.PPID)
 	paused := d.ctl.Paused()
 	now := time.Now()
-	res, l := d.admit(self.Key(), chain, paused, now)
+	res, l := d.admit(self.Key(), chain, paused, now, p.Overdue)
 	if l.ID != "" {
 		d.emit(domain.EventLeaseGranted, fmt.Sprintf("lease %s granted to pid %d (%s): %s", l.ID, p.PID, ownerLabel(l.Agent), res.Verdict.Reason),
 			map[string]string{"lease_id": l.ID, "pid": strconv.Itoa(p.PID), "agent": l.Agent})
@@ -87,30 +94,40 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 // caller that is not the peer, cannot be identified, or belongs to another
 // user.
 func (d *Daemon) acquireCaller(ctx context.Context, pid int) (domain.ProcessSample, error) {
+	self, code, why := d.caller(ctx, pid)
+	if code != "" {
+		return self, d.refused("acquire", pid, code, why)
+	}
+	return self, nil
+}
+
+// caller resolves pid, a caller asking about itself, from the OS. When it
+// refuses the caller it returns a refusal reason and a sentence.
+func (d *Daemon) caller(ctx context.Context, pid int) (self domain.ProcessSample, code, why string) {
 	// A lease is the caller's own: where the kernel reports the peer PID,
 	// it must be the process the lease is for.
 	if peer, ok := transport.PeerPIDFrom(ctx); ok && peer != pid {
-		return domain.ProcessSample{}, d.refused("acquire", pid, fmt.Sprintf("caller pid %d is not pid %d", peer, pid))
+		return self, ReasonPeerMismatch, fmt.Sprintf("caller pid %d is not pid %d", peer, pid)
 	}
 	if d.ident == nil {
-		return domain.ProcessSample{}, d.refused("acquire", pid, "cannot identify processes on this platform")
+		return self, ReasonUnidentified, "cannot identify processes on this platform"
 	}
 	self, err := d.identify(ctx, pid)
 	switch {
 	case err != nil:
-		return self, d.refused("acquire", pid, "cannot identify the caller: "+err.Error())
+		return self, ReasonUnidentified, "cannot identify the caller: " + err.Error()
 	case self.Start.IsZero():
-		return self, d.refused("acquire", pid, "the caller has no start time")
+		return self, ReasonUnidentified, "the caller has no start time"
 	case self.UID != d.uid:
-		return self, d.refused("acquire", pid, "the process belongs to another user")
+		return self, control.ReasonForeignUID, "the process belongs to another user"
 	}
-	return self, nil
+	return self, "", ""
 }
 
 // admit decides an acquire by key, whose ancestors are chain, and grants
 // the lease it returns. The check and the grant happen under d.mu. A zero
 // Lease means none was granted now, also when key already holds one.
-func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.PausedWorkload, now time.Time) (AcquireResult, Lease) {
+func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.PausedWorkload, now time.Time, overdue bool) (AcquireResult, Lease) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if l, ok := d.leases.find(key); ok {
@@ -127,6 +144,9 @@ func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.Paus
 		res.Granted, res.Reason = true, ReasonNested
 	case len(d.leases.leases) >= maxLeases:
 		res.Reason = ReasonTooManyLeases
+	case overdue:
+		l = d.leases.grant(key, agent, now)
+		res.Granted, res.LeaseID, res.Reason = true, l.ID, ReasonOverdue
 	case !v.OKToStart:
 	case st.Scheduler.Mode != scheduler.ModeOff && !d.firstInLine(key, agent, st, now):
 		// A slot is free, but older work waits for it.
@@ -196,12 +216,20 @@ func (d *Daemon) identify(ctx context.Context, pid int) (domain.ProcessSample, e
 
 // nearestAgent returns the label of the first agent in chain.
 func nearestAgent(chain []int, agents []process.AgentView) string {
+	if a, ok := nearestAgentView(chain, agents); ok {
+		return a.Agent
+	}
+	return ""
+}
+
+// nearestAgentView returns the first agent in chain.
+func nearestAgentView(chain []int, agents []process.AgentView) (process.AgentView, bool) {
 	for _, pid := range chain {
 		for _, a := range agents {
 			if a.Key.PID == pid {
-				return a.Agent
+				return a, true
 			}
 		}
 	}
-	return ""
+	return process.AgentView{}, false
 }

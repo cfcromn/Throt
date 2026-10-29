@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/config"
+	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
@@ -27,6 +29,8 @@ type world struct {
 	mu    sync.Mutex
 	procs map[int]domain.ProcessSample
 	sent  []string
+	// failProcs makes process sampling fail.
+	failProcs bool
 }
 
 func newWorld(procs ...domain.ProcessSample) *world {
@@ -57,6 +61,9 @@ func (w *world) SampleHost(context.Context) (domain.HostSample, error) {
 func (w *world) SampleProcesses(context.Context) ([]domain.ProcessSample, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.failProcs {
+		return nil, errors.New("ps: fork: resource temporarily unavailable")
+	}
 	out := make([]domain.ProcessSample, 0, len(w.procs))
 	for _, p := range w.procs {
 		out = append(out, p)
@@ -293,6 +300,87 @@ func TestObserveWouldQueue(t *testing.T) {
 	}
 }
 
+// TestQueuedResumedWhenSamplingFails checks that queued work does not stay
+// stopped while process sampling keeps failing: no scheduler round runs
+// then, so after max_queue_wait the daemon resumes it itself.
+func TestQueuedResumedWhenSamplingFails(t *testing.T) {
+	w := newWorld(
+		domain.ProcessSample{PID: 10, PPID: 1, Name: "claude"},
+		domain.ProcessSample{PID: 11, PPID: 10, Name: "go"},
+	)
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(shortTempDir(t), "throtd.sock")
+	cfg.SampleInterval = config.Duration(100 * time.Millisecond)
+	cfg.Scheduler.Mode, cfg.Scheduler.HeavyLimit, cfg.Scheduler.ResumeCooldown = "enforce", 1, 0
+	cfg.Scheduler.Adaptive = false
+	cfg.Scheduler.MaxQueueWait = config.Duration(time.Second)
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewDaemon(cfg, w, w, w, slog.New(slog.DiscardHandler)).Run(ctx)
+	}()
+	defer func() { stop(); <-done }()
+	status := func() StatusResult {
+		var st StatusResult
+		transport.Call(context.Background(), cfg.SocketPath, "status", nil, &st)
+		return st
+	}
+	waitFor(t, "normal pressure", func() bool {
+		st := status()
+		return len(st.Heavy) == 1 && st.Pressure == domain.PressureNormal
+	})
+	w.add(domain.ProcessSample{PID: 12, PPID: 10, Name: "go"})
+	waitFor(t, "pid 12 queued", func() bool { return w.signals() == "stop:12" })
+
+	w.mu.Lock()
+	w.failProcs = true
+	w.mu.Unlock()
+	start := time.Now()
+	waitFor(t, "pid 12 resumed", func() bool { return w.signals() == "stop:12 cont:12" })
+	if waited := time.Since(start); waited < 900*time.Millisecond {
+		t.Errorf("resumed after %v, want at least max_queue_wait (1s)", waited)
+	}
+	var events []domain.Event
+	transport.Call(context.Background(), cfg.SocketPath, "events", nil, &events)
+	if !slices.ContainsFunc(events, func(e domain.Event) bool {
+		return e.Kind == domain.EventSchedulerDecision && e.Attrs["reason"] == ReasonProcessesUnavailable
+	}) {
+		t.Errorf("no scheduler_decision with reason %s", ReasonProcessesUnavailable)
+	}
+}
+
+// TestQueuedLineOnlyHeldWork checks that work the daemon resumed outside a
+// scheduler round, as failOpenQueued does while sampling fails, leaves the
+// line throt run callers wait in, though the scheduler still lists it as
+// queued until its next round.
+func TestQueuedLineOnlyHeldWork(t *testing.T) {
+	start := time.Unix(1, 0)
+	running := process.WorkloadView{Key: domain.ProcessKey{PID: 21, Start: start}, Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	queued := process.WorkloadView{Key: domain.ProcessKey{PID: 11, Start: start}, Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	d := controlDaemon(t, t.TempDir(), &fakeSignaler{})
+	c := config.Default().Scheduler
+	c.Mode, c.HeavyLimit, c.Adaptive = "enforce", 1, false
+	d.sched = newScheduler(c)
+	now := time.Now()
+	d.sched.Decide(scheduler.Input{Now: now, Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{running}})
+	d.sched.Decide(scheduler.Input{Now: now.Add(time.Second), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{running, queued}})
+	if q := d.sched.Queued(); len(q) != 1 || q[0].Key != queued.Key {
+		t.Fatalf("scheduler queued %+v, want pid 11", q)
+	}
+	if err := d.ctl.PauseAs(context.Background(), target(start, 11), control.OriginScheduler); err != nil {
+		t.Fatal(err)
+	}
+	d.publishScheduler()
+	if len(d.queuedLine) != 1 || d.queuedLine[0].Key != queued.Key {
+		t.Fatalf("line while paused = %+v, want pid 11", d.queuedLine)
+	}
+	d.schedulerResume(context.Background(), queued.Key, queued.Name, queued.Owner, ReasonProcessesUnavailable)
+	d.publishScheduler()
+	if len(d.queuedLine) != 0 {
+		t.Errorf("line after resume = %+v, want empty", d.queuedLine)
+	}
+}
+
 // failingProcs is a process sampler that always fails.
 type failingProcs struct{}
 
@@ -324,5 +412,75 @@ func TestWouldQueueClearedOnFailedSample(t *testing.T) {
 	d.mu.Unlock()
 	if len(got) != 0 {
 		t.Errorf("would queue after a failed process sample = %v, want empty", got)
+	}
+}
+
+// TestQueuedWorkloadOfDeadAgentResumes checks that a queued build whose
+// agent exits (the build is reparented to init and becomes unattributed)
+// is not left stopped: it is resumed once a slot frees.
+func TestQueuedWorkloadOfDeadAgentResumes(t *testing.T) {
+	w := newWorld(
+		domain.ProcessSample{PID: 10, PPID: 1, Name: "claude"},
+		domain.ProcessSample{PID: 11, PPID: 10, Name: "go"},
+	)
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(shortTempDir(t), "throtd.sock")
+	cfg.SampleInterval = config.Duration(100 * time.Millisecond)
+	cfg.Scheduler.Mode, cfg.Scheduler.HeavyLimit, cfg.Scheduler.ResumeCooldown = "enforce", 1, 0
+	cfg.Scheduler.Adaptive = false
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewDaemon(cfg, w, w, w, slog.New(slog.DiscardHandler)).Run(ctx)
+	}()
+	defer func() { stop(); <-done }()
+	status := func() StatusResult {
+		var st StatusResult
+		transport.Call(context.Background(), cfg.SocketPath, "status", nil, &st)
+		return st
+	}
+	waitFor(t, "normal pressure", func() bool {
+		st := status()
+		return len(st.Heavy) == 1 && st.Pressure == domain.PressureNormal
+	})
+	w.add(domain.ProcessSample{PID: 12, PPID: 10, Name: "go"})
+	waitFor(t, "pid 12 queued", func() bool { return w.signals() == "stop:12" })
+
+	// The agent dies; both builds are reparented to init.
+	w.mu.Lock()
+	delete(w.procs, 10)
+	for _, pid := range []int{11, 12} {
+		p := w.procs[pid]
+		p.PPID = 1
+		w.procs[pid] = p
+	}
+	w.mu.Unlock()
+	waitFor(t, "agent gone", func() bool { return len(status().Agents) == 0 })
+	w.exit(11)
+	waitFor(t, "pid 12 resumed", func() bool { return w.signals() == "stop:12 cont:12" })
+}
+
+// TestPauseOfExitedWorkloadIsQuiet checks that a workload whose top process
+// exits between the snapshot and the scheduler's pause is skipped without a
+// control_failed event: nothing was stopped and nothing failed.
+func TestPauseOfExitedWorkloadIsQuiet(t *testing.T) {
+	w := newWorld(
+		domain.ProcessSample{PID: 10, PPID: 1, Name: "claude"},
+		domain.ProcessSample{PID: 11, PPID: 10, Name: "go"},
+	)
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(t.TempDir(), "throtd.sock")
+	cfg.Scheduler.Mode = "enforce"
+	d := NewDaemon(cfg, w, w, w, slog.New(slog.DiscardHandler))
+	d.tick(context.Background())
+	w.exit(11)
+	d.schedulerPause(context.Background(), scheduler.Decision{
+		Key: domain.ProcessKey{PID: 11, Start: time.Unix(11, 0)}, Name: "go", Owner: "claude-1", Action: scheduler.ActionQueue,
+	})
+	if ev := eventsOf(d, domain.EventControlFailed); len(ev) != 0 {
+		t.Errorf("control_failed events = %v, want none", ev)
+	}
+	if got := d.ctl.Paused(); len(got) != 0 {
+		t.Errorf("records = %v, want none", got)
 	}
 }

@@ -534,8 +534,10 @@ func TestAdaptiveGrowsForWaitingWork(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// The blind limit is below the ceiling: grow, sized by memory,
+			// is what takes the limit past it.
 			p := adaptive(5)
-			p.StartLimit = 2
+			p.StartLimit, p.BlindLimit = 2, 3
 			s := New(p)
 			paused := map[int]bool{}
 			resumed := 0
@@ -579,5 +581,25 @@ func TestAdaptiveGrowsForWaitingWork(t *testing.T) {
 				t.Fatalf("last change %+v, want reason %s", last, tt.reason)
 			}
 		})
+	}
+}
+
+// TestAdaptiveBlindLimit checks that without memory evidence the limit
+// rises, and resets at unknown pressure, only to BlindLimit. That grow,
+// sized by memory headroom, goes past it is TestAdaptiveGrowsForWaitingWork.
+func TestAdaptiveBlindLimit(t *testing.T) {
+	p := adaptive(16)
+	p.StartLimit, p.BlindLimit = 2, 4
+	s := New(p)
+	for sec := 0; sec <= 300; sec += 30 {
+		s.Decide(Input{Now: at(sec), Pressure: domain.PressureNormal})
+	}
+	if s.Limit() != 4 {
+		t.Fatalf("limit after calm minutes = %d, want the blind limit 4", s.Limit())
+	}
+	s.Decide(Input{Now: at(301), Pressure: domain.PressureHigh})
+	s.Decide(Input{Now: at(302), Pressure: domain.PressureUnknown})
+	if s.Limit() != 4 {
+		t.Fatalf("limit after unknown pressure = %d, want the blind limit 4", s.Limit())
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -118,11 +119,15 @@ func checkFacts(t *testing.T, name, out string, w int) {
 	case "connecting":
 		assertContains(t, out, "connecting to throtd")
 	case "empty":
-		assertContains(t, out, "pressure UNKNOWN")
+		assertContains(t, out, "UNKNOWN")
 	case "observe":
-		assertContains(t, out, "pressure CRITICAL", "observe", "limit 3 (adaptive, start 2, max 8)", "1 would queue")
+		assertContains(t, strings.ToLower(cells(out)), "critical", "observe", "limit 3 (", "1 would queue")
 	default:
-		assertContains(t, out, "pressure CRITICAL", "limit 3 (adaptive, start 2, max 8)", "1 queued")
+		// A narrow SCHEDULER panel shortens the adaptive range to (2–8).
+		assertContains(t, cells(out), "CRITICAL", "limit 3 (", "1 queued")
+	}
+	if strings.Contains(out, "╭") && !strings.Contains(out, "PRESSURE") && !strings.Contains(out, "SYSTEM") {
+		t.Errorf("bordered screen without a PRESSURE or SYSTEM panel:\n%s", out)
 	}
 	if name == "confirm" {
 		// The question is the one thing to answer; it must be whole.
@@ -165,8 +170,8 @@ func TestObserveState(t *testing.T) {
 	if l := lineContaining(t, out, "2001"); !strings.Contains(l, "running (would queue)") {
 		t.Errorf("would-queue row = %q", l)
 	}
-	if l := lineWith(t, out, "SCHEDULER"); !strings.Contains(l, "observe, limit 1, 1 would queue") {
-		t.Errorf("observe scheduler line = %q", l)
+	if b := strings.Join(panelBody(t, out, "SCHEDULER"), "\n"); !strings.Contains(b, "OBSERVE\nlimit 1 · 1 would queue") {
+		t.Errorf("observe scheduler panel = %q", b)
 	}
 	d := view(press(t, m, "enter"))
 	if l := lineContaining(t, d, "2001"); !strings.Contains(l, "running (would queue)") {
@@ -174,11 +179,27 @@ func TestObserveState(t *testing.T) {
 	}
 }
 
+// TestBackgroundState checks that a workload throtd keeps at background
+// priority reads "bg" while it runs, and QUEUED once queued.
+func TestBackgroundState(t *testing.T) {
+	st := sampleStatus(1, 2)
+	st.Scheduler = app.SchedulerStatus{Mode: scheduler.Mode("enforce"), HeavyLimit: 2,
+		Queued: []domain.ProcessKey{st.Heavy[0].Key}, WouldQueue: []domain.ProcessKey{}}
+	st.Heavy[0].Background, st.Heavy[1].Background = true, true
+	out := view(newModel(t, &fakeClient{status: st}, 140, 40))
+	if l := lineContaining(t, out, "2001"); !strings.Contains(l, " bg") {
+		t.Errorf("background row = %q", l)
+	}
+	if l := lineContaining(t, out, "2000"); !strings.Contains(l, "QUEUED") {
+		t.Errorf("queued background row = %q", l)
+	}
+}
+
 // TestDaemonDownMessage checks the not-running banner and that polling
 // keeps going, so the TUI reconnects by itself.
 func TestDaemonDownMessage(t *testing.T) {
 	c := &fakeClient{err: &transport.NotRunningError{Socket: testSocket, Err: errors.New("no such file")}}
-	m := update(t, New(c, testSocket), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m := update(t, newWithEnv(c, testSocket, os.Getenv), tea.WindowSizeMsg{Width: 100, Height: 30})
 	next, cmd := m.Update(m.poll()())
 	m = next.(Model)
 	out := view(m)
@@ -236,9 +257,9 @@ var helpKeys = []struct {
 func TestHelpListsRealKeys(t *testing.T) {
 	c := &fakeClient{status: sampleStatus(3, 3), events: sampleEvents()}
 	base := newModel(t, c, 140, 50)
-	help := view(press(t, base, "?"))
+	help := "\n" + cells(view(press(t, base, "?")))
 	for _, k := range helpKeys {
-		if !strings.Contains(help, "  "+k.help+" ") {
+		if !strings.Contains(help, "\n"+k.help+" ") {
 			t.Errorf("help does not list %q:\n%s", k.help, help)
 		}
 	}

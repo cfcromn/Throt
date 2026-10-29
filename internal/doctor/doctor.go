@@ -1,12 +1,13 @@
 // Package doctor builds the sanitized diagnostic report printed by
 // `throt doctor`. The report is safe to paste into a public issue: it holds
 // no arguments or environment, names no process except stopped ones throtd
-// did not pause (by executable base name only), and home paths and the user
-// name are redacted.
+// did not pause and busy unattributed java (by executable base name only),
+// and home paths and the user name are redacted.
 package doctor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/user"
 	"runtime"
@@ -35,6 +36,29 @@ type Report struct {
 	Processes  Check   `json:"process_table"`
 	Status     *Status `json:"status,omitempty"`
 	Orphans    Orphans `json:"orphans"`
+	// Findings are setup problems worth fixing, one sentence each.
+	Findings []string `json:"findings,omitempty"`
+}
+
+// maxDaemonFindings bounds the unattributed java findings.
+const maxDaemonFindings = 3
+
+// daemonFindings flags busy heavy java processes no agent owns. They are
+// almost always Gradle or Kotlin daemons, which builds started by an agent
+// hand their work to, so throtd can neither attribute nor queue those
+// builds. Only the PID and CPU are reported.
+func daemonFindings(heavy []process.WorkloadView) []string {
+	var out []string
+	for _, h := range heavy {
+		if h.Name != "java" || h.Owner != "" || h.CPU <= 0 || len(out) == maxDaemonFindings {
+			continue
+		}
+		out = append(out, fmt.Sprintf("unattributed java (pid %d, %.0f%% CPU) is probably a Gradle or Kotlin daemon: "+
+			"builds there cannot be queued; set org.gradle.daemon=false in ~/.gradle/gradle.properties so they run under the agent "+
+			"(for the Kotlin daemon also kotlin.compiler.execution.strategy=in-process)",
+			h.Key.PID, h.CPU*100))
+	}
+	return out
 }
 
 // Orphans lists stopped processes of the user that throtd did not pause:
@@ -81,8 +105,8 @@ type Check struct {
 	Error   string                   `json:"error,omitempty"`
 }
 
-// derivedCPU is how throtd fills host CPU without a host CPU counter.
-const derivedCPU = "derived from process CPU by throtd"
+// derivedCPU is how throtd fills host CPU the one-shot sampler lacks.
+const derivedCPU = "measured by throtd (iostat on macOS, else process CPU)"
 
 // Status summarizes the daemon's view without naming any process.
 type Status struct {
@@ -136,6 +160,7 @@ func Collect(ctx context.Context, in Inputs) Report {
 		if st, err := in.Status(ctx); err == nil {
 			r.Status = &Status{Pressure: st.Pressure, Reason: st.Reason, Degraded: st.Degraded, Agents: len(st.Agents), Heavy: len(st.Heavy)}
 			r.Orphans = orphanReport("throtd", st.Orphans, st.OrphanCount, now)
+			r.Findings = daemonFindings(st.Heavy)
 			orphansKnown = true
 		}
 	}

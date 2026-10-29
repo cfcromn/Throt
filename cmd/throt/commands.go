@@ -52,8 +52,11 @@ func isHelp(a string) bool {
 func commands() []command {
 	return []command{
 		{name: "top", run: cmdTop, help: "open the terminal UI (the default with no command)"},
-		{name: "status", run: cmdStatus, help: "show host resources and pressure; --json for JSON"},
+		{name: "status", run: cmdStatus, help: `show host resources and pressure; --json for JSON; --idle
+lists agent sessions by memory and which look idle (report only)`},
 		{name: "stats", run: cmdStats, flags: true, help: "show per-agent resource usage since throtd started; --json for JSON"},
+		{name: "learned", run: cmdLearned, flags: true, synopsis: "[--forget SIGNATURE | --clear]", help: `list the commands throtd learned heavy, which the hook then
+waits for like heavy tools; --forget or --clear drops them`},
 		{name: "ping", run: cmdPing, help: "check that throtd is reachable"},
 		{name: "events", run: cmdEvents, flags: true, help: "print recent daemon events as JSON lines; -f keeps printing new ones"},
 		{name: "explain", run: cmdExplain, synopsis: "PID", help: "explain why a heavy workload is running, paused, or queued"},
@@ -75,7 +78,9 @@ it changes from the defaults, and warns about risky settings;
 		{name: "hook", run: cmdHook, synopsis: "claude-code [--max-wait D]", help: `Claude Code PreToolUse hook: before a lone heavy Bash command,
 wait up to D (default 50s) for heavy-job capacity; never
 changes or blocks the command (advisory; fails open)`},
-		{name: "setup", run: cmdSetup, synopsis: "claude-code|codex", help: "print the configuration to paste into a coding agent"},
+		{name: "setup", run: cmdSetup, synopsis: "claude-code|codex [--write]", help: `print the configuration to paste into a coding agent;
+--write installs it in your home directory instead (adds only,
+keeps a .throt-backup of each changed file)`},
 		{name: "completion", run: cmdCompletion, synopsis: "bash|zsh|fish", help: "print a shell completion script"},
 		{name: "version", run: cmdVersion, synopsis: "[--json]", help: `print the client version; --json adds the protocol and Go
 versions, and throtd's version when it is reachable`},

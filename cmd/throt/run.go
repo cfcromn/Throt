@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/cfcromn/Throt/internal/capacity"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/platform"
+	"github.com/cfcromn/Throt/internal/signature"
 )
 
 const (
@@ -93,8 +95,15 @@ type runner struct {
 	// is nil, or the daemon does not know the method, the runner only asks
 	// for advice through status.
 	acquire func(ctx context.Context) (app.AcquireResult, error)
+	// overdue asks throtd for a lease past the limit when --timeout runs
+	// the command anyway, so the scheduler does not queue it right after;
+	// nil to skip.
+	overdue func(ctx context.Context) (app.AcquireResult, error)
 	// status fetches a daemon snapshot.
 	status func(ctx context.Context) (app.StatusResult, error)
+	// expect reports the command's signature to throtd just before the
+	// exec, so throtd can learn it heavy for the hook; nil to skip.
+	expect func(ctx context.Context, sig string, named bool) (bool, error)
 	// ppid is the parent of this process.
 	ppid int
 	// ancestors returns this process's ancestors, nearest first, starting
@@ -130,7 +139,7 @@ func (r runner) run(ctx context.Context, o runOptions) error {
 			verdict = "yes"
 		}
 		fmt.Fprintf(r.stderr, "throt: ok to start a heavy job: %s (%s); running now (--no-wait)\n", verdict, v.Reason)
-		return r.execute(o.argv)
+		return r.start(ctx, o.argv)
 	}
 	start := r.now()
 	var lastNotice time.Time
@@ -140,12 +149,19 @@ func (r runner) run(ctx context.Context, o runOptions) error {
 			if waited {
 				fmt.Fprintf(r.stderr, "throt: capacity available after %s; starting\n", r.now().Sub(start).Round(time.Second))
 			}
-			return r.execute(o.argv)
+			return r.start(ctx, o.argv)
 		}
 		elapsed := r.now().Sub(start)
 		if o.timeout > 0 && elapsed >= o.timeout {
 			fmt.Fprintf(r.stderr, "throt: still no capacity after %s (%s); running anyway (--timeout)\n", o.timeout, v.Reason)
-			return r.execute(o.argv)
+			if r.overdue != nil {
+				// Best effort: without the lease the command still runs, and
+				// may be queued.
+				octx, cancel := context.WithTimeout(ctx, runCallTimeout)
+				r.overdue(octx)
+				cancel()
+			}
+			return r.start(ctx, o.argv)
 		}
 		if !waited || r.now().Sub(lastNotice) >= runNoticeInterval {
 			fmt.Fprintf(r.stderr, "throt: waiting for a heavy slot (%s): %s...\n", slotSummary(v), v.Reason)
@@ -229,6 +245,16 @@ func slotSummary(v capacity.Verdict) string {
 		return fmt.Sprintf("%d running%s, pressure %s", v.RunningHeavy, reserved, v.Pressure)
 	}
 	return fmt.Sprintf("%d/%d running%s, pressure %s", v.RunningHeavy, v.HeavyLimit, reserved, v.Pressure)
+}
+
+// start reports argv's signature to a throtd that answered, best effort,
+// then executes argv.
+func (r runner) start(ctx context.Context, argv []string) error {
+	if sig, ok := signature.FromArgs(argv[0], argv[1:]); ok && r.expect != nil {
+		name := path.Base(argv[0])
+		r.expect(ctx, sig, heavyTool(name, argv[1:]) && !lightInvocation(name, argv[1:]))
+	}
+	return r.execute(argv)
 }
 
 // execute replaces this process with argv. Like a shell, it exits 127 when
@@ -332,9 +358,14 @@ func cmdRun(ctx context.Context, e env, args []string) error {
 	// still waits for a throtd that runs on its last good config.
 	c := daemonClient{socket: e.clientConfig().SocketPath}
 	r.status = c.Status
+	r.expect = func(ctx context.Context, sig string, named bool) (bool, error) {
+		return expectHeavy(ctx, c.socket, sig, named)
+	}
 	// throtd resolves this process's identity and parent itself.
 	self := app.AcquireParams{PID: os.Getpid()}
 	r.acquire = func(ctx context.Context) (app.AcquireResult, error) { return c.Acquire(ctx, self) }
+	overdue := app.AcquireParams{PID: self.PID, Overdue: true}
+	r.overdue = func(ctx context.Context) (app.AcquireResult, error) { return c.Acquire(ctx, overdue) }
 	return r.run(ctx, o)
 }
 
