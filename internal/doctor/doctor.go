@@ -54,7 +54,8 @@ func daemonFindings(heavy []process.WorkloadView) []string {
 			continue
 		}
 		out = append(out, fmt.Sprintf("unattributed java (pid %d, %.0f%% CPU) is probably a Gradle or Kotlin daemon: "+
-			"builds there cannot be queued; set org.gradle.daemon=false in ~/.gradle/gradle.properties so they run under the agent",
+			"builds there cannot be queued; set org.gradle.daemon=false in ~/.gradle/gradle.properties so they run under the agent "+
+			"(for the Kotlin daemon also kotlin.compiler.execution.strategy=in-process)",
 			h.Key.PID, h.CPU*100))
 	}
 	return out

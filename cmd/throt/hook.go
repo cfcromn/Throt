@@ -395,7 +395,18 @@ func lightInvocation(name string, args []string) bool {
 			return true
 		}
 	}
-	return lightSubcommands[name][args[0]]
+	if !lightSubcommands[name][args[0]] {
+		return false
+	}
+	if name == "gradle" || name == "gradlew" {
+		// Gradle runs every task named, so `dependencies test` tests.
+		for _, a := range args[1:] {
+			if !strings.HasPrefix(a, "-") && !gradleLight[a] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // wrappers are build-tool wrapper scripts the process classifier cannot

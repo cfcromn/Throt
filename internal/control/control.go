@@ -113,6 +113,8 @@ func Describe(reason string) string {
 		return fmt.Sprintf("%d workloads are already paused, the most throtd holds", MaxPaused)
 	case ReasonNotPaused:
 		return "it is not paused"
+	case ReasonAlreadyStopped:
+		return "its top process is already stopped by someone else (job control or a debugger)"
 	}
 	return reason
 }

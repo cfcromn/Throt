@@ -281,9 +281,11 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 	slices.SortFunc(order, func(a, b *proc) int { return cmp.Compare(a.s.PID, b.s.PID) })
 
 	g.link(order, byPID)
-	active := g.launcherActivity(order)
 	for _, p := range order {
 		p.adapter = g.match(p.s)
+	}
+	active := g.launcherActivity(order)
+	for _, p := range order {
 		switch {
 		case p.adapter != "":
 			p.class, p.track = domain.ClassAgent, trackAgent
@@ -312,7 +314,9 @@ func (g *Graph) Update(now time.Time, procs []domain.ProcessSample) []Change {
 
 // launcherActivity sums CPU and RSS over the subtree of every launcher and
 // reports which launchers are active now. Each process adds itself to every
-// launcher above it, so nested launchers both count it.
+// launcher above it, so nested launchers both count it, up to the nearest
+// agent: a nested agent's subtree is not the launcher's workload (see
+// Workload), so its use must not make the launcher heavy.
 func (g *Graph) launcherActivity(order []*proc) map[*proc]bool {
 	type use struct {
 		cpu float64
@@ -320,7 +324,7 @@ func (g *Graph) launcherActivity(order []*proc) map[*proc]bool {
 	}
 	var sums map[*proc]*use
 	for _, p := range order {
-		for q := p; q != nil; q = q.parent {
+		for q := p; q != nil && q.adapter == ""; q = q.parent {
 			if !agent.Launcher(q.s.Name) {
 				continue
 			}

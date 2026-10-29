@@ -522,6 +522,25 @@ func testLauncher(t *testing.T, name string) {
 	}
 }
 
+// TestLauncherIgnoresNestedAgent checks that a nested agent's use does not
+// make the launcher above it heavy: the agent's subtree is not part of the
+// launcher's workload, so the launcher would hold a slot for nothing.
+func TestLauncherIgnoresNestedAgent(t *testing.T) {
+	g := newGraph()
+	outer := ps{pid: 10, ppid: 1, name: "claude"}
+	npm := ps{pid: 20, ppid: 10, name: "npm", rss: 50}
+	inner := ps{pid: 21, ppid: 20, name: "claude", rss: 600}
+	work := ps{pid: 22, ppid: 21, name: "node", rss: 300}
+	g.Update(epoch, samples([]ps{outer, npm, inner, work}))
+	work.cpu = 2 // 1 core over 2s, under the nested agent
+	g.Update(epoch.Add(2*time.Second), samples([]ps{outer, npm, inner, work}))
+	for _, h := range g.Snapshot().Heavy {
+		if h.Key.PID == 20 {
+			t.Fatalf("npm is heavy from the nested agent's use: %+v", g.Snapshot().Heavy)
+		}
+	}
+}
+
 // TestZombieIsGone checks that a heavy process that exited but is not
 // reaped yet (a zombie) is reported lost and holds no heavy slot.
 func TestZombieIsGone(t *testing.T) {

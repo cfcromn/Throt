@@ -224,6 +224,12 @@ func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level
 func (d *Daemon) publishScheduler() {
 	sched := d.schedulerStatus()
 	line, linePolicy := d.sched.Queued(), d.sched.Policy()
+	if linePolicy.Mode == scheduler.ModeEnforce {
+		// Only work the controller still holds waits in line: work resumed
+		// outside a round (failOpenQueued) stays queued in the scheduler
+		// until the next round, which may be far off while sampling fails.
+		line = slices.DeleteFunc(line, func(w scheduler.Waiter) bool { return !slices.Contains(sched.Queued, w.Key) })
+	}
 	d.mu.Lock()
 	d.status.Scheduler = sched
 	d.queuedLine, d.linePolicy = line, linePolicy

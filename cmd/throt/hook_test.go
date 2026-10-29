@@ -26,7 +26,7 @@ func TestLightInvocationsDoNotWait(t *testing.T) {
 		"make -n", "make --dry-run all", "java -version", "dotnet --info", "gradle tasks",
 		"mvn -v", "make --help", "pytest --version", "cd x && go version",
 		"./gradlew --stop", "./gradlew --status", "./gradlew tasks", "gradlew projects", "./gradlew properties",
-		"./gradlew help", "./gradlew --version", "./gradlew dependencies", "gradle --stop", "./mvnw -v", "./mvnw --version",
+		"./gradlew help", "./gradlew --version", "./gradlew dependencies", "./gradlew dependencies --offline", "./gradlew tasks projects", "gradle --stop", "./mvnw -v", "./mvnw --version",
 		"docker build --help",
 	} {
 		if name, ok := heavyCommand(in); ok {
@@ -58,7 +58,9 @@ func TestHeavyCommand(t *testing.T) {
 		{"gradlew build", "gradlew"},
 		{"./gradlew", "gradlew"},
 		{"cd api && ./gradlew test --tests 'FooTest'", "gradlew"},
-		{"./gradlew -q tasks", "gradlew"}, // a flag first: not provably light
+		{"./gradlew -q tasks", "gradlew"},          // a flag first: not provably light
+		{"./gradlew dependencies test", "gradlew"}, // a light task does not make the rest light
+		{"gradle tasks build", "gradle"},
 		{"./mvnw verify", "mvnw"},
 		{"backend/mvnw -B test", "mvnw"},
 		{"docker build -t app .", "docker"},

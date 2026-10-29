@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cfcromn/Throt/internal/config"
+	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
@@ -345,6 +346,38 @@ func TestQueuedResumedWhenSamplingFails(t *testing.T) {
 		return e.Kind == domain.EventSchedulerDecision && e.Attrs["reason"] == ReasonProcessesUnavailable
 	}) {
 		t.Errorf("no scheduler_decision with reason %s", ReasonProcessesUnavailable)
+	}
+}
+
+// TestQueuedLineOnlyHeldWork checks that work the daemon resumed outside a
+// scheduler round, as failOpenQueued does while sampling fails, leaves the
+// line throt run callers wait in, though the scheduler still lists it as
+// queued until its next round.
+func TestQueuedLineOnlyHeldWork(t *testing.T) {
+	start := time.Unix(1, 0)
+	running := process.WorkloadView{Key: domain.ProcessKey{PID: 21, Start: start}, Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	queued := process.WorkloadView{Key: domain.ProcessKey{PID: 11, Start: start}, Name: "go", Class: domain.ClassBuild, Owner: "claude-1", OwnerPID: 10}
+	d := controlDaemon(t, t.TempDir(), &fakeSignaler{})
+	c := config.Default().Scheduler
+	c.Mode, c.HeavyLimit, c.Adaptive = "enforce", 1, false
+	d.sched = newScheduler(c)
+	now := time.Now()
+	d.sched.Decide(scheduler.Input{Now: now, Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{running}})
+	d.sched.Decide(scheduler.Input{Now: now.Add(time.Second), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{running, queued}})
+	if q := d.sched.Queued(); len(q) != 1 || q[0].Key != queued.Key {
+		t.Fatalf("scheduler queued %+v, want pid 11", q)
+	}
+	if err := d.ctl.PauseAs(context.Background(), target(start, 11), control.OriginScheduler); err != nil {
+		t.Fatal(err)
+	}
+	d.publishScheduler()
+	if len(d.queuedLine) != 1 || d.queuedLine[0].Key != queued.Key {
+		t.Fatalf("line while paused = %+v, want pid 11", d.queuedLine)
+	}
+	d.schedulerResume(context.Background(), queued.Key, queued.Name, queued.Owner, ReasonProcessesUnavailable)
+	d.publishScheduler()
+	if len(d.queuedLine) != 0 {
+		t.Errorf("line after resume = %+v, want empty", d.queuedLine)
 	}
 }
 

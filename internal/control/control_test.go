@@ -175,6 +175,16 @@ func reason(err error) string {
 	return ""
 }
 
+// TestDescribeEveryReason checks that every refusal code has a sentence,
+// so no user-facing refusal shows a bare code.
+func TestDescribeEveryReason(t *testing.T) {
+	for _, r := range Reasons {
+		if got := Describe(r); got == r || got == "" {
+			t.Errorf("Describe(%q) = %q, want a sentence", r, got)
+		}
+	}
+}
+
 func TestPauseAndResume(t *testing.T) {
 	sig := newSig(10, 11, 12)
 	c := New(sig, me, clock, nil)

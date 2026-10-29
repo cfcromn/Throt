@@ -203,7 +203,8 @@ func TestCollectUnattributedJava(t *testing.T) {
 		t.Fatalf("findings = %q", r.Findings)
 	}
 	want := "unattributed java (pid 40, 250% CPU) is probably a Gradle or Kotlin daemon: builds there cannot be queued; " +
-		"set org.gradle.daemon=false in ~/.gradle/gradle.properties so they run under the agent"
+		"set org.gradle.daemon=false in ~/.gradle/gradle.properties so they run under the agent " +
+		"(for the Kotlin daemon also kotlin.compiler.execution.strategy=in-process)"
 	if r.Findings[0] != want || !strings.Contains(r.Findings[1], "pid 44,") || !strings.Contains(r.Findings[2], "pid 45,") {
 		t.Errorf("findings = %q", r.Findings)
 	}
