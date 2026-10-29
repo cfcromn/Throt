@@ -76,13 +76,16 @@ const (
 	// previous round and freed the slot, otherwise ReasonPressureNormal or
 	// ReasonPressureThroughput for the calm pressure that allowed it.
 	ReasonWorkloadExited = "workload_exited"
+	// ReasonHolderIdle is a resume into a slot that is free only because a
+	// running workload is idle (see IdleWindow).
+	ReasonHolderIdle = "holder_idle"
 )
 
 // DecisionReasons lists every reason code a Decision can carry.
 var DecisionReasons = []string{
 	ReasonSlotsExhausted, ReasonQueueWaiting, ReasonPressureHigh, ReasonPressureCritical,
 	ReasonSlotAvailable, ReasonAged, ReasonOwnerBudget, ReasonPressureNormal,
-	ReasonPressureThroughput, ReasonWorkloadExited,
+	ReasonPressureThroughput, ReasonWorkloadExited, ReasonHolderIdle,
 }
 
 // LimitReasons lists every reason code a LimitChange can carry.
@@ -97,6 +100,25 @@ const (
 	DefaultResumeCooldown = 10 * time.Second
 	DefaultMaxQueueWait   = 5 * time.Minute
 	DefaultAdaptInterval  = 30 * time.Second
+)
+
+// Idle holders. A running heavy workload whose CPU (cores, its whole
+// subtree) stays below IdleCPU in every round for IdleWindow is idle: a build
+// that hangs, waits on a lock, the network or a container start. Below high
+// pressure it does not count as running, overall or for its owner, so queued
+// work may take its slot. It is never paused or signalled for being idle,
+// and it counts again in the first round it is busy, even above the limit:
+// nothing is preempted, new work just waits until the count is under the
+// limit again. Its memory still counts, since it is in MemoryHeadroom and
+// the pressure signals. A gap of more than idleGap between two rounds
+// restarts every window, so one sample after a gap cannot make a workload
+// idle.
+//
+// ponytail: fixed thresholds, not config, until someone needs to tune them.
+const (
+	IdleCPU    = 0.05
+	IdleWindow = 2 * time.Minute
+	idleGap    = 30 * time.Second
 )
 
 // MaxLimitChanges bounds the limit changes retained between two calls to
@@ -292,7 +314,8 @@ type Decision struct {
 	Pressure domain.PressureLevel `json:"pressure"`
 	// RunningHeavy is the number of running heavy workloads when the
 	// decision was made, including any workload it resumes and every
-	// reserved slot (Input.Reserved).
+	// reserved slot (Input.Reserved), but not idle ones (see IdleWindow)
+	// below high pressure.
 	RunningHeavy int `json:"running_heavy"`
 	// HeavyLimit is the effective limit, which Adaptive may lower below
 	// Policy.HeavyLimit.
@@ -322,6 +345,11 @@ type entry struct {
 	// running is set when the latest round counted the workload as
 	// running (or resumed or admitted it), so its exit frees a slot.
 	running bool
+	// quietSince is the first round of the current run of rounds in which
+	// the workload ran below IdleCPU; zero while busy, paused or held.
+	quietSince time.Time
+	// idle is set when the latest round found it idle (see IdleWindow).
+	idle bool
 }
 
 // Scheduler is a deterministic heavy-slot scheduler.
@@ -387,6 +415,20 @@ func (s *Scheduler) SetPolicy(p Policy) {
 // Limit returns the effective heavy limit: Policy().HeavyLimit, or with
 // Adaptive the limit that started at StartLimit and follows pressure.
 func (s *Scheduler) Limit() int { return s.limit }
+
+// Idle returns the running workloads the latest round found idle (see
+// IdleWindow), sorted by key. Below high pressure they do not count as
+// running.
+func (s *Scheduler) Idle() []domain.ProcessKey {
+	var out []domain.ProcessKey
+	for k, e := range s.seen {
+		if e.idle {
+			out = append(out, k)
+		}
+	}
+	slices.SortFunc(out, cmpKey)
+	return out
+}
 
 // Queued returns the workloads waiting in line (queued or preempted) as of
 // the latest round, for Policy.FirstInLine.
@@ -554,6 +596,12 @@ func (s *Scheduler) Decide(in Input) []Decision {
 	if !s.lastPressureSwitch.IsZero() && in.Now.Before(s.lastPressureSwitch) {
 		s.lastPressureSwitch = time.Time{}
 	}
+	if !s.lastRound.IsZero() && (in.Now.Before(s.lastRound) || in.Now.Sub(s.lastRound) > idleGap) {
+		// A sampling gap (or a clock step) restarts every idle window.
+		for _, e := range s.seen {
+			e.quietSince = time.Time{}
+		}
+	}
 	if in.Pressure == domain.PressureHigh || in.Pressure == domain.PressureCritical {
 		// Pressure that stays high with nothing to decide must still space
 		// the recovery, or every queued workload resumes in its first calm
@@ -570,8 +618,10 @@ func (s *Scheduler) Decide(in Input) []Decision {
 
 	// Running heavy workloads, before admitting new ones. Unattributed
 	// workloads count: they consume resources even though they are never
-	// controlled. So do reserved slots.
-	running := len(in.Reserved)
+	// controlled. So do reserved slots. Idle ones do not, below high
+	// pressure (see IdleWindow): idle counts those.
+	freeIdle := in.Pressure != domain.PressureHigh && in.Pressure != domain.PressureCritical
+	running, idle := len(in.Reserved), 0
 	perOwner := map[string]int{}
 	for _, o := range in.Reserved {
 		perOwner[o]++
@@ -584,6 +634,8 @@ func (s *Scheduler) Decide(in Input) []Decision {
 			queued = append(queued, c)
 		case c.isNew && c.v.Owner != "":
 			admissible = append(admissible, c)
+		case c.e.idle && freeIdle:
+			idle++
 		default:
 			running++
 			perOwner[c.v.Owner]++
@@ -604,19 +656,27 @@ func (s *Scheduler) Decide(in Input) []Decision {
 	}
 
 	// Resume queued workloads: one per cooldown, plus as many as a
-	// cooldown exemption lets fill free slots.
+	// cooldown exemption lets fill free slots. A slot that is free only
+	// because a holder is idle is never exempt: the holder may wake.
 	for {
 		c, reason := s.pickResume(in, queued, running, perOwner)
 		if c == nil {
 			break
 		}
-		if !s.cooledDown(in.Now) {
-			if reason = s.cooldownExempt(in, running, exited); reason == "" {
-				break
-			}
+		idleSlot := idle > 0 && running < limit && running+idle >= limit
+		switch {
+		case idleSlot && !s.cooledDown(in.Now):
+			reason = ""
+		case idleSlot:
+			reason = ReasonHolderIdle
+		case !s.cooledDown(in.Now):
+			reason = s.cooldownExempt(in, running, exited)
 			if reason == ReasonWorkloadExited {
 				exited--
 			}
+		}
+		if reason == "" {
+			break
 		}
 		running++
 		perOwner[c.v.Owner]++
@@ -686,6 +746,7 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		if eligible > 1 {
 			s.lastSwitch, s.lastPressureSwitch = in.Now, in.Now
 			victim.e.running = false
+			victim.e.idle = false
 			victim.e.queuedSince = in.Now
 			victim.e.preemptPending = true
 			add(ActionPreempt, victim, ReasonPressureCritical)
@@ -743,6 +804,13 @@ func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessK
 		}
 		e.preemptPending = false
 		e.running = false // set again by Decide
+		switch {
+		case c.paused || c.held || v.CPU >= IdleCPU:
+			e.quietSince = time.Time{}
+		case e.quietSince.IsZero():
+			e.quietSince = in.Now
+		}
+		e.idle = !e.quietSince.IsZero() && in.Now.Sub(e.quietSince) >= IdleWindow
 		cands = append(cands, c)
 	}
 	exited := 0

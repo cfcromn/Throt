@@ -62,7 +62,8 @@ func WorkloadStates(st StatusResult) map[domain.ProcessKey]string {
 // Assess answers "should I start a heavy job now?" for agent (an instance
 // label such as "claude-1", or "" for none). Admission leases in
 // st.Scheduler.Leases count as running heavy work, overall and for their
-// agent. It fails open: missing data never blocks work.
+// agent. Idle workloads (process.WorkloadView.Idle) do not count, as in the
+// scheduler. It fails open: missing data never blocks work.
 func Assess(st StatusResult, agent string) Verdict { return assess(st, agent, false) }
 
 // assess is Assess. With inLine, queued work does not refuse by itself:
@@ -71,7 +72,7 @@ func assess(st StatusResult, agent string, inLine bool) Verdict {
 	states := WorkloadStates(st)
 	running, agentRunning := 0, 0
 	for _, h := range st.Heavy {
-		if states[h.Key] != StateRunning {
+		if states[h.Key] != StateRunning || h.Idle {
 			continue
 		}
 		running++

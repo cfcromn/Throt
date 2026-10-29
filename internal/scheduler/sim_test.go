@@ -117,7 +117,7 @@ func runSim(t *testing.T, sc simScenario) simResult {
 				in.Exited = append(in.Exited, keyOf(i))
 			}
 			if j.arrive <= tick && finish[i] < 0 {
-				in.Heavy = append(in.Heavy, process.WorkloadView{Key: keyOf(i), Name: "build", Class: domain.ClassBuild, Owner: j.owner, RSS: j.rss})
+				in.Heavy = append(in.Heavy, process.WorkloadView{Key: keyOf(i), Name: "build", Class: domain.ClassBuild, Owner: j.owner, RSS: j.rss, CPU: 1})
 				used += j.rss
 				if paused[i] {
 					in.Paused = append(in.Paused, keyOf(i))
@@ -598,7 +598,7 @@ func runLineSim(t *testing.T, policy Policy, items []lineItem, horizon int) line
 				in.Waiters = append(in.Waiters, Waiter{Key: x.key, Owner: x.it.owner, Since: at(x.waitStart), Lease: true})
 			}
 			if x.present && !x.done {
-				in.Heavy = append(in.Heavy, process.WorkloadView{Key: x.key, Name: x.it.name, Class: domain.ClassBuild, Owner: x.it.owner})
+				in.Heavy = append(in.Heavy, process.WorkloadView{Key: x.key, Name: x.it.name, Class: domain.ClassBuild, Owner: x.it.owner, CPU: 1})
 				if x.paused {
 					in.Paused = append(in.Paused, x.key)
 				}

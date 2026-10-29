@@ -14,8 +14,9 @@ var t0 = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func key(pid int) domain.ProcessKey { return domain.ProcessKey{PID: pid, Start: t0} }
 
+// wv is a busy heavy workload: one core, so it is never idle.
 func wv(pid int, owner string) process.WorkloadView {
-	return process.WorkloadView{Key: key(pid), Name: "go", Class: domain.ClassBuild, Owner: owner}
+	return process.WorkloadView{Key: key(pid), Name: "go", Class: domain.ClassBuild, Owner: owner, CPU: 1}
 }
 
 func keys(pids ...int) []domain.ProcessKey {

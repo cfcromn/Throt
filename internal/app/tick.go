@@ -223,6 +223,7 @@ func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level
 // status, and the queue and policy acquire shares the line with.
 func (d *Daemon) publishScheduler() {
 	sched := d.schedulerStatus()
+	idle := d.sched.Idle()
 	line, linePolicy := d.sched.Queued(), d.sched.Policy()
 	if linePolicy.Mode == scheduler.ModeEnforce {
 		// Only work the controller still holds waits in line: work resumed
@@ -232,8 +233,24 @@ func (d *Daemon) publishScheduler() {
 	}
 	d.mu.Lock()
 	d.status.Scheduler = sched
+	d.status.Heavy = withIdle(d.status.Heavy, idle)
 	d.queuedLine, d.linePolicy = line, linePolicy
 	d.mu.Unlock()
+}
+
+// withIdle returns heavy with Idle set for the workloads in idle, copying
+// it only when a flag changes: status readers may still hold the old slice.
+func withIdle(heavy []process.WorkloadView, idle []domain.ProcessKey) []process.WorkloadView {
+	out, cloned := heavy, false
+	for i, h := range heavy {
+		if is := slices.Contains(idle, h.Key); is != h.Idle {
+			if !cloned {
+				out, cloned = slices.Clone(heavy), true
+			}
+			out[i].Idle = is
+		}
+	}
+	return out
 }
 
 // track records a sampler's result and emits an event on each transition

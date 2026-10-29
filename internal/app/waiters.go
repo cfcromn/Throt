@@ -91,12 +91,12 @@ func (l *waitList) line() []scheduler.Waiter {
 }
 
 // busyByOwner counts running heavy workloads and leases per owner, the
-// budget FirstInLine checks.
+// budget FirstInLine checks. Idle workloads do not count, as in assess.
 func busyByOwner(st StatusResult) map[string]int {
 	states := WorkloadStates(st)
 	out := map[string]int{}
 	for _, h := range st.Heavy {
-		if states[h.Key] == StateRunning {
+		if states[h.Key] == StateRunning && !h.Idle {
 			out[h.Owner]++
 		}
 	}
