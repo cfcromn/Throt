@@ -210,7 +210,7 @@ func TestOverheadPSScaling(t *testing.T) {
 	t.Cleanup(func() { hostCPUAt.Store(saved) })
 	ctx := context.Background()
 	added := 0
-	for _, extra := range []int{0, 500, 1000, 2000} {
+	for _, extra := range []int{0, 500, 1000} { // 2000 more hits the macOS runner's process limit
 		startChildren(t, extra-added, "/bin/sleep", "600")
 		added = extra
 		const reps = 20
