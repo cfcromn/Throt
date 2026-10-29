@@ -43,9 +43,9 @@ Throt is not a coding agent, a container orchestrator, or a cloud scheduler, and
    ```bash
    V=$(gh release list -R cfcromn/Throt -L 1 --json tagName -q '.[0].tagName')
    gh release download "$V" -R cfcromn/Throt -p 'throt_*_darwin_arm64.tar.gz' -p checksums.txt
-   shasum -a 256 --ignore-missing -c checksums.txt   # Linux: sha256sum --ignore-missing -c checksums.txt
-   tar -xzf throt_*_darwin_arm64.tar.gz throt throtd
-   mkdir -p ~/.local/bin && mv throt throtd ~/.local/bin/   # any directory on your PATH
+   shasum -a 256 --ignore-missing -c checksums.txt &&   # Linux: sha256sum --ignore-missing -c checksums.txt
+     tar -xzf throt_*_darwin_arm64.tar.gz throt throtd &&
+     mkdir -p ~/.local/bin && mv throt throtd ~/.local/bin/   # any directory on your PATH
    ```
 
 2. **Start the daemon** in its own terminal (or [at login](#run-at-login)). It only observes until you turn the scheduler on.
@@ -72,7 +72,7 @@ Throt is not a coding agent, a container orchestrator, or a cloud scheduler, and
    throt events -f      # watch; decisions appear when agents' heavy jobs compete for slots
    ```
 
-5. **Enforce** once the decisions look right: set `"mode": "enforce"` in the file, then run `throt config check` and `throt reload` again. New heavy workloads beyond the limit are now paused (SIGSTOP) until a slot frees up, and every agent-owned heavy workload runs at background CPU and I/O priority, so your own apps stay responsive while builds keep every core busy. Stopping `throtd` resumes everything it paused and restores the priorities it lowered.
+5. **Enforce** once the decisions look right: set `"mode": "enforce"` in the file, then run `throt config check` and `throt reload` again. New heavy workloads beyond the limit are now paused (SIGSTOP) until a slot frees up, and every agent-owned heavy workload runs at background CPU and I/O priority, so your own apps stay responsive while builds keep every core busy. Stopping `throtd` resumes everything it paused and restores the priorities it lowered, except that on Linux the nice value usually stays until the process exits (see `scheduler.background`).
 
 ## Install and update
 
@@ -283,10 +283,11 @@ For agents that run `./gradlew test` or `./mvnw verify`, often with Testcontaine
 ```bash
 throt setup claude-code --write
 throt setup codex --write
-echo 'org.gradle.daemon=false' >> ~/.gradle/gradle.properties
+mkdir -p ~/.gradle
+printf '\norg.gradle.daemon=false\nkotlin.compiler.execution.strategy=in-process\n' >> ~/.gradle/gradle.properties
 ```
 
-and run `throtd` with `scheduler.mode` `enforce` and a small fixed limit, such as `"heavy_limit": 3, "adaptive": false, "per_agent_limit": 1`. Holding a build back before it starts is what saves memory, because nothing has been allocated yet; a build paused after it started keeps all of its memory. Gradle normally hands the build to a detached daemon whose parent is `launchd` or `init`, so Throt cannot tell which agent it belongs to and never queues it; with `org.gradle.daemon=false` the build runs under the agent (`throt doctor` flags busy unattributed `java`). Containers run in Docker's VM, where Throt sees no process at all, so gating the `./gradlew test` that starts them is the only way to hold them back.
+and run `throtd` with `scheduler.mode` `enforce` and a small fixed limit, such as `"heavy_limit": 3, "adaptive": false, "per_agent_limit": 1`. Holding a build back before it starts is what saves memory, because nothing has been allocated yet; a build paused after it started keeps all of its memory. Gradle normally hands the build to a detached daemon whose parent is `launchd` or `init`, so Throt cannot tell which agent it belongs to and never queues it; with `org.gradle.daemon=false` the build runs under the agent (`throt doctor` flags busy unattributed `java`). The Kotlin Gradle plugin starts its own compiler daemon regardless; `kotlin.compiler.execution.strategy=in-process` runs the compiler inside the build instead. Containers run in Docker's VM, where Throt sees no process at all, so gating the `./gradlew test` that starts them is the only way to hold them back.
 
 ### Wait before starting: `throt run`
 
@@ -321,7 +322,7 @@ The config file is optional: `~/.config/throt/config.json`, or `$XDG_CONFIG_HOME
 
 `profile` presets the scheduler limits; keys you set explicitly win. A profile never turns the scheduler on.
 
-Turn on `enforce` (with `balanced`) when agents' builds together can run out of memory: in the [benchmarks](docs/ARCHITECTURE.md#benchmarks) that is where it finished every job while the baseline swapped until jobs hit their cap or the OOM killer took them. When only the CPUs are busy it neither helps nor hurts measurably.
+Turn on `enforce` (with `balanced`) when agents' builds together can run out of memory: in the [benchmarks](docs/ARCHITECTURE.md#benchmarks) that is where it finished all jobs but one capped job in one macOS run while the baseline swapped until jobs hit their cap or the OOM killer took them. When only the CPUs are busy it neither helps nor hurts measurably.
 
 | Profile | Heavy limit | Adaptive |
 |---|---|---|
@@ -375,7 +376,7 @@ The scheduler stays off by default. In the benchmarks it pays off when builds to
 - **Heavy work is recognized by name, or by use.** A busy command an agent runs through its shell counts whatever it is called (at least one core or 1 GiB); the `throt run` and Claude Code hook gates before a command starts go by name, or by a [signature learned](#learned-heavy-commands) from earlier runs, so an unknown command's first heavy run is not held back before it starts. `npm`, `pnpm`, `yarn`, `bun`, `java` and `dotnet` count only while busy, but other long-lived processes with a build tool's name (`next dev`, `vite`) hold a heavy slot for as long as they run.
 - **Throt acts on processes that already exist.** A burst of new builds runs for up to one sample interval (2 s by default) before the extra ones are paused, and a process shorter than one interval is never seen.
 - **Pausing does not free memory.** A paused build keeps what it allocated; the kernel can swap it out, but in a container with little or no swap a job paused right after it started can still be OOM-killed. Only admission before start (the Claude Code hook, `throt run --`) keeps memory free; see [Gradle, Maven and Docker](#gradle-maven-and-docker).
-- **Build daemons and containers are invisible to attribution.** A Gradle or Kotlin daemon is a detached `java` process that no agent owns, so builds it runs are never queued (set `org.gradle.daemon=false`). Containers, Testcontainers' included, run in Docker's VM (on macOS) or under `containerd`, outside every agent's process tree; only the command that starts them can be gated.
+- **Build daemons and containers are invisible to attribution.** A Gradle or Kotlin daemon is a detached `java` process that no agent owns, so builds it runs are never queued (set `org.gradle.daemon=false`, and for Kotlin `kotlin.compiler.execution.strategy=in-process`). Containers, Testcontainers' included, run in Docker's VM (on macOS) or under `containerd`, outside every agent's process tree; only the command that starts them can be gated.
 - **Signals are verified, then sent.** On macOS and on Linux without pidfd, a PID could in theory be reused between the identity check and the signal; see [SECURITY.md](SECURITY.md).
 - **Leases and statistics live in memory.** A restarted `throtd` forgets `throt run` reservations and `throt stats` (paused work is recorded on disk and resumed).
 - **Platforms.** macOS and Linux only. On Linux, cgroup v1 and `cpuset` limits are not read, and there is no kernel memory verdict besides PSI.

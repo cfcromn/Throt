@@ -43,9 +43,9 @@ Throt는 코딩 에이전트도, 컨테이너 오케스트레이터도, 클라�
    ```bash
    V=$(gh release list -R cfcromn/Throt -L 1 --json tagName -q '.[0].tagName')
    gh release download "$V" -R cfcromn/Throt -p 'throt_*_darwin_arm64.tar.gz' -p checksums.txt
-   shasum -a 256 --ignore-missing -c checksums.txt   # Linux: sha256sum --ignore-missing -c checksums.txt
-   tar -xzf throt_*_darwin_arm64.tar.gz throt throtd
-   mkdir -p ~/.local/bin && mv throt throtd ~/.local/bin/   # any directory on your PATH
+   shasum -a 256 --ignore-missing -c checksums.txt &&   # Linux: sha256sum --ignore-missing -c checksums.txt
+     tar -xzf throt_*_darwin_arm64.tar.gz throt throtd &&
+     mkdir -p ~/.local/bin && mv throt throtd ~/.local/bin/   # any directory on your PATH
    ```
 
 2. 별도 터미널에서 **데몬을 시작**한다([로그인 시 자동 실행](#로그인-시-자동-실행)도 가능하다). 스케줄러를 켜기 전까지는 관찰만 한다.
@@ -72,7 +72,7 @@ Throt는 코딩 에이전트도, 컨테이너 오케스트레이터도, 클라�
    throt events -f      # watch; decisions appear when agents' heavy jobs compete for slots
    ```
 
-5. 결정이 적절해 보이면 **enforce**로 바꾼다. 파일에서 `"mode": "enforce"`로 설정하고 `throt config check`와 `throt reload`를 다시 실행한다. 이제 한도를 넘는 새 무거운 작업은 슬롯이 빌 때까지 일시 정지(SIGSTOP)된다. 또 에이전트가 소유한 무거운 작업은 모두 백그라운드 CPU·I/O 우선순위로 돌기 때문에, 빌드가 모든 코어를 쓰고 있어도 내가 쓰는 앱은 계속 잘 반응한다. `throtd`를 멈추면 그동안 일시 정지한 작업을 모두 재개하고 낮췄던 우선순위도 되돌린다.
+5. 결정이 적절해 보이면 **enforce**로 바꾼다. 파일에서 `"mode": "enforce"`로 설정하고 `throt config check`와 `throt reload`를 다시 실행한다. 이제 한도를 넘는 새 무거운 작업은 슬롯이 빌 때까지 일시 정지(SIGSTOP)된다. 또 에이전트가 소유한 무거운 작업은 모두 백그라운드 CPU·I/O 우선순위로 돌기 때문에, 빌드가 모든 코어를 쓰고 있어도 내가 쓰는 앱은 계속 잘 반응한다. `throtd`를 멈추면 그동안 일시 정지한 작업을 모두 재개하고 낮췄던 우선순위도 되돌린다. 다만 Linux에서는 보통 nice 값이 프로세스가 끝날 때까지 남는다(`scheduler.background` 참고).
 
 ## 설치와 업데이트
 
@@ -283,10 +283,11 @@ args = ["mcp"]
 ```bash
 throt setup claude-code --write
 throt setup codex --write
-echo 'org.gradle.daemon=false' >> ~/.gradle/gradle.properties
+mkdir -p ~/.gradle
+printf '\norg.gradle.daemon=false\nkotlin.compiler.execution.strategy=in-process\n' >> ~/.gradle/gradle.properties
 ```
 
-그리고 `throtd`를 `scheduler.mode` `enforce`와 작은 고정 한도로 실행한다. 예를 들면 `"heavy_limit": 3, "adaptive": false, "per_agent_limit": 1`이다. 메모리를 지키는 건 빌드를 시작 전에 붙잡아 두는 쪽이다. 아직 아무것도 할당하지 않았기 때문이다. 이미 시작한 빌드는 일시 정지해도 메모리를 전부 쥐고 있다. Gradle은 보통 빌드를 부모가 `launchd`나 `init`인 분리된 데몬에 넘기므로, Throt는 그 빌드가 어느 에이전트 것인지 알 수 없어 대기열에 넣지 못한다. `org.gradle.daemon=false`로 두면 빌드가 에이전트 아래에서 돈다(`throt doctor`가 바쁜 미귀속 `java`를 짚어 준다). 컨테이너는 Docker VM 안에서 돌아 Throt에는 프로세스가 아예 보이지 않으니, 컨테이너를 띄우는 `./gradlew test`를 막는 것이 유일한 방법이다.
+그리고 `throtd`를 `scheduler.mode` `enforce`와 작은 고정 한도로 실행한다. 예를 들면 `"heavy_limit": 3, "adaptive": false, "per_agent_limit": 1`이다. 메모리를 지키는 건 빌드를 시작 전에 붙잡아 두는 쪽이다. 아직 아무것도 할당하지 않았기 때문이다. 이미 시작한 빌드는 일시 정지해도 메모리를 전부 쥐고 있다. Gradle은 보통 빌드를 부모가 `launchd`나 `init`인 분리된 데몬에 넘기므로, Throt는 그 빌드가 어느 에이전트 것인지 알 수 없어 대기열에 넣지 못한다. `org.gradle.daemon=false`로 두면 빌드가 에이전트 아래에서 돈다(`throt doctor`가 바쁜 미귀속 `java`를 짚어 준다). Kotlin Gradle 플러그인은 그와 상관없이 자체 컴파일러 데몬을 띄우는데, `kotlin.compiler.execution.strategy=in-process`로 두면 컴파일러가 빌드 안에서 돈다. 컨테이너는 Docker VM 안에서 돌아 Throt에는 프로세스가 아예 보이지 않으니, 컨테이너를 띄우는 `./gradlew test`를 막는 것이 유일한 방법이다.
 
 ### 시작 전에 기다리기: `throt run`
 
@@ -321,7 +322,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 
 `profile`은 스케줄러 한도의 프리셋이다. 명시적으로 설정한 키가 우선한다. 프로필이 스케줄러를 켜는 일은 없다.
 
-에이전트들의 빌드가 함께 메모리를 다 쓸 수 있는 상황이라면 `enforce`(`balanced`와 함께)를 켠다. [벤치마크](docs/ARCHITECTURE.md#benchmarks)에서 이 설정은 모든 작업을 끝냈고, 기준선은 swap을 쓰다가 작업이 상한에 걸리거나 OOM killer에 죽었다. CPU만 바쁠 때는 눈에 띄는 득도 실도 없다.
+에이전트들의 빌드가 함께 메모리를 다 쓸 수 있는 상황이라면 `enforce`(`balanced`와 함께)를 켠다. [벤치마크](docs/ARCHITECTURE.md#benchmarks)에서 이 설정은 macOS 실행 한 번에서 상한에 걸린 작업 하나를 빼고 모든 작업을 끝냈고, 기준선은 swap을 쓰다가 작업이 상한에 걸리거나 OOM killer에 죽었다. CPU만 바쁠 때는 눈에 띄는 득도 실도 없다.
 
 | 프로필 | 무거운 작업 한도 | 적응형 |
 |---|---|---|
@@ -375,7 +376,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 - **무거운 작업은 이름이나 실제 사용량으로 인식한다.** 에이전트가 셸로 실행한 명령은 이름과 상관없이 바쁘면(1코어 이상 또는 1 GiB 이상) 무거운 작업으로 친다. 다만 명령이 시작되기 전에 기다리게 하는 `throt run`과 Claude Code hook은 이름이나, 이전 실행에서 [학습한 시그니처](#학습한-무거운-명령)로 판단한다. 그래서 처음 보는 명령이 처음 무겁게 실행될 때는 시작 전에 붙잡지 못한다. `npm`, `pnpm`, `yarn`, `bun`, `java`, `dotnet`은 바쁠 때만 무거운 작업으로 친다. 하지만 빌드 도구 이름을 가진 다른 오래 사는 프로세스(`next dev`, `vite`)는 실행되는 내내 무거운 작업 슬롯을 차지한다.
 - **Throt는 이미 존재하는 프로세스에만 손을 쓴다.** 새 빌드가 한꺼번에 몰리면 초과분이 일시 정지되기 전까지 최대 샘플 주기 한 번(기본 2초) 동안 실행된다. 주기 한 번보다 짧게 끝나는 프로세스는 아예 보이지 않는다.
 - **일시 정지해도 메모리는 풀리지 않는다.** 일시 정지한 빌드는 할당한 메모리를 그대로 쥐고 있다. 커널이 swap으로 내보낼 수는 있지만, swap이 적거나 없는 컨테이너에서는 시작 직후 일시 정지한 작업이 OOM으로 죽을 수 있다. 메모리를 비워 두는 방법은 시작 전 승인(Claude Code 훅, `throt run --`)뿐이다. [Gradle, Maven, Docker](#gradle-maven-docker)를 참고한다.
-- **빌드 데몬과 컨테이너는 귀속 대상에서 보이지 않는다.** Gradle이나 Kotlin 데몬은 어떤 에이전트에도 속하지 않는 분리된 `java` 프로세스라서, 그 안에서 도는 빌드는 대기열에 들어가지 않는다(`org.gradle.daemon=false`로 설정한다). 컨테이너는 Testcontainers가 띄운 것까지 포함해 Docker VM 안(macOS)이나 `containerd` 아래에서 돌아 모든 에이전트의 프로세스 트리 밖에 있다. 막을 수 있는 건 컨테이너를 띄우는 명령뿐이다.
+- **빌드 데몬과 컨테이너는 귀속 대상에서 보이지 않는다.** Gradle이나 Kotlin 데몬은 어떤 에이전트에도 속하지 않는 분리된 `java` 프로세스라서, 그 안에서 도는 빌드는 대기열에 들어가지 않는다(`org.gradle.daemon=false`로 설정하고, Kotlin은 `kotlin.compiler.execution.strategy=in-process`도 설정한다). 컨테이너는 Testcontainers가 띄운 것까지 포함해 Docker VM 안(macOS)이나 `containerd` 아래에서 돌아 모든 에이전트의 프로세스 트리 밖에 있다. 막을 수 있는 건 컨테이너를 띄우는 명령뿐이다.
 - **시그널은 확인한 뒤에 보낸다.** macOS와 pidfd가 없는 Linux에서는 이론상 신원 확인과 시그널 사이에 PID가 재사용될 수 있다. [SECURITY.md](SECURITY.md)를 참고한다.
 - **lease와 통계는 메모리에만 있다.** 재시작한 `throtd`는 `throt run` 예약과 `throt stats`를 잊는다(일시 정지한 작업은 디스크에 기록되어 재개된다).
 - **플랫폼.** macOS와 Linux만 지원한다. Linux에서는 cgroup v1과 `cpuset` 한도를 읽지 않고, PSI 외에는 커널 메모리 판정이 없다.
