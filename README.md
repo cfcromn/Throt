@@ -185,7 +185,8 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 | `throt update` | Install a newer (or older) release. See [Update and roll back](#update-and-roll-back). |
 | `throt mcp` | Read-only MCP server on stdio for coding agents. |
 | `throt setup claude-code\|codex [--write]` | Print the configuration to paste into a coding agent; `--write` installs it in your home directory instead (it only adds, and keeps a `.throt-backup` of each file it changes). |
-| `throt hook claude-code [--max-wait D]` | The Claude Code hook. |
+| `throt hook claude-code [--max-wait D] [--defer]` | The Claude Code hook. |
+| `throt wait [--timeout D]` | Wait until a heavy slot is held for the calling agent, for the hook's `--defer` (default 30m). |
 | `throt completion bash\|zsh\|fish` | Shell completion script. |
 
 Global flags go before the command: `-config PATH` uses another config file, and `-n N` sets how many events `throt events` prints. `throt -h` lists every command, and `-h` after any command prints that command's usage. `throtd -h` lists the daemon's flags, and `throtd -version` prints its version.
@@ -261,6 +262,8 @@ claude mcp add --scope user throt -- throt mcp
 - Everything else passes at once: pipes, `;`, `||`, `&`, redirections, subshells, substitutions, heredocs, comments, a heavy tool after another command (`make && ./run`), `throt run` itself, input it cannot parse, and [light invocations](#the-claude-code-hook-delays-commands) such as `--version` or `go env`. So does everything when `throtd` is down. Of these, only a single simple command other than a common light tool (`ls`, `git`, `grep`, `cat`, …) contacts `throtd`, once, to report its signature.
 - It never changes, approves or denies the command, so your permission rules apply unchanged. After it waited, it shows a one-line `systemMessage`.
 - It is advisory: it reserves no slot, so two commands let through at the same moment can both start. Use `throt run --` for a reserved slot. Do not add permission allow rules for `throt run`: such a rule would allow every command run through it.
+
+**Defer instead of waiting (opt-in).** With `throt hook claude-code --defer` the hook does not block when no slot is free. `throtd` holds the agent's place in line (the same line as queued workloads and `throt run` callers), and the hook denies the call with a reason telling Claude its place in line, to do other work, to run `throt wait` in the background, and to rerun the command when that returns. `throt wait` exits 0 once a slot is held for the agent; the slot then waits 60s for the agent's next heavy command, which the hook admits at once. A slot that is free right away is also held for the command. A place in line that no deferred call or `throt wait` renews for 10 minutes is dropped, and a held slot that is not used is released after 60s. On any error, or with a `throtd` older than this feature, the hook waits as above. `throt setup` does not add `--defer` yet; add it to the hook command in `settings.json` yourself.
 
 #### Learned heavy commands
 

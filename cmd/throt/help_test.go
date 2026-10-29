@@ -87,7 +87,7 @@ func TestUsageErrorsAreOneLine(t *testing.T) {
 		{"doctor", "x"}, {"mcp", "x"}, {"explain"}, {"explain", "1", "2"}, {"pause", "x"},
 		{"resume", "1", "2"}, {"events", "-bogus"}, {"events", "x"}, {"stats", "-bogus"},
 		{"run"}, {"run", "-bogus"}, {"update", "x"}, {"config", "check", "-bogus"},
-		{"completion"}, {"setup", "x"}, {"version", "x"},
+		{"completion"}, {"setup", "x"}, {"version", "x"}, {"wait", "x"}, {"wait", "--timeout", "-1s"},
 	} {
 		var out, errw bytes.Buffer
 		err := run(context.Background(), append([]string{"-config", "/nonexistent/throt.json"}, args...), strings.NewReader(""), &out, &errw)

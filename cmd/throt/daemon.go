@@ -27,6 +27,14 @@ func (c daemonClient) Acquire(ctx context.Context, p app.AcquireParams) (app.Acq
 	return r, err
 }
 
+// Reserve asks for a heavy slot for the agent of the process p names,
+// holding its place in line when none is free.
+func (c daemonClient) Reserve(ctx context.Context, p app.ReserveParams) (app.ReserveResult, error) {
+	var r app.ReserveResult
+	err := transport.Call(ctx, c.socket, "reserve", p, &r)
+	return r, err
+}
+
 func (c daemonClient) Events(ctx context.Context, limit int) ([]domain.Event, error) {
 	var events []domain.Event
 	err := transport.Call(ctx, c.socket, "events", app.EventsParams{Limit: limit}, &events)

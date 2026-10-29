@@ -288,7 +288,13 @@ func (p Policy) ahead(now time.Time, a, b Waiter) bool {
 // PerOwnerLimit, given perOwner (running and reserved heavy work per owner).
 // Work held back only by its owner's budget does not block other owners.
 func (p Policy) FirstInLine(now time.Time, w Waiter, line []Waiter, perOwner map[string]int) bool {
+	return p.Ahead(now, w, line, perOwner) == 0
+}
+
+// Ahead counts the entries of line ahead of w, as FirstInLine judges them.
+func (p Policy) Ahead(now time.Time, w Waiter, line []Waiter, perOwner map[string]int) int {
 	p = p.normalized()
+	n := 0
 	for _, o := range line {
 		if o.Key == w.Key && o.Lease == w.Lease {
 			continue
@@ -297,10 +303,10 @@ func (p Policy) FirstInLine(now time.Time, w Waiter, line []Waiter, perOwner map
 			continue
 		}
 		if p.ahead(now, o, w) {
-			return false
+			n++
 		}
 	}
-	return true
+	return n
 }
 
 // Decision is one action with the facts that justify it.

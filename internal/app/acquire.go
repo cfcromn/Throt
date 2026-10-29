@@ -148,7 +148,7 @@ func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.Paus
 		l = d.leases.grant(key, agent, now)
 		res.Granted, res.LeaseID, res.Reason = true, l.ID, ReasonOverdue
 	case !v.OKToStart:
-	case st.Scheduler.Mode != scheduler.ModeOff && !d.firstInLine(key, agent, st, now):
+	case st.Scheduler.Mode != scheduler.ModeOff && d.aheadInLine(scheduler.Waiter{Key: key, Owner: agent, Since: d.waiting.since(key, now), Lease: true}, st, now) > 0:
 		// A slot is free, but older work waits for it.
 		res.Reason = fmt.Sprintf("older heavy work is waiting for a slot (%d queued, %d other throt run callers waiting)",
 			len(st.Scheduler.Queued), max(len(d.waiting.w)-1, 0))
@@ -165,15 +165,16 @@ func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.Paus
 	return res, l
 }
 
-// firstInLine reports whether caller key, a lease waiter of agent, comes
-// first in the line shared with scheduler-queued workloads. d.mu is held.
-func (d *Daemon) firstInLine(key domain.ProcessKey, agent string, st StatusResult, now time.Time) bool {
-	me := scheduler.Waiter{Key: key, Owner: agent, Since: d.waiting.since(key, now), Lease: true}
+// aheadInLine counts the entries ahead of me, a lease waiter or a
+// reservation, in the line shared with scheduler-queued workloads: 0 means
+// it is first. d.mu is held.
+func (d *Daemon) aheadInLine(me scheduler.Waiter, st StatusResult, now time.Time) int {
 	line := append(slices.Clone(d.queuedLine), d.waiting.line()...)
+	line = append(line, d.reserved.line()...)
 	// The budget is the one Assess just checked, from the same status.
 	p := d.linePolicy
 	p.PerOwnerLimit = st.Scheduler.PerAgentLimit
-	return p.FirstInLine(now, me, line, busyByOwner(st))
+	return p.Ahead(now, me, line, busyByOwner(st))
 }
 
 // ancestry returns the caller's ancestors, nearest first, starting at its

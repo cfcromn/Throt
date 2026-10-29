@@ -212,6 +212,9 @@ func goldenCases() []goldenCase {
 		{name: "version -json down", args: []string{"version", "-json"}, down: true},
 		{name: "version -h", args: []string{"version", "-h"}},
 		{name: "version extra", args: []string{"version", "x"}},
+
+		{name: "wait -h", args: []string{"wait", "-h"}},
+		{name: "wait extra", args: []string{"wait", "x"}},
 		{name: "version invalid config", args: []string{"-config", "$DIR/bad.json", "version"}},
 
 		{name: "update -h", args: []string{"update", "-h"}},
@@ -519,6 +522,9 @@ Commands:
   run [--timeout D] [--no-wait] -- CMD [ARGS...]
              wait until throtd grants a heavy slot, reserved for CMD, then
              exec CMD (runs immediately if throtd is down)
+  wait [--timeout D]
+             wait until a heavy slot is held for the calling agent (its place
+             in line from 'hook claude-code --defer'), at most D (default 30m)
   reload     make throtd re-read its config file
   doctor     print a sanitized diagnostic report (safe to share)
   mcp        run a read-only MCP server on stdio for coding agents
@@ -527,10 +533,11 @@ Commands:
              it changes from the defaults, and warns about risky settings;
              'show [--json]' prints the effective config and the source
              (default, profile, or file) of each value. Both accept --config PATH.
-  hook claude-code [--max-wait D]
+  hook claude-code [--max-wait D] [--defer]
              Claude Code PreToolUse hook: before a lone heavy Bash command,
-             wait up to D (default 50s) for heavy-job capacity; never
-             changes or blocks the command (advisory; fails open)
+             wait up to D (default 50s) for heavy-job capacity (advisory;
+             fails open); --defer instead holds the agent's place in line
+             and denies the call, asking Claude to run 'throt wait'
   setup claude-code|codex [--write]
              print the configuration to paste into a coding agent;
              --write installs it in your home directory instead (adds only,
@@ -584,7 +591,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status stats learned ping events explain pause resume run reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status stats learned ping events explain pause resume run wait reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -640,6 +647,7 @@ complete -c throt -n __fish_use_subcommand -a explain -d 'explain why a heavy wo
 complete -c throt -n __fish_use_subcommand -a pause -d 'pause a heavy workload'
 complete -c throt -n __fish_use_subcommand -a resume -d 'resume a paused workload'
 complete -c throt -n __fish_use_subcommand -a run -d 'wait for heavy-job capacity, then run a command'
+complete -c throt -n __fish_use_subcommand -a wait -d 'wait until a heavy slot is held for this agent'
 complete -c throt -n __fish_use_subcommand -a stats -d 'per-agent resource usage since throtd started'
 complete -c throt -n __fish_use_subcommand -a learned -d 'list or forget the commands throtd learned heavy'
 complete -c throt -n __fish_use_subcommand -a reload -d 'make throtd re-read its config file'
@@ -694,6 +702,7 @@ _throt() {
         'pause:pause a heavy workload'
         'resume:resume a paused workload'
         'run:wait for heavy-job capacity, then run a command'
+        'wait:wait until a heavy slot is held for this agent'
         'stats:per-agent resource usage since throtd started'
         'learned:list or forget the commands throtd learned heavy'
         'reload:make throtd re-read its config file'
@@ -937,15 +946,16 @@ explain why a heavy workload is running, paused, or queued
 `, stderr: ""},
 		"help":      {code: 0, stdout: goldenUsage, stderr: ""},
 		"help long": {code: 0, stdout: goldenUsage, stderr: ""},
-		"hook": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
+		"hook": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D] [--defer]
 `},
-		"hook -h": {code: 0, stdout: `usage: throt hook claude-code [--max-wait D]
+		"hook -h": {code: 0, stdout: `usage: throt hook claude-code [--max-wait D] [--defer]
 
 Claude Code PreToolUse hook: before a lone heavy Bash command,
-wait up to D (default 50s) for heavy-job capacity; never
-changes or blocks the command (advisory; fails open)
+wait up to D (default 50s) for heavy-job capacity (advisory;
+fails open); --defer instead holds the agent's place in line
+and denies the call, asking Claude to run 'throt wait'
 `, stderr: ""},
-		"hook claude-code -h": {code: 0, stdout: `Usage: throt hook claude-code [--max-wait D]
+		"hook claude-code -h": {code: 0, stdout: `Usage: throt hook claude-code [--max-wait D] [--defer]
 
 Claude Code PreToolUse hook for the Bash tool. When the command is a heavy
 tool (alone, or after "cd DIR &&", variable assignments, or "time"), or a
@@ -953,11 +963,19 @@ command throtd learned heavy because it started a heavy workload before,
 wait up to D for throtd to report capacity for a heavy job, then let it run
 unchanged. Only the command's signature (program and first argument base
 names) is sent to throtd, to learn from. Advisory: no slot is reserved.
-It never blocks, denies, or changes a tool call, and returns at once on
+Without --defer it never blocks, denies, or changes a tool call. It returns at once on
 any error or when throtd is unreachable. Keep D below the hook's "timeout" in settings.json. With
 THROT_HOOK_DEBUG=1 it says on stderr why it ignored an event.
 
+With --defer it does not wait when no slot is free: throtd holds the
+agent's place in line and the hook denies the call, telling Claude to run
+'throt wait' in the background and rerun the command when it returns; the
+rerun takes the slot held for it. On any error, or with an older throtd,
+it waits as above.
+
 Flags:
+  -defer
+    	when no slot is free, hold the agent's place in line and deny the call instead of waiting
   -max-wait duration
     	wait at most this long for capacity (keep it below the hook timeout) (default 50s)
 `, stderr: ""},
@@ -969,7 +987,7 @@ Flags:
 		"hook claude-code heavy": {code: 0, stdout: `{"systemMessage":"throt: no heavy-job slot after 1s (all heavy slots are in use (2 running, limit 2)); running anyway"}
 `, stderr: ""},
 		"hook claude-code light": {code: 0, stdout: "", stderr: ""},
-		"hook codex": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
+		"hook codex": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D] [--defer]
 `},
 		"hook invalid config": {code: 0, stdout: `{"systemMessage":"throt: no heavy-job slot after 1s (all heavy slots are in use (2 running, limit 2)); running anyway"}
 `, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
@@ -1454,6 +1472,22 @@ versions, and throtd's version when it is reachable
 `, stderr: ""},
 		"version -json down": {code: 0, stdout: "{\n  \"version\": \"dev\",\n  \"protocol\": 1,\n  \"go\": \"$GO\",\n  \"daemon\": null,\n  \"daemon_error\": \"throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\"\n}\n", stderr: ""},
 		"version extra": {code: 2, stdout: "", stderr: `throt: usage: throt version [--json]
+`},
+		"wait -h": {code: 0, stdout: `Usage: throt wait [--timeout D]
+
+Wait until throtd holds a heavy slot for the agent this runs under, then
+print "slot ready" and exit 0. It keeps the agent's place in line (taken
+by 'throt hook claude-code --defer', or now if there is none), renewing it
+once a second; the slot is then held for 60s for the agent's next heavy
+command, which the hook admits at once. Exits 1 when D passes (0 waits
+forever), when throtd is unreachable or too old to hold a place in line,
+or when no agent runs above this process.
+
+Flags:
+  -timeout duration
+    	give up after this long (0 waits forever) (default 30m0s)
+`, stderr: ""},
+		"wait extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt wait -h'
 `},
 		"version invalid config": {code: 0, stdout: `dev
 `, stderr: ""},

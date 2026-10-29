@@ -185,7 +185,8 @@ WantedBy=default.target
 | `throt update` | 더 새(또는 더 옛) 릴리스를 설치한다. [업데이트와 롤백](#업데이트와-롤백)을 참고한다. |
 | `throt mcp` | 코딩 에이전트용 읽기 전용 MCP 서버(stdio). |
 | `throt setup claude-code\|codex [--write]` | 코딩 에이전트에 붙여 넣을 설정을 출력한다. `--write`를 주면 대신 홈 디렉터리에 직접 설치한다(추가만 하고, 바꾸는 파일마다 `.throt-backup`을 남긴다). |
-| `throt hook claude-code [--max-wait D]` | Claude Code 훅(hook). |
+| `throt hook claude-code [--max-wait D] [--defer]` | Claude Code 훅(hook). |
+| `throt wait [--timeout D]` | 호출한 에이전트 몫으로 무거운 작업 슬롯이 잡힐 때까지 기다린다. 훅의 `--defer`와 함께 쓴다(기본 30m). |
 | `throt completion bash\|zsh\|fish` | 셸 자동 완성 스크립트. |
 
 전역 플래그는 명령 앞에 둔다. `-config PATH`는 다른 설정 파일을 쓰고, `-n N`은 `throt events`가 출력할 이벤트 수를 정한다. `throt -h`는 모든 명령을 나열하고, 명령 뒤에 `-h`를 붙이면 그 명령의 사용법을 출력한다. `throtd -h`는 데몬의 플래그를 나열하고, `throtd -version`은 데몬 버전을 출력한다.
@@ -261,6 +262,8 @@ claude mcp add --scope user throt -- throt mcp
 - 그 밖의 경우는 바로 통과한다. 파이프, `;`, `||`, `&`, 리다이렉션, 서브셸, 치환, heredoc, 주석, 다른 명령 뒤의 무거운 도구(`make && ./run`), `throt run` 자체, 파싱할 수 없는 입력, 그리고 `--version`이나 `go env` 같은 [가벼운 호출](#claude-code-훅-때문에-명령-실행이-늦어진다)이 그렇다. `throtd`가 꺼져 있을 때도 모두 통과한다. 이 중 `throtd`에 연락하는 것은 자주 쓰는 가벼운 도구(`ls`, `git`, `grep`, `cat` 등)가 아닌 단순 명령 하나뿐이고, 그것도 시그니처를 알리려고 한 번 연락할 뿐이다.
 - 명령을 바꾸거나, 승인하거나, 거부하지 않는다. 따라서 권한 규칙은 그대로 적용된다. 기다린 뒤에는 한 줄짜리 `systemMessage`를 보여 준다.
 - 권고일 뿐이다. 슬롯을 예약하지 않으므로 같은 순간에 통과한 두 명령이 함께 시작될 수 있다. 슬롯을 예약하려면 `throt run --`을 쓴다. `throt run`에 대한 권한 allow 규칙은 추가하지 않는다. 그런 규칙은 `throt run`을 거쳐 실행되는 모든 명령을 허용하게 된다.
+
+**기다리지 않고 미루기(선택 사항).** `throt hook claude-code --defer`를 쓰면 빈 슬롯이 없을 때 훅이 기다리지 않는다. `throtd`가 에이전트의 대기 순번을 잡아 두고(큐에 들어간 워크로드, `throt run` 호출과 같은 줄이다), 훅은 호출을 거부하면서 그 이유로 Claude에게 몇 번째인지 알리고, 그동안 다른 작업을 하다가 `throt wait`를 백그라운드로 실행해 두고 그것이 끝나면 같은 명령을 다시 실행하라고 전한다. `throt wait`는 에이전트 몫으로 슬롯이 잡히면 0으로 끝난다. 잡힌 슬롯은 에이전트의 다음 무거운 명령을 60s 동안 기다리고, 훅은 그 명령을 바로 통과시킨다. 처음부터 슬롯이 비어 있을 때도 그 명령 몫으로 슬롯을 잡아 둔다. 미뤄진 호출이나 `throt wait`가 10분 동안 갱신하지 않은 순번은 사라지고, 잡아 둔 슬롯을 쓰지 않으면 60s 뒤에 풀린다. 오류가 나거나 `throtd`가 이 기능보다 오래된 버전이면 훅은 위에서 설명한 대로 기다린다. `throt setup`은 아직 `--defer`를 넣지 않으므로 `settings.json`의 훅 명령에 직접 추가한다.
 
 #### 학습한 무거운 명령
 

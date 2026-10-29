@@ -80,6 +80,9 @@ func (d *Daemon) tick(parent context.Context) {
 		d.background(parent, nil, nil)
 	}
 	d.publishScheduler()
+	for _, l := range d.grantReservations(d.ctl.Paused(), time.Now()) {
+		d.emitAgentLease(l, "its turn, and a slot is free")
+	}
 }
 
 // failOpenQueued resumes the scheduler's queued work once process sampling
@@ -194,9 +197,10 @@ func hostReading(s sample, snap process.Snapshot) domain.HostSample {
 }
 
 // publish stores the round's results in the status under d.mu and, in the
-// same step, ends the leases and drops the waiters the sample supersedes.
-// It returns the previous pressure level, the ended leases, and the
-// lease owners and waiters for the scheduler.
+// same step, ends the leases and drops the waiters and reservations the
+// sample supersedes. It returns the previous pressure level, the ended
+// leases, and the lease owners and waiters (reservations included) for
+// the scheduler.
 func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level domain.PressureLevel, reason string) (from domain.PressureLevel, ended []leaseEnd, reserved []string, waiters []scheduler.Waiter) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -212,11 +216,13 @@ func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level
 		d.stopped = r.snap.Stopped
 		ended = d.leases.observe(s.sampled, s.now, s.procs, r.snap.Heavy)
 		d.waiting.prune(s.now, s.sampled, s.procs)
+		d.reserved.prune(s.now, s.sampled, s.procs)
 	} else {
 		ended = d.leases.expire(s.now)
 		d.waiting.prune(s.now, s.sampled, nil)
+		d.reserved.prune(s.now, s.sampled, nil)
 	}
-	return from, ended, d.leases.owners(), d.waiting.line()
+	return from, ended, d.leases.owners(), append(d.waiting.line(), d.reserved.line()...)
 }
 
 // publishScheduler stores the scheduler's state after this round: its

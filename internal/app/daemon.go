@@ -117,10 +117,12 @@ type Daemon struct {
 	mu     sync.Mutex
 	status StatusResult
 	leases leaseTable
-	// waiting holds the lease waiters; queuedLine and linePolicy are the
-	// scheduler's queue and policy as of its latest round, so acquire can
-	// place a waiter in the line it shares with queued workloads.
+	// waiting holds the lease waiters and reserved the agents' reservations;
+	// queuedLine and linePolicy are the scheduler's queue and policy as of
+	// its latest round, so acquire and reserve can place a waiter in the
+	// line it shares with queued workloads.
 	waiting    waitList
+	reserved   reservationList
 	queuedLine []scheduler.Waiter
 	linePolicy scheduler.Policy
 	// stopped is the latest snapshot's stopped processes, for resuming an
@@ -261,6 +263,7 @@ func (d *Daemon) handlers() map[string]transport.Handler {
 		"acquire": d.acquire,
 		"expect":  d.expect,
 		"learned": d.learnedSignatures,
+		"reserve": d.reserve,
 	}
 }
 
@@ -268,7 +271,7 @@ func (d *Daemon) handlers() map[string]transport.Handler {
 // signal processes, change its configuration, reserve heavy slots, or
 // carry command signatures.
 func privilegedMethods() []string {
-	return []string{"pause", "resume", "reload", "acquire", "expect", "learned"}
+	return []string{"pause", "resume", "reload", "acquire", "expect", "learned", "reserve"}
 }
 
 // Adapters returns the agent adapters for a config: custom agents first, so
