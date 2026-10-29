@@ -94,24 +94,34 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 // caller that is not the peer, cannot be identified, or belongs to another
 // user.
 func (d *Daemon) acquireCaller(ctx context.Context, pid int) (domain.ProcessSample, error) {
+	self, code, why := d.caller(ctx, pid)
+	if code != "" {
+		return self, d.refused("acquire", pid, code, why)
+	}
+	return self, nil
+}
+
+// caller resolves pid, a caller asking about itself, from the OS. When it
+// refuses the caller it returns a refusal reason and a sentence.
+func (d *Daemon) caller(ctx context.Context, pid int) (self domain.ProcessSample, code, why string) {
 	// A lease is the caller's own: where the kernel reports the peer PID,
 	// it must be the process the lease is for.
 	if peer, ok := transport.PeerPIDFrom(ctx); ok && peer != pid {
-		return domain.ProcessSample{}, d.refused("acquire", pid, ReasonPeerMismatch, fmt.Sprintf("caller pid %d is not pid %d", peer, pid))
+		return self, ReasonPeerMismatch, fmt.Sprintf("caller pid %d is not pid %d", peer, pid)
 	}
 	if d.ident == nil {
-		return domain.ProcessSample{}, d.refused("acquire", pid, ReasonUnidentified, "cannot identify processes on this platform")
+		return self, ReasonUnidentified, "cannot identify processes on this platform"
 	}
 	self, err := d.identify(ctx, pid)
 	switch {
 	case err != nil:
-		return self, d.refused("acquire", pid, ReasonUnidentified, "cannot identify the caller: "+err.Error())
+		return self, ReasonUnidentified, "cannot identify the caller: " + err.Error()
 	case self.Start.IsZero():
-		return self, d.refused("acquire", pid, ReasonUnidentified, "the caller has no start time")
+		return self, ReasonUnidentified, "the caller has no start time"
 	case self.UID != d.uid:
-		return self, d.refused("acquire", pid, control.ReasonForeignUID, "the process belongs to another user")
+		return self, control.ReasonForeignUID, "the process belongs to another user"
 	}
-	return self, nil
+	return self, "", ""
 }
 
 // admit decides an acquire by key, whose ancestors are chain, and grants
@@ -206,12 +216,20 @@ func (d *Daemon) identify(ctx context.Context, pid int) (domain.ProcessSample, e
 
 // nearestAgent returns the label of the first agent in chain.
 func nearestAgent(chain []int, agents []process.AgentView) string {
+	if a, ok := nearestAgentView(chain, agents); ok {
+		return a.Agent
+	}
+	return ""
+}
+
+// nearestAgentView returns the first agent in chain.
+func nearestAgentView(chain []int, agents []process.AgentView) (process.AgentView, bool) {
 	for _, pid := range chain {
 		for _, a := range agents {
 			if a.Key.PID == pid {
-				return a.Agent
+				return a, true
 			}
 		}
 	}
-	return ""
+	return process.AgentView{}, false
 }

@@ -169,6 +169,7 @@ WantedBy=default.target
 | `throt`, `throt top` | 터미널 UI. 종료해도 `throtd`에는 영향이 없다. |
 | `throt status [--json]` | 압력과 그 이유, 호스트 리소스, 에이전트, 무거운 작업, 스케줄러 상태, 정지된 프로세스. |
 | `throt stats [--json]` | 에이전트별 CPU 시간, 최대 메모리, 무거운 작업 수, `throtd` 시작 이후 대기한 시간. |
+| `throt learned [--forget SIGNATURE \| --clear]` | `throtd`가 무겁다고 학습한 명령 목록. Claude Code 훅은 이 명령들 앞에서도 기다린다. `--forget`이나 `--clear`로 지운다. [학습한 무거운 명령](#학습한-무거운-명령) 참고. |
 | `throt events [-f] [-n N]` | 최근 데몬 이벤트를 JSON lines로 출력한다(기본 50개). `-f`를 주면 새 이벤트를 계속 출력한다. |
 | `throt explain PID` | 무거운 작업이 실행 중이거나, 일시 정지되었거나, 대기 중인 이유. |
 | `throt pause PID` | 내 에이전트가 소유한 무거운 작업을 일시 정지(SIGSTOP)한다. |
@@ -255,10 +256,16 @@ claude mcp add --scope user throt -- throt mcp
 ```
 
 **Claude Code 훅.** `throt setup claude-code`는 붙여 넣을 `settings.json` 훅과 MCP 설정을 출력한다. `throt setup claude-code --write`는 훅을 `~/.claude/settings.json`에 직접 넣는다. 이미 `throt hook claude-code`를 실행하는 훅이 있으면 아무것도 하지 않는다. 다른 설정은 모두 그대로 두고(키는 정렬되고 들여쓰기가 바뀐다), 이전 파일은 `settings.json.throt-backup`으로 남기며, 파일이 올바른 JSON이 아니면 아무것도 바꾸지 않고 거부한다. 이 훅(`throt hook claude-code --max-wait D`, `Bash`에 거는 [`PreToolUse`](https://code.claude.com/docs/en/hooks) 훅)이 있으면 따로 지시하지 않아도 Claude Code가 여유 용량을 기다린다.
-- Bash 명령이 무거운 도구 하나일 때만 기다린다(Throt가 무겁다고 분류하는 이름 기준이며, `gradlew`·`mvnw` 래퍼와 `docker build`, `docker buildx build`, `docker compose build`도 포함한다). 앞에 `cd DIR &&`, 변수 할당, `time`이 붙어도 된다. 이 경우 호출한 에이전트가 무거운 작업을 시작해도 될 때까지, 또는 `D`가 지날 때까지 `throtd`를 초당 한 번 확인한다(기본 50s. 훅이 타임아웃되면 호출이 막히므로 setup 스니펫은 120s 훅 `timeout`과 함께 110s를 쓴다).
-- 그 밖의 경우는 `throtd`에 연락하지 않고 바로 통과한다. 파이프, `;`, `||`, `&`, 리다이렉션, 서브셸, 치환, heredoc, 주석, 다른 명령 뒤의 무거운 도구(`make && ./run`), `throt run` 자체, 파싱할 수 없는 입력, 그리고 `--version`이나 `go env` 같은 [가벼운 호출](#claude-code-훅-때문에-명령-실행이-늦어진다)이 그렇다. `throtd`가 꺼져 있을 때도 모두 통과한다.
+- Bash 명령이 무거운 도구 하나이거나 `throtd`가 [무겁다고 학습한](#학습한-무거운-명령) 명령일 때만 기다린다(무거운 도구는 Throt가 무겁다고 분류하는 이름 기준이며, `gradlew`·`mvnw` 래퍼와 `docker build`, `docker buildx build`, `docker compose build`도 포함한다). 앞에 `cd DIR &&`, 변수 할당, `time`이 붙어도 된다. 이 경우 호출한 에이전트가 무거운 작업을 시작해도 될 때까지, 또는 `D`가 지날 때까지 `throtd`를 초당 한 번 확인한다(기본 50s. 훅이 타임아웃되면 호출이 막히므로 setup 스니펫은 120s 훅 `timeout`과 함께 110s를 쓴다).
+- 그 밖의 경우는 바로 통과한다. 파이프, `;`, `||`, `&`, 리다이렉션, 서브셸, 치환, heredoc, 주석, 다른 명령 뒤의 무거운 도구(`make && ./run`), `throt run` 자체, 파싱할 수 없는 입력, 그리고 `--version`이나 `go env` 같은 [가벼운 호출](#claude-code-훅-때문에-명령-실행이-늦어진다)이 그렇다. `throtd`가 꺼져 있을 때도 모두 통과한다. 이 중 `throtd`에 연락하는 것은 자주 쓰는 가벼운 도구(`ls`, `git`, `grep`, `cat` 등)가 아닌 단순 명령 하나뿐이고, 그것도 시그니처를 알리려고 한 번 연락할 뿐이다.
 - 명령을 바꾸거나, 승인하거나, 거부하지 않는다. 따라서 권한 규칙은 그대로 적용된다. 기다린 뒤에는 한 줄짜리 `systemMessage`를 보여 준다.
 - 권고일 뿐이다. 슬롯을 예약하지 않으므로 같은 순간에 통과한 두 명령이 함께 시작될 수 있다. 슬롯을 예약하려면 `throt run --`을 쓴다. `throt run`에 대한 권한 allow 규칙은 추가하지 않는다. 그런 규칙은 `throt run`을 거쳐 실행되는 모든 명령을 허용하게 된다.
+
+#### 학습한 무거운 명령
+
+`python train.py`, `./scripts/build.sh`, `npx playwright test`처럼 Throt가 이름으로 모르는 명령은 실행된 뒤에야 무거운 작업(class `command`)으로 잡힌다. 그때 빌드를 일시 정지해도 이미 잡은 메모리는 그대로 남는다. 그래서 `throtd`가 이런 명령을 학습한다. 훅(과 `throt run`)은 단순 명령 하나를 실행하기 전에 그 명령의 *시그니처*를 `throtd`에 알린다. 시그니처는 프로그램의 base name과, 플래그가 아닌 첫 인자의 base name이다(`python train.py`, `build.sh`, `npx playwright`). 알린 뒤 10초 안에 그 에이전트의 무거운 작업이 시작되고, 그 작업을 띄웠을 만한 다른 보고가 그 에이전트에 없으면 시그니처를 학습한다. 그 뒤로 훅은 `make`처럼 이 명령 앞에서도 여유 용량을 기다린다. 학습한 명령이 무거워지지 않고 연달아 세 번 실행되면 잊는다. 최대 256개를 관찰한 최대 메모리와 함께 소켓 옆의 `learned.json`에 보관하므로 재시작해도 남는다(가득 차면 가장 오래전에 무거웠던 것부터 지운다).
+
+`throt learned`로 목록을 보고, `throt learned --forget 'python train.py'`나 `--clear`로 지운다. 학습에는 `throtd` 1.0.0-rc.1 이상이 필요하다. 더 오래된 `throtd`이거나 `throtd`가 꺼져 있으면 훅은 예전과 똑같이 동작한다. 훅이 실행되고 한참 뒤에(예를 들어 권한 승인을 기다리느라) 시작된 명령은 학습하지 않는다.
 
 **Codex.** `throt setup codex`는 `~/.codex/config.toml`에 넣을 블록과 `AGENTS.md`용 문단을 출력한다. `throt setup codex --write`는 둘을 각각 `~/.codex/config.toml`과 `~/.codex/AGENTS.md`(`$CODEX_HOME`이 있으면 그 아래)에 덧붙인다. 이미 들어 있으면 건너뛰고, 백업도 같은 방식으로 남긴다.
 
@@ -354,7 +361,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 
 ## 판단 방식
 
-- **귀속.** 프로세스는 에이전트 어댑터가 실행 파일 이름으로 정확히 일치시키는 가장 가까운 조상(또는 자기 자신)에 속한다. 그 밖의 프로세스는 귀속되지 않은 채로 남고, 귀속되지 않은 작업은 절대 제어하지 않는다. 무거운 작업(build, test, container-build)은 실행 파일 이름으로 인식하고, 빌드가 띄운 컴파일러는 그 빌드에 합친다. 읽는 것은 실행 파일 이름뿐이다. 인자나 환경 변수는 읽지 않는다.
+- **귀속.** 프로세스는 에이전트 어댑터가 실행 파일 이름으로 정확히 일치시키는 가장 가까운 조상(또는 자기 자신)에 속한다. 그 밖의 프로세스는 귀속되지 않은 채로 남고, 귀속되지 않은 작업은 절대 제어하지 않는다. 무거운 작업(build, test, container-build)은 실행 파일 이름으로 인식하고, 빌드가 띄운 컴파일러는 그 빌드에 합친다. OS에서 읽는 것은 실행 파일 이름뿐이다. 인자나 환경 변수는 읽지 않는다. `throtd`가 받는 명령 텍스트는 훅과 `throt run`이 보내는 [시그니처](#학습한-무거운-명령)뿐이다.
 - **압력.** 메모리, swap 증가량, CPU, load, 포그라운드 latency(10ms 타이머가 얼마나 늦게 울리는지)의 윈도 중앙값과, 커널 자체 신호가 있으면 그 신호(macOS의 memory-pressure 판정, Linux의 PSI)를 합쳐 `normal`, `elevated`, `high`, `critical` 중 하나를 정한다. 순간적인 튐은 무시하도록 히스테리시스를 둔다. CPU가 바쁜 것만으로는 elevated를 넘지 않는다. 포화된 코어는 처리량이고, 그것이 사용자에게 주는 영향은 latency 프로브가 잰다.
 - **스케줄링**(`scheduler.mode`를 설정했을 때만). Throt는 이미 존재하는 프로세스에만 손을 쓸 수 있다. 그래서 모든 슬롯이 찬 상태에서 새 무거운 작업이 나타나면 샘플 주기 한 번 안에 일시 정지하고, 슬롯이 나면 재개한다. 이미 실행 중인 작업은 대기열에 넣지 않는다. high 압력이면 새 시작을 막는다. 대기 중인 작업과 `throt run` 호출자는 선착순 줄 하나를 함께 쓴다. 모든 결정은 reason 코드가 붙은 이벤트로 남는다.
 - **제어.** 일시 정지와 재개는 내 에이전트의 무거운 작업에만 적용한다. 시그널은 프로세스의 신원(PID, 시작 시각, uid)을 확인한 뒤에만 보낸다. 일시 정지한 프로세스는 정지하기 전에 `paused.json`에 기록하므로 재시작한 `throtd`가 이를 재개한다.
@@ -364,7 +371,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 ## 알려진 제약
 
 - **귀속은 실행 파일 이름과 조상 관계로 판단한다.** `node script.js`나 `python3 -m …`로 시작한 에이전트는 인식하지 못한다. 고유한 이름을 가진 래퍼를 만들고 [사용자 정의 규칙](#에이전트가-감지되지-않는다)을 추가한다. 이름은 인증하지 않으므로 `claude`라는 이름의 프로그램은 무엇이든 에이전트로 친다.
-- **무거운 작업은 이름이나 실제 사용량으로 인식한다.** 에이전트가 셸로 실행한 명령은 이름과 상관없이 바쁘면(1코어 이상 또는 1 GiB 이상) 무거운 작업으로 친다. 다만 명령이 시작되기 전에 기다리게 하는 `throt run`과 Claude Code hook은 여전히 이름으로 판단한다. `npm`, `pnpm`, `yarn`, `bun`, `java`, `dotnet`은 바쁠 때만 무거운 작업으로 친다. 하지만 빌드 도구 이름을 가진 다른 오래 사는 프로세스(`next dev`, `vite`)는 실행되는 내내 무거운 작업 슬롯을 차지한다.
+- **무거운 작업은 이름이나 실제 사용량으로 인식한다.** 에이전트가 셸로 실행한 명령은 이름과 상관없이 바쁘면(1코어 이상 또는 1 GiB 이상) 무거운 작업으로 친다. 다만 명령이 시작되기 전에 기다리게 하는 `throt run`과 Claude Code hook은 이름이나, 이전 실행에서 [학습한 시그니처](#학습한-무거운-명령)로 판단한다. 그래서 처음 보는 명령이 처음 무겁게 실행될 때는 시작 전에 붙잡지 못한다. `npm`, `pnpm`, `yarn`, `bun`, `java`, `dotnet`은 바쁠 때만 무거운 작업으로 친다. 하지만 빌드 도구 이름을 가진 다른 오래 사는 프로세스(`next dev`, `vite`)는 실행되는 내내 무거운 작업 슬롯을 차지한다.
 - **Throt는 이미 존재하는 프로세스에만 손을 쓴다.** 새 빌드가 한꺼번에 몰리면 초과분이 일시 정지되기 전까지 최대 샘플 주기 한 번(기본 2초) 동안 실행된다. 주기 한 번보다 짧게 끝나는 프로세스는 아예 보이지 않는다.
 - **일시 정지해도 메모리는 풀리지 않는다.** 일시 정지한 빌드는 할당한 메모리를 그대로 쥐고 있다. 커널이 swap으로 내보낼 수는 있지만, swap이 적거나 없는 컨테이너에서는 시작 직후 일시 정지한 작업이 OOM으로 죽을 수 있다. 메모리를 비워 두는 방법은 시작 전 승인(Claude Code 훅, `throt run --`)뿐이다. [Gradle, Maven, Docker](#gradle-maven-docker)를 참고한다.
 - **빌드 데몬과 컨테이너는 귀속 대상에서 보이지 않는다.** Gradle이나 Kotlin 데몬은 어떤 에이전트에도 속하지 않는 분리된 `java` 프로세스라서, 그 안에서 도는 빌드는 대기열에 들어가지 않는다(`org.gradle.daemon=false`로 설정한다). 컨테이너는 Testcontainers가 띄운 것까지 포함해 Docker VM 안(macOS)이나 `containerd` 아래에서 돌아 모든 에이전트의 프로세스 트리 밖에 있다. 막을 수 있는 건 컨테이너를 띄우는 명령뿐이다.
@@ -450,10 +457,11 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 
 **증상.** Claude Code에서 Bash 명령이 시작되기까지 한참 걸리고, 그 뒤 `throt: waited 40s for a heavy-job slot` 또는 `throt: no heavy-job slot after 110s (REASON); running anyway`가 나온다.
 
-**원인.** 명령이 무거운 도구 하나뿐이고 용량 판정이 '안 된다'이면 훅은 최대 `--max-wait`만큼 기다린다. 압력이 high이거나, 무거운 작업 슬롯이 모두 쓰이고 있거나, 이미 대기 중인 작업이 있거나, 에이전트가 `per_agent_limit`에 걸린 경우다. 메시지의 이유가 그중 무엇인지 알려 준다.
+**원인.** 명령이 무거운 도구 하나뿐이거나 [학습한 무거운 명령](#학습한-무거운-명령)이고(이때는 메시지에 `learned heavy`가 붙는다) 용량 판정이 '안 된다'이면 훅은 최대 `--max-wait`만큼 기다린다. 압력이 high이거나, 무거운 작업 슬롯이 모두 쓰이고 있거나, 이미 대기 중인 작업이 있거나, 에이전트가 `per_agent_limit`에 걸린 경우다. 메시지의 이유가 그중 무엇인지 알려 준다.
 
 **해결.**
 - `throt status`로 압력과 슬롯을 확인한다. `scheduler.mode`가 off이면 high 압력일 때만 기다린다.
+- 학습한 명령인데 기다리지 않았으면 할 때는 `throt learned --forget 'SIGNATURE'`를 쓴다(다시 무거운 작업을 띄우면 다시 학습한다).
 - 훅 명령의 대기 시간을 줄인다. 예를 들어 `throt hook claude-code --max-wait 30s`로 하되 훅 `timeout`보다 짧게 유지한다. 전혀 기다리지 않으려면 `--max-wait 0`을 쓴다.
 - 가벼운 호출은 기다리지 않는다. 첫 인자가 `-v`, `--version`, `version`, `-h`, `--help`, `help`, `-n`, `--dry-run`인 경우와 `go env`, `go list`, `go mod`, `npm view`, `npm ls`, `cargo metadata`, `gradle tasks`(`./gradlew tasks`, `dependencies`, `--stop`, `--status`도) 같은 읽기 전용 하위 명령이 그렇다. 그 밖의 읽기 전용 하위 명령은 여전히 기다리고, Docker 이미지 빌드도 기다린다. 다른 `docker` 명령은 `docker compose up`을 포함해 기다리지 않는다.
 

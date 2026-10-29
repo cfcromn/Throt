@@ -130,6 +130,12 @@ type Daemon struct {
 	statsMu sync.Mutex // guards acct; held briefly
 	acct    *stats.Accountant
 
+	// learnMu guards learn, the learned heavy commands; held briefly.
+	// learnSaveMu orders writes of learned.json.
+	learnMu     sync.Mutex
+	learn       *learner
+	learnSaveMu sync.Mutex
+
 	// cfgPath is the file Reload re-reads; empty disables reloading.
 	cfgPath string
 	// Reload handoff. The scheduler and engine belong to the sampling
@@ -167,6 +173,7 @@ func NewDaemon(cfg config.Config, host HostSampler, procs ProcessSampler, sig co
 		failing:  map[string]bool{},
 		failures: map[string]string{},
 		acct:     stats.New(),
+		learn:    newLearner(),
 		sig:      sig,
 		uid:      uint32(os.Getuid()),
 		reported: map[domain.ProcessKey]bool{},
@@ -205,6 +212,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.started = time.Now()
 	d.emit(domain.EventDaemonStarted, "listening on "+d.cfg.SocketPath, nil)
 	d.recoverPaused(ctx)
+	d.loadLearned()
 	srv := transport.NewServer(d.handlers(), transport.WithPrivileged(privilegedMethods()...))
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -217,6 +225,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	err = srv.Serve(ctx, l)
 	cancel()
 	wg.Wait()
+	d.saveLearned()
 	// The sampling goroutine has stopped, so d.prio is ours now.
 	if len(d.prio.workloads) > 0 {
 		d.restorePriorities(ctx, RestoreShutdown)
@@ -250,12 +259,17 @@ func (d *Daemon) handlers() map[string]transport.Handler {
 		"resume":  d.resume,
 		"reload":  d.reload,
 		"acquire": d.acquire,
+		"expect":  d.expect,
+		"learned": d.learnedSignatures,
 	}
 }
 
 // privilegedMethods may only be called by the user running the daemon: they
-// signal processes, change its configuration, or reserve heavy slots.
-func privilegedMethods() []string { return []string{"pause", "resume", "reload", "acquire"} }
+// signal processes, change its configuration, reserve heavy slots, or
+// carry command signatures.
+func privilegedMethods() []string {
+	return []string{"pause", "resume", "reload", "acquire", "expect", "learned"}
+}
 
 // Adapters returns the agent adapters for a config: custom agents first, so
 // they win over built-in names.

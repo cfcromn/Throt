@@ -68,6 +68,7 @@ func (d *Daemon) tick(parent context.Context) {
 			Waiters:        waiters,
 		}, r.stoppedOrphans)
 		d.account(s.now, r.snap)
+		d.learnFrom(s.now, r.snap.Heavy)
 		d.watch = d.refillWatch(r.snap.Heavy, len(waiters))
 		d.procsFailingSince = time.Time{}
 		d.background(parent, s.procs, &r)

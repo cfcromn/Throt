@@ -113,6 +113,8 @@ Diagnostic output (`throt doctor`) is produced only on explicit request. It neve
 
 `status` (and so the TUI) names the five processes outside every agent with the most resident memory, by executable name only, never their arguments or paths; like the rest of `status`, it is served only on the user's 0600 socket.
 
+Throt never reads process arguments from the OS. The one piece of command text `throtd` receives is a *signature* for [learned heavy commands](README.md#learned-heavy-commands): the Claude Code hook and `throt run` reduce the command the agent handed them to the program's base name and the base name of its first non-flag argument (`python train.py`), dropping it unless it is a short plain word (no `=`, `@`, quotes, expansions or URLs), and send it only over the local socket, to the privileged `expect` method; `throtd` refuses anything else. A signature is treated as sensitive: it is never logged at info level or above, never put in an event, `status` or the MCP tools, and is stored only in `learned.json` (at most 256, mode 0600, in the private socket directory), which `throt learned --clear` empties. Light commands such as `ls`, `git` or `cat` are not reported at all.
+
 `throt update` is the only command that uses the network, and only when you run it: nothing checks for updates automatically or in the background. It is not telemetry: it is an explicit user action that sends standard HTTPS requests to GitHub (the release list, `checksums.txt` and one archive), with your GitHub token when one is set, and nothing about the machine or its use beyond what any HTTPS client sends (address, `User-Agent: throt-update`).
 
 Any future telemetry requires a public proposal, documented fields, opt-in behavior, and retention/deletion instructions.

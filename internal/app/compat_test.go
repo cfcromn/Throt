@@ -39,6 +39,23 @@ var protocolWant = map[string]struct {
 			"verdict.suggestion",
 		},
 	},
+	"expect": {
+		params: []string{
+			"named", "pid", "signature",
+		},
+		result: []string{
+			"heavy",
+		},
+	},
+	"learned": {
+		params: []string{
+			"clear", "forget",
+		},
+		result: []string{
+			"forgotten", "signatures[].heavy_runs", "signatures[].last_heavy", "signatures[].misses",
+			"signatures[].peak_rss", "signatures[].signature",
+		},
+	},
 	"events": {
 		params: []string{
 			"limit", "since",
@@ -120,6 +137,8 @@ var protocolTypes = map[string]struct{ params, result any }{
 	"resume":  {ControlParams{}, nil},
 	"reload":  {nil, ReloadResult{}},
 	"acquire": {AcquireParams{}, AcquireResult{}},
+	"expect":  {ExpectParams{}, ExpectResult{}},
+	"learned": {LearnedParams{}, LearnedResult{}},
 }
 
 func TestProtocolV1Methods(t *testing.T) {
@@ -131,7 +150,7 @@ func TestProtocolV1Methods(t *testing.T) {
 	if want := slices.Sorted(maps.Keys(protocolTypes)); !slices.Equal(methods, want) {
 		t.Errorf("methods = %v, protocolTypes has %v", methods, want)
 	}
-	if got, want := privilegedMethods(), []string{"pause", "resume", "reload", "acquire"}; !slices.Equal(got, want) {
+	if got, want := privilegedMethods(), []string{"pause", "resume", "reload", "acquire", "expect", "learned"}; !slices.Equal(got, want) {
 		t.Errorf("privileged = %v, want %v", got, want)
 	}
 }

@@ -54,6 +54,8 @@ func commands() []command {
 		{name: "top", run: cmdTop, help: "open the terminal UI (the default with no command)"},
 		{name: "status", run: cmdStatus, help: "show host resources and pressure; --json for JSON"},
 		{name: "stats", run: cmdStats, flags: true, help: "show per-agent resource usage since throtd started; --json for JSON"},
+		{name: "learned", run: cmdLearned, flags: true, synopsis: "[--forget SIGNATURE | --clear]", help: `list the commands throtd learned heavy, which the hook then
+waits for like heavy tools; --forget or --clear drops them`},
 		{name: "ping", run: cmdPing, help: "check that throtd is reachable"},
 		{name: "events", run: cmdEvents, flags: true, help: "print recent daemon events as JSON lines; -f keeps printing new ones"},
 		{name: "explain", run: cmdExplain, synopsis: "PID", help: "explain why a heavy workload is running, paused, or queued"},

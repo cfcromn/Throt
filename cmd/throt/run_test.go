@@ -459,3 +459,37 @@ func TestRunDispatchPassesArgs(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestRunReportsSignature checks that throt run reports its command's
+// signature just before the exec when throtd answered, and not when it is
+// unreachable; a failed report never stops the command.
+func TestRunReportsSignature(t *testing.T) {
+	tests := []struct {
+		argv    []string
+		replies []statusReply
+		want    []string
+	}{
+		{[]string{"python", "scripts/train.py", "--epochs", "3"}, []statusReply{busy(), free()}, []string{"python train.py"}},
+		{[]string{"make", "-j8"}, []statusReply{free()}, []string{"make (named)"}},
+		{[]string{"python", "x.py"}, []statusReply{down()}, nil},
+		{[]string{"python", "x.py"}, []statusReply{busy(), down()}, nil},
+	}
+	for _, tt := range tests {
+		f := &fakeRun{replies: tt.replies, now: time.Unix(1000, 0)}
+		r := f.runner()
+		var reports []string
+		r.expect = func(_ context.Context, sig string, named bool) (bool, error) {
+			if named {
+				sig += " (named)"
+			}
+			reports = append(reports, sig)
+			return false, errors.New("unknown method: expect")
+		}
+		if err := r.run(context.Background(), runOptions{argv: tt.argv}); err != nil || f.execPath == "" {
+			t.Fatalf("%q: err %v, exec %q", tt.argv, err, f.execPath)
+		}
+		if strings.Join(reports, ",") != strings.Join(tt.want, ",") {
+			t.Errorf("%q: reports %q, want %q", tt.argv, reports, tt.want)
+		}
+	}
+}

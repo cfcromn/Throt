@@ -101,6 +101,14 @@ func goldenCases() []goldenCase {
 		{name: "stats -bogus", args: []string{"stats", "-bogus"}},
 		{name: "stats extra", args: []string{"stats", "x"}},
 
+		{name: "learned", args: []string{"learned"}},
+		{name: "learned --forget", args: []string{"learned", "--forget", "python train.py"}},
+		{name: "learned --clear", args: []string{"learned", "--clear"}},
+		{name: "learned both", args: []string{"learned", "--clear", "--forget", "x"}},
+		{name: "learned -h", args: []string{"learned", "-h"}},
+		{name: "learned extra", args: []string{"learned", "x"}},
+		{name: "learned down", args: []string{"learned"}, down: true},
+
 		{name: "events", args: []string{"events"}},
 		{name: "events -n", args: []string{"events", "-n", "1"}},
 		{name: "global -n events", args: []string{"-n", "1", "events"}},
@@ -273,6 +281,22 @@ func fakeDaemon(t *testing.T, socket string) {
 		"resume": control,
 		"reload": func(context.Context, json.RawMessage) (any, error) {
 			return app.ReloadResult{Changed: []string{"scheduler.mode off -> observe"}, RequiresRestart: []string{"socket_path"}}, nil
+		},
+		"learned": func(_ context.Context, raw json.RawMessage) (any, error) {
+			var p app.LearnedParams
+			if err := json.Unmarshal(raw, &p); err != nil {
+				return nil, err
+			}
+			r := app.LearnedResult{Signatures: []app.LearnedSignature{
+				{Signature: "python train.py", PeakRSS: 6 << 30, HeavyRuns: 4, LastHeavy: goldenStart},
+				{Signature: "npx playwright", PeakRSS: 900 << 20, HeavyRuns: 1, Misses: 2, LastHeavy: goldenStart.Add(-time.Hour)},
+			}}
+			if p.Clear {
+				r.Forgotten, r.Signatures = 2, []app.LearnedSignature{}
+			} else if p.Forget == "python train.py" {
+				r.Forgotten, r.Signatures = 1, r.Signatures[1:]
+			}
+			return r, nil
 		},
 		"acquire": func(context.Context, json.RawMessage) (any, error) {
 			return app.AcquireResult{Granted: true, Reason: "granted", LeaseID: "1", Verdict: verdict}, nil
@@ -477,6 +501,9 @@ Commands:
   top        open the terminal UI (the default with no command)
   status     show host resources and pressure; --json for JSON
   stats      show per-agent resource usage since throtd started; --json for JSON
+  learned [--forget SIGNATURE | --clear]
+             list the commands throtd learned heavy, which the hook then
+             waits for like heavy tools; --forget or --clear drops them
   ping       check that throtd is reachable
   events     print recent daemon events as JSON lines; -f keeps printing new ones
   explain PID
@@ -556,7 +583,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status stats ping events explain pause resume run reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status stats learned ping events explain pause resume run reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -566,6 +593,7 @@ _throt() {
         completion) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
         config) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "check show" -- "$cur")) || COMPREPLY=($(compgen -W "--config --json" -- "$cur")) ;;
         status|version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
+        learned) [[ "$prev" == --forget || "$prev" == -forget ]] || COMPREPLY=($(compgen -W "--forget --clear" -- "$cur")) ;;
         update) [[ "$prev" == --version || "$prev" == -version ]] || COMPREPLY=($(compgen -W "--check --version --pre --yes" -- "$cur")) ;;
         hook) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code" -- "$cur")) ;;
         setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) || COMPREPLY=($(compgen -W "--write" -- "$cur")) ;;
@@ -611,6 +639,7 @@ complete -c throt -n __fish_use_subcommand -a pause -d 'pause a heavy workload'
 complete -c throt -n __fish_use_subcommand -a resume -d 'resume a paused workload'
 complete -c throt -n __fish_use_subcommand -a run -d 'wait for heavy-job capacity, then run a command'
 complete -c throt -n __fish_use_subcommand -a stats -d 'per-agent resource usage since throtd started'
+complete -c throt -n __fish_use_subcommand -a learned -d 'list or forget the commands throtd learned heavy'
 complete -c throt -n __fish_use_subcommand -a reload -d 'make throtd re-read its config file'
 complete -c throt -n __fish_use_subcommand -a config -d 'check or show the config file'
 complete -c throt -n __fish_use_subcommand -a doctor -d 'print a sanitized diagnostic report'
@@ -631,6 +660,8 @@ complete -c throt -n '__fish_seen_subcommand_from update' -l check -d 'only repo
 complete -c throt -n '__fish_seen_subcommand_from update' -l version -x -d 'install this release'
 complete -c throt -n '__fish_seen_subcommand_from update' -l pre -d 'include prereleases'
 complete -c throt -n '__fish_seen_subcommand_from update' -l yes -d 'do not ask for confirmation'
+complete -c throt -n '__fish_seen_subcommand_from learned' -l forget -x -d 'forget one learned command'
+complete -c throt -n '__fish_seen_subcommand_from learned' -l clear -d 'forget every learned command'
 complete -c throt -n '__fish_seen_subcommand_from hook' -x -a 'claude-code'
 complete -c throt -n '__fish_seen_subcommand_from setup' -x -a 'claude-code codex'
 complete -c throt -n '__fish_seen_subcommand_from setup' -l write -d 'install the configuration in your home directory'
@@ -661,6 +692,7 @@ _throt() {
         'resume:resume a paused workload'
         'run:wait for heavy-job capacity, then run a command'
         'stats:per-agent resource usage since throtd started'
+        'learned:list or forget the commands throtd learned heavy'
         'reload:make throtd re-read its config file'
         'config:check or show the config file'
         'doctor:print a sanitized diagnostic report'
@@ -686,6 +718,7 @@ _throt() {
                 completion) (( CURRENT == 2 )) && compadd bash zsh fish ;;
                 config) (( CURRENT == 2 )) && compadd check show || _arguments '--config[path to config file]:file:_files' '--json[print JSON]' ;;
                 status|version) _arguments '--json[print JSON]' ;;
+                learned) _arguments '--forget[forget one learned command]:signature:' '--clear[forget every learned command]' ;;
                 update) _arguments '--check[only report whether an update is available]' '--version[install this release]:version:' '--pre[include prereleases]' '--yes[do not ask for confirmation]' ;;
                 hook) (( CURRENT == 2 )) && compadd claude-code ;;
                 setup) (( CURRENT == 2 )) && compadd claude-code codex || _arguments '--write[install the configuration in your home directory]' ;;
@@ -911,11 +944,13 @@ changes or blocks the command (advisory; fails open)
 		"hook claude-code -h": {code: 0, stdout: `Usage: throt hook claude-code [--max-wait D]
 
 Claude Code PreToolUse hook for the Bash tool. When the command is a heavy
-tool (alone, or after "cd DIR &&", variable assignments, or "time"), wait up
-to D for throtd to report capacity for a heavy job, then let it run
-unchanged. Advisory: no slot is reserved. It never blocks, denies, or
-changes a tool call, and returns at once on any error or when throtd is
-unreachable. Keep D below the hook's "timeout" in settings.json. With
+tool (alone, or after "cd DIR &&", variable assignments, or "time"), or a
+command throtd learned heavy because it started a heavy workload before,
+wait up to D for throtd to report capacity for a heavy job, then let it run
+unchanged. Only the command's signature (program and first argument base
+names) is sent to throtd, to learn from. Advisory: no slot is reserved.
+It never blocks, denies, or changes a tool call, and returns at once on
+any error or when throtd is unreachable. Keep D below the hook's "timeout" in settings.json. With
 THROT_HOOK_DEBUG=1 it says on stderr why it ignored an event.
 
 Flags:
@@ -952,6 +987,25 @@ OWNER     PID   PROCESS  CLASS  CPU   MEM      STATE
 claude-1  4312  make     build  150%  2.0 GiB  running
 -         4400  gradle   build  25%   700 MiB  running
 `, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
+`},
+		"learned": {code: 0, stdout: `SIGNATURE        PEAK MEM  HEAVY RUNS  LIGHT SINCE  LAST HEAVY
+python train.py  6.0 GiB   4           0            2026-10-28 14:00
+npx playwright   900 MiB   1           2            2026-10-28 13:00
+`, stderr: ""},
+		"learned --clear": {code: 0, stdout: `forgot 2 learned command(s)
+`, stderr: ""},
+		"learned --forget": {code: 0, stdout: `forgot 1 learned command(s)
+`, stderr: ""},
+		"learned -h": {code: 0, stdout: `usage: throt learned [--forget SIGNATURE | --clear]
+  -clear
+    	forget every learned command
+  -forget SIGNATURE
+    	forget one learned SIGNATURE, as listed
+`, stderr: ""},
+		"learned both": {code: 2, stdout: "", stderr: `throt: usage: throt learned [--forget SIGNATURE | --clear]
+`},
+		"learned down": {code: 1, stdout: "", stderr: "throt: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},
+		"learned extra": {code: 2, stdout: "", stderr: `throt: usage: throt learned [--forget SIGNATURE | --clear]
 `},
 		"mcp": {code: 0, stdout: "", stderr: ""},
 		"mcp --help": {code: 0, stdout: `usage: throt mcp

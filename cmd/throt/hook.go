@@ -10,18 +10,25 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/agent"
+	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/domain"
 	"github.com/cfcromn/Throt/internal/shellwords"
+	"github.com/cfcromn/Throt/internal/signature"
+	"github.com/cfcromn/Throt/internal/transport"
 )
 
 // The Claude Code hook. As a PreToolUse hook on the Bash tool it receives
 // {"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{...}}
 // on stdin (https://code.claude.com/docs/en/hooks). When the command is a
-// heavy tool it waits, up to --max-wait, until throtd's capacity verdict
-// says a heavy job may start, then exits 0. It never modifies, approves,
+// heavy tool, or one throtd learned heavy, it waits, up to --max-wait,
+// until throtd's capacity verdict says a heavy job may start, then exits
+// 0. To let throtd learn, it reports each simple command's signature
+// (internal/signature: program and first argument base names, nothing
+// more) to throtd before it starts. It never modifies, approves,
 // or denies the call, so the command runs exactly as Claude wrote it under
 // the user's own permission rules. The only output is an optional
 // systemMessage (shown to the user) after it has waited; nothing is
@@ -44,11 +51,13 @@ const hookDebugEnv = "THROT_HOOK_DEBUG"
 const hookUsage = `Usage: throt hook claude-code [--max-wait D]
 
 Claude Code PreToolUse hook for the Bash tool. When the command is a heavy
-tool (alone, or after "cd DIR &&", variable assignments, or "time"), wait up
-to D for throtd to report capacity for a heavy job, then let it run
-unchanged. Advisory: no slot is reserved. It never blocks, denies, or
-changes a tool call, and returns at once on any error or when throtd is
-unreachable. Keep D below the hook's "timeout" in settings.json. With
+tool (alone, or after "cd DIR &&", variable assignments, or "time"), or a
+command throtd learned heavy because it started a heavy workload before,
+wait up to D for throtd to report capacity for a heavy job, then let it run
+unchanged. Only the command's signature (program and first argument base
+names) is sent to throtd, to learn from. Advisory: no slot is reserved.
+It never blocks, denies, or changes a tool call, and returns at once on
+any error or when throtd is unreachable. Keep D below the hook's "timeout" in settings.json. With
 THROT_HOOK_DEBUG=1 it says on stderr why it ignored an event.
 
 Flags:
@@ -59,8 +68,12 @@ type hookWaiter struct {
 	// newCheck builds the capacity check. It is called only for a heavy
 	// command, so a light one never touches the config or the daemon.
 	newCheck func() checkFunc
-	now      func() time.Time
-	sleep    func(ctx context.Context, d time.Duration) error
+	// expect reports the signature of the command about to start to
+	// throtd and returns whether throtd learned it heavy. named says the
+	// hook already treats it as heavy by name. nil skips it.
+	expect func(ctx context.Context, sig string, named bool) (bool, error)
+	now    func() time.Time
+	sleep  func(ctx context.Context, d time.Duration) error
 	// debug, when set, gets a one-line hint about input the hook ignores.
 	debug io.Writer
 }
@@ -92,14 +105,20 @@ func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) e
 		fmt.Fprintln(errw, "throt hook: bad arguments; not waiting")
 		return nil
 	}
-	// The deadline leaves room for one last bounded check at maxWait. It
-	// also bounds reading stdin, so input held open cannot overrun it.
-	ctx, cancel := context.WithTimeout(context.Background(), *maxWait+runCallTimeout)
+	// The deadline leaves room for a bounded report to throtd before and
+	// after the wait, and one last bounded check at maxWait. It also
+	// bounds reading stdin, so input held open cannot overrun it.
+	ctx, cancel := context.WithTimeout(context.Background(), *maxWait+3*runCallTimeout)
 	defer cancel()
+	// The config is read once, and only when the daemon is asked.
+	socket := sync.OnceValue(func() string { return clientConfig(cfgPath, errw).SocketPath })
 	h := hookWaiter{
-		newCheck: func() checkFunc { return hookCheck(clientConfig(cfgPath, errw).SocketPath) },
-		now:      time.Now,
-		sleep:    sleepCtx,
+		newCheck: func() checkFunc { return hookCheck(socket()) },
+		expect: func(ctx context.Context, sig string, named bool) (bool, error) {
+			return expectHeavy(ctx, socket(), sig, named)
+		},
+		now:   time.Now,
+		sleep: sleepCtx,
 	}
 	if os.Getenv(hookDebugEnv) == "1" {
 		h.debug = errw
@@ -120,6 +139,18 @@ func hookCheck(socket string) checkFunc {
 	return r.advisoryCheck()
 }
 
+// expectHeavy tells throtd that this process's agent is about to start the
+// command with signature sig, and returns whether throtd learned it heavy.
+// Any error, including an older throtd without the method, means not
+// known: the caller then behaves as before learning existed.
+func expectHeavy(ctx context.Context, socket, sig string, named bool) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, runCallTimeout)
+	defer cancel()
+	var r app.ExpectResult
+	err := transport.Call(ctx, socket, "expect", app.ExpectParams{PID: os.Getpid(), Signature: sig, Named: named}, &r)
+	return r.Heavy && err == nil, err
+}
+
 // claudeCode reads one PreToolUse event and, for a heavy Bash command,
 // waits for capacity. It writes at most one JSON object, after waiting.
 func (h hookWaiter) claudeCode(ctx context.Context, in io.Reader, out io.Writer, maxWait time.Duration) {
@@ -134,10 +165,31 @@ func (h hookWaiter) claudeCode(ctx context.Context, in io.Reader, out io.Writer,
 		h.hint(why)
 		return
 	}
-	if _, heavy := heavyCommand(command); !heavy || maxWait == 0 {
+	name, args, ok := simpleCommand(command)
+	if !ok || maxWait == 0 || lightTools[name] || lightInvocation(name, args) {
 		return
 	}
-	if msg := h.wait(ctx, maxWait); msg != "" {
+	named := heavyTool(name, args)
+	// Only the signature of the command reaches throtd, never its text.
+	sig, hasSig := signature.FromArgs(name, args)
+	learned := false
+	if hasSig && h.expect != nil {
+		known, err := h.expect(ctx, sig, named)
+		learned = err == nil && known && !named
+	}
+	if !named && !learned {
+		return
+	}
+	msg := h.wait(ctx, maxWait)
+	if msg != "" && hasSig && h.expect != nil {
+		// The command starts only now: report it again, so throtd still
+		// connects it to the workload it starts.
+		h.expect(ctx, sig, named)
+	}
+	if msg != "" && learned {
+		msg += " (learned heavy: it started a heavy workload before; see 'throt learned')"
+	}
+	if msg != "" {
 		resp, err := json.Marshal(struct {
 			SystemMessage string `json:"systemMessage"`
 		}{msg})
@@ -242,14 +294,28 @@ func bashCommand(data []byte) (command, why string) {
 // heavy tool (see heavyTool). Pipes, other lists, redirections,
 // substitutions and anything else shellwords refuses do not count.
 func heavyCommand(command string) (string, bool) {
+	name, args, ok := simpleCommand(command)
+	if !ok || !heavyTool(name, args) || lightInvocation(name, args) {
+		return "", false
+	}
+	return name, true
+}
+
+// simpleCommand splits command into its command word's base name and the
+// raw words after it. It accepts a single simple command, optionally
+// preceded by `cd DIR &&` steps, whose command word (after variable
+// assignments and `time`) is a plain word. Pipes, other lists,
+// redirections, substitutions and anything else shellwords refuses do not
+// count.
+func simpleCommand(command string) (name string, args []string, ok bool) {
 	cmds, ok := shellwords.Split(command)
 	if !ok {
-		return "", false
+		return "", nil, false
 	}
 	last := len(cmds) - 1
 	for _, c := range cmds[:last] {
 		if len(c) != 2 || c[0].Raw != "cd" {
-			return "", false // only `cd DIR &&` may come first
+			return "", nil, false // only `cd DIR &&` may come first
 		}
 	}
 	words := cmds[last]
@@ -258,17 +324,31 @@ func heavyCommand(command string) (string, bool) {
 		i++
 	}
 	if i == len(words) || !isPlainCommand(words[i].Raw) {
-		return "", false
+		return "", nil, false
 	}
-	name := path.Base(words[i].Raw)
-	args := make([]string, 0, len(words)-i-1)
+	args = make([]string, 0, len(words)-i-1)
 	for _, w := range words[i+1:] {
 		args = append(args, w.Raw)
 	}
-	if !heavyTool(name, args) || lightInvocation(name, args) {
-		return "", false
-	}
-	return name, true
+	return path.Base(words[i].Raw), args, true
+}
+
+// lightTools are commands agents run all the time that are never heavy
+// workloads: the hook does not report them to throtd, which keeps it from
+// contacting throtd on most tool calls and keeps their reports from making
+// a heavy command's ambiguous. throt itself handles its own admission.
+// ponytail: the commonest cases only; an unlisted light command is merely
+// reported, and never learned unless a heavy workload starts with it.
+var lightTools = map[string]bool{
+	"ls": true, "cat": true, "head": true, "tail": true, "echo": true, "printf": true, "pwd": true,
+	"cd": true, "grep": true, "rg": true, "egrep": true, "fgrep": true, "sed": true, "awk": true,
+	"find": true, "fd": true, "wc": true, "sort": true, "uniq": true, "cut": true, "tr": true,
+	"diff": true, "cmp": true, "file": true, "stat": true, "which": true, "type": true, "command": true,
+	"test": true, "true": true, "false": true, "mkdir": true, "rmdir": true, "rm": true, "mv": true,
+	"cp": true, "ln": true, "touch": true, "chmod": true, "date": true, "sleep": true, "export": true,
+	"git": true, "gh": true, "jq": true, "less": true, "tee": true, "basename": true, "dirname": true,
+	"realpath": true, "readlink": true, "du": true, "df": true, "ps": true, "kill": true, "pgrep": true,
+	"pkill": true, "lsof": true, "curl": true, "wget": true, "ssh": true, "open": true, "throt": true,
 }
 
 // lightFlags make any heavy tool return at once: agents run these

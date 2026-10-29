@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/config"
+	"github.com/cfcromn/Throt/internal/transport"
 )
 
 func TestLightInvocationsDoNotWait(t *testing.T) {
@@ -180,11 +183,24 @@ type fakeHook struct {
 	built   int
 	clock   time.Time
 	started time.Time
+	// learned are the signatures throtd learned heavy; expectErr fails
+	// every report. reports records each report as "sig" or "sig (named)".
+	learned   map[string]bool
+	expectErr error
+	reports   []string
 }
 
 func (f *fakeHook) waiter() hookWaiter {
 	f.started = f.clock
 	return hookWaiter{
+		expect: func(_ context.Context, sig string, named bool) (bool, error) {
+			r := sig
+			if named {
+				r += " (named)"
+			}
+			f.reports = append(f.reports, r)
+			return f.learned[sig] && f.expectErr == nil, f.expectErr
+		},
 		newCheck: func() checkFunc {
 			f.built++
 			return func(context.Context) (bool, app.Verdict, error) {
@@ -305,9 +321,122 @@ func TestHookSkipsWithoutDaemon(t *testing.T) {
 	}
 	for name, in := range cases {
 		f := &fakeHook{t: t, oks: []bool{false}}
-		if out := f.run(in, 50*time.Second); out != "" || f.built != 0 || f.calls != 0 {
-			t.Errorf("%s: output %q, check built %d, called %d; want no daemon contact", name, out, f.built, f.calls)
+		if out := f.run(in, 50*time.Second); out != "" || f.built != 0 || f.calls != 0 || len(f.reports) != 0 {
+			t.Errorf("%s: output %q, check built %d, called %d, reports %q; want no daemon contact", name, out, f.built, f.calls, f.reports)
 		}
+	}
+}
+
+func TestHookLearnedCommands(t *testing.T) {
+	tests := []struct {
+		command string
+		learned bool
+		// reports are the reports to throtd; wait whether the hook waits.
+		reports []string
+		wait    bool
+	}{
+		{"python train.py --epochs 3", true, []string{"python train.py", "python train.py"}, true},
+		{"cd ml && OMP_NUM_THREADS=8 python scripts/train.py", true, []string{"python train.py", "python train.py"}, true},
+		{"python train.py", false, []string{"python train.py"}, false},
+		{"npx playwright test", true, []string{"npx playwright", "npx playwright"}, true},
+		{"pnpm test:e2e", false, []string{"pnpm test:e2e (named)", "pnpm test:e2e (named)"}, true},
+		{"./scripts/build.sh", true, []string{"build.sh", "build.sh"}, true},
+		// Heavy by name: reported as such, and waits whatever throtd says.
+		{"make -j8", false, []string{"make (named)", "make (named)"}, true},
+		{"./gradlew test", false, []string{"gradlew test (named)", "gradlew test (named)"}, true},
+		// Light by name or by flag: never reported.
+		{"git status", true, nil, false},
+		{"python --version", true, nil, false},
+		{"go version", true, nil, false},
+		// Not one simple command: nothing to report.
+		{"python train.py | tee log", true, nil, false},
+		{`"$PY" train.py`, true, nil, false},
+	}
+	for _, tt := range tests {
+		f := &fakeHook{t: t, clock: time.Unix(1000, 0), oks: []bool{false, true}}
+		if tt.learned {
+			f.learned = map[string]bool{}
+			for _, r := range tt.reports {
+				f.learned[r] = true
+			}
+			f.learned["git status"], f.learned["python"], f.learned["go"] = true, true, true
+		}
+		out := f.run(bashEvent(tt.command), 50*time.Second)
+		if strings.Join(f.reports, ",") != strings.Join(tt.reports, ",") {
+			t.Errorf("%q: reports %q, want %q", tt.command, f.reports, tt.reports)
+		}
+		if waited := f.calls > 0; waited != tt.wait {
+			t.Errorf("%q: waited %v, want %v", tt.command, waited, tt.wait)
+		}
+		if tt.wait {
+			msg := systemMessage(t, out)
+			if !strings.Contains(msg, "waited 1s") || strings.Contains(msg, "learned") != (tt.learned && !strings.Contains(tt.reports[0], "named")) {
+				t.Errorf("%q: systemMessage %q", tt.command, msg)
+			}
+			if strings.Contains(out, "train") || strings.Contains(out, "test:e2e") {
+				t.Errorf("%q: output %q echoes the command", tt.command, out)
+			}
+		}
+	}
+}
+
+func TestHookLearnedFailsOpen(t *testing.T) {
+	// A daemon that is down or predates "expect": an unknown command runs
+	// at once, and a heavy tool still waits as before.
+	for _, err := range []error{errors.New("connection refused"), errors.New("unknown method: expect")} {
+		f := &fakeHook{t: t, clock: time.Unix(1000, 0), oks: []bool{true}, learned: map[string]bool{"python x.py": true}, expectErr: err}
+		if out := f.run(bashEvent("python x.py"), 50*time.Second); out != "" || f.built != 0 || len(f.reports) != 1 {
+			t.Errorf("%v: unknown command: output %q, check built %d, reports %q", err, out, f.built, f.reports)
+		}
+		f = &fakeHook{t: t, clock: time.Unix(1000, 0), oks: []bool{false, true}, expectErr: err}
+		if out := f.run(bashEvent("make"), 50*time.Second); f.calls != 2 || !strings.Contains(out, "waited") {
+			t.Errorf("%v: heavy tool: output %q after %d checks", err, out, f.calls)
+		}
+	}
+	// A learned command that finds capacity at once is reported once and
+	// says nothing.
+	f := &fakeHook{t: t, clock: time.Unix(1000, 0), oks: []bool{true}, learned: map[string]bool{"python x.py": true}}
+	if out := f.run(bashEvent("python x.py"), 50*time.Second); out != "" || f.calls != 1 || len(f.reports) != 1 {
+		t.Errorf("output %q, %d checks, reports %q", out, f.calls, f.reports)
+	}
+}
+
+// TestExpectHeavyAgainstDaemon checks the hook's call against a fake
+// throtd: the signature and this process's PID are sent, nothing else, and
+// a throtd without the method is an error the hook ignores.
+func TestExpectHeavyAgainstDaemon(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "throtexp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := dir + "/s.sock"
+	var got []string
+	srv := transport.NewServer(map[string]transport.Handler{
+		"expect": func(_ context.Context, raw json.RawMessage) (any, error) {
+			got = append(got, string(raw))
+			return app.ExpectResult{Heavy: true}, nil
+		},
+	})
+	l, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); srv.Serve(ctx, l) }()
+	defer func() { cancel(); <-done }()
+
+	heavy, err := expectHeavy(context.Background(), socket, "python train.py", false)
+	if err != nil || !heavy {
+		t.Fatalf("expectHeavy = %v, %v", heavy, err)
+	}
+	want := fmt.Sprintf(`{"pid":%d,"signature":"python train.py"}`, os.Getpid())
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("sent %q, want %q", got, want)
+	}
+	if heavy, err := expectHeavy(context.Background(), dir+"/none.sock", "a", false); err == nil || heavy {
+		t.Errorf("daemon down: %v, %v", heavy, err)
 	}
 }
 
