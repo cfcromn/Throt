@@ -182,7 +182,7 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 | `throt version [--json]` | Client version; `--json` adds the protocol, Go and `throtd` versions. |
 | `throt update` | Install a newer (or older) release. See [Update and roll back](#update-and-roll-back). |
 | `throt mcp` | Read-only MCP server on stdio for coding agents. |
-| `throt setup claude-code`, `throt setup codex` | Print the configuration to paste into a coding agent. |
+| `throt setup claude-code\|codex [--write]` | Print the configuration to paste into a coding agent; `--write` installs it in your home directory instead (it only adds, and keeps a `.throt-backup` of each file it changes). |
 | `throt hook claude-code [--max-wait D]` | The Claude Code hook. |
 | `throt completion bash\|zsh\|fish` | Shell completion script. |
 
@@ -254,19 +254,31 @@ A `STOPPED` line counts processes throtd did not pause (see `throt doctor`). Eve
 claude mcp add --scope user throt -- throt mcp
 ```
 
-**Claude Code hook.** `throt setup claude-code` prints a `settings.json` hook and the MCP config to paste; it writes no file. The hook (`throt hook claude-code --max-wait D`, a [`PreToolUse`](https://code.claude.com/docs/en/hooks) hook on `Bash`) makes Claude Code wait for capacity without being told:
-- It waits only when the Bash command is a single heavy tool (by the names Throt classifies as heavy), optionally after `cd DIR &&`, variable assignments or `time`. It then polls `throtd` once per second until a heavy job is OK to start for the calling agent, or `D` passes (default 50s; the setup snippet uses 110s with a 120s hook `timeout`, because a hook that times out blocks the call).
+**Claude Code hook.** `throt setup claude-code` prints a `settings.json` hook and the MCP config to paste. `throt setup claude-code --write` adds the hook to `~/.claude/settings.json` itself, unless a hook there already runs `throt hook claude-code`: it keeps every other setting (keys come out sorted and re-indented), keeps the old file as `settings.json.throt-backup`, and refuses, changing nothing, if the file is not valid JSON. The hook (`throt hook claude-code --max-wait D`, a [`PreToolUse`](https://code.claude.com/docs/en/hooks) hook on `Bash`) makes Claude Code wait for capacity without being told:
+- It waits only when the Bash command is a single heavy tool (by the names Throt classifies as heavy, plus the `gradlew` and `mvnw` wrappers and `docker build`, `docker buildx build` and `docker compose build`), optionally after `cd DIR &&`, variable assignments or `time`. It then polls `throtd` once per second until a heavy job is OK to start for the calling agent, or `D` passes (default 50s; the setup snippet uses 110s with a 120s hook `timeout`, because a hook that times out blocks the call).
 - Everything else passes at once without contacting `throtd`: pipes, `;`, `||`, `&`, redirections, subshells, substitutions, heredocs, comments, a heavy tool after another command (`make && ./run`), `throt run` itself, input it cannot parse, and [light invocations](#the-claude-code-hook-delays-commands) such as `--version` or `go env`. So does everything when `throtd` is down.
 - It never changes, approves or denies the command, so your permission rules apply unchanged. After it waited, it shows a one-line `systemMessage`.
 - It is advisory: it reserves no slot, so two commands let through at the same moment can both start. Use `throt run --` for a reserved slot. Do not add permission allow rules for `throt run`: such a rule would allow every command run through it.
 
-**Codex.** `throt setup codex` prints the block for `~/.codex/config.toml` and an `AGENTS.md` paragraph:
+**Codex.** `throt setup codex` prints the block for `~/.codex/config.toml` and an `AGENTS.md` paragraph; `throt setup codex --write` appends each to `~/.codex/config.toml` and `~/.codex/AGENTS.md` (or under `$CODEX_HOME`) unless it is already there, with the same backups:
 
 ```toml
 [mcp_servers.throt]
 command = "throt"
 args = ["mcp"]
 ```
+
+#### Gradle, Maven and Docker
+
+For agents that run `./gradlew test` or `./mvnw verify`, often with Testcontainers starting databases in Docker, set up admission before start:
+
+```bash
+throt setup claude-code --write
+throt setup codex --write
+echo 'org.gradle.daemon=false' >> ~/.gradle/gradle.properties
+```
+
+and run `throtd` with `scheduler.mode` `enforce` and a small fixed limit, such as `"heavy_limit": 3, "adaptive": false, "per_agent_limit": 1`. Holding a build back before it starts is what saves memory, because nothing has been allocated yet; a build paused after it started keeps all of its memory. Gradle normally hands the build to a detached daemon whose parent is `launchd` or `init`, so Throt cannot tell which agent it belongs to and never queues it; with `org.gradle.daemon=false` the build runs under the agent (`throt doctor` flags busy unattributed `java`). Containers run in Docker's VM, where Throt sees no process at all, so gating the `./gradlew test` that starts them is the only way to hold them back.
 
 ### Wait before starting: `throt run`
 
@@ -353,7 +365,8 @@ The scheduler stays off by default. In the benchmarks it pays off when builds to
 - **Attribution is by executable name and ancestry.** An agent started as `node script.js` or `python3 -m …` is not recognized; give it a wrapper with its own name and a [custom rule](#an-agent-is-not-detected). Names are not authenticated: any program called `claude` counts as one.
 - **Heavy work is recognized by name too.** `npm`, `pnpm`, `yarn`, `bun`, `java` and `dotnet` count only while busy, but other long-lived processes with a build tool's name (`next dev`, `vite`) hold a heavy slot for as long as they run.
 - **Throt acts on processes that already exist.** A burst of new builds runs for up to one sample interval (2 s by default) before the extra ones are paused, and a process shorter than one interval is never seen.
-- **Pausing does not free memory.** A paused build keeps what it allocated; the kernel can swap it out, but in a container with little or no swap a job paused right after it started can still be OOM-killed.
+- **Pausing does not free memory.** A paused build keeps what it allocated; the kernel can swap it out, but in a container with little or no swap a job paused right after it started can still be OOM-killed. Only admission before start (the Claude Code hook, `throt run --`) keeps memory free; see [Gradle, Maven and Docker](#gradle-maven-and-docker).
+- **Build daemons and containers are invisible to attribution.** A Gradle or Kotlin daemon is a detached `java` process that no agent owns, so builds it runs are never queued (set `org.gradle.daemon=false`). Containers, Testcontainers' included, run in Docker's VM (on macOS) or under `containerd`, outside every agent's process tree; only the command that starts them can be gated.
 - **Signals are verified, then sent.** On macOS and on Linux without pidfd, a PID could in theory be reused between the identity check and the signal; see [SECURITY.md](SECURITY.md).
 - **Leases and statistics live in memory.** A restarted `throtd` forgets `throt run` reservations and `throt stats` (paused work is recorded on disk and resumed).
 - **Platforms.** macOS and Linux only. On Linux, cgroup v1 and `cpuset` limits are not read, and there is no kernel memory verdict besides PSI.
@@ -441,7 +454,7 @@ Generic runtimes and build tools are refused, for example `agents.myagent: "node
 **Fix.**
 - Run `throt status` to see the pressure and slots. With `scheduler.mode` off only high pressure makes it wait.
 - Shorten the wait in the hook command, for example `throt hook claude-code --max-wait 30s` (keep it below the hook `timeout`), or set `--max-wait 0` to never wait.
-- Light invocations never wait: a first argument such as `-v`, `--version`, `version`, `-h`, `--help`, `help`, `-n` or `--dry-run`, and read-only subcommands such as `go env`, `go list`, `go mod`, `npm view`, `npm ls`, `cargo metadata` and `gradle tasks`. Other read-only subcommands still wait.
+- Light invocations never wait: a first argument such as `-v`, `--version`, `version`, `-h`, `--help`, `help`, `-n` or `--dry-run`, and read-only subcommands such as `go env`, `go list`, `go mod`, `npm view`, `npm ls`, `cargo metadata` and `gradle tasks` (or `./gradlew tasks`, `dependencies`, `--stop`, `--status`). Other read-only subcommands still wait, and so do Docker image builds; other `docker` commands, `docker compose up` included, never wait.
 
 ## Roadmap
 
