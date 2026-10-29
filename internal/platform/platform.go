@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/cfcromn/Throt/internal/domain"
 )
@@ -20,6 +21,15 @@ type HostSampler interface {
 	// listed in HostSample.Missing; an error is returned only when no metric
 	// could be read at all.
 	SampleHost(ctx context.Context) (domain.HostSample, error)
+}
+
+// CloseHostSampler releases what s holds, if anything: on macOS the
+// iostat child that reads host CPU. Call it when done sampling.
+func CloseHostSampler(s HostSampler) error {
+	if c, ok := s.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
 }
 
 // metricCount is the number of sampled metrics a HostSample can carry (cpu,

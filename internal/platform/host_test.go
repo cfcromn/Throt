@@ -15,6 +15,7 @@ import (
 func sampleTwice(t *testing.T) (first, second domain.HostSample) {
 	t.Helper()
 	s := NewHostSampler()
+	t.Cleanup(func() { _ = CloseHostSampler(s) })
 	ctx := context.Background()
 	first, err := s.SampleHost(ctx)
 	if err != nil {

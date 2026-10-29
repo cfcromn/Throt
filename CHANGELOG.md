@@ -24,6 +24,7 @@ The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md
 - The `reason` attr of every `control_refused` event is now a stable code. Refusals throtd decides itself used to put a sentence there; they now use `start_mismatch`, `gone`, `peer_mismatch`, `unidentified`, `paused_member`, `needs_force`, `job_control` or `not_stopped` (or the controller's `not_heavy`, `foreign_uid`, `not_paused`). The sentence stays in the event message and the error the client sees.
 
 ### Fixed
+- macOS host CPU no longer reads low when many processes live shorter than one sample interval (a build starting short `java` processes showed 45% while the kernel counted about 90% busy). throtd reads it from the kernel's CPU tick counters through one `iostat -n 0 -w 1` child, and falls back to the sum of per-process CPU deltas while iostat has no fresh reading.
 - A heavy workload that exited but was not reaped yet (a zombie) no longer holds its slot until its parent reaps it.
 - A pause leaves out members someone else already stopped (a Ctrl-Z'd child inside a running build), so the later resume no longer continues a process Throt did not stop. A workload whose top process is already stopped is refused (`already_stopped`).
 - `throt run --timeout` now really runs the command anyway: it asks throtd for a lease past the limit (`acquire` with `overdue`, reason `overdue`), so in enforce mode the scheduler no longer queues the command right after it starts.

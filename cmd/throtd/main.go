@@ -139,7 +139,9 @@ func run(args []string) error {
 		go logGoroutines(ctx, log, every)
 	}
 	procs, ctl := platform.NewProcessTools()
-	d := app.NewDaemon(cfg, platform.NewHostSampler(), procs, ctl, log)
+	host := platform.NewHostSampler()
+	defer platform.CloseHostSampler(host) // stops the macOS iostat child
+	d := app.NewDaemon(cfg, host, procs, ctl, log)
 	d.SetConfigPath(o.configPath)
 
 	// SIGHUP re-reads the config; the outcome is an event either way.

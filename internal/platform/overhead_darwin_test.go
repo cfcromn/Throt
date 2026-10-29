@@ -122,6 +122,7 @@ func overheadOnce(t *testing.T, run, interval time.Duration) (late []time.Durati
 	cpu0 := rusageCPU(t, syscall.RUSAGE_SELF) + rusageCPU(t, syscall.RUSAGE_CHILDREN)
 	if interval > 0 {
 		host, procs := NewHostSampler(), NewProcessSampler()
+		defer func() { _ = CloseHostSampler(host) }()
 		tk := time.NewTicker(interval)
 		defer tk.Stop()
 	loop:

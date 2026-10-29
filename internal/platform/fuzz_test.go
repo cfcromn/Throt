@@ -246,3 +246,24 @@ func FuzzParseBootTime(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseIostatLine(f *testing.F) {
+	for _, s := range []string{
+		"      cpu    load average", " us sy id   1m   5m   15m", " 13  9 77  23.58 14.72 9.95",
+		" 65 22 13  24.57 15.07 10.10", "100 0 0 0 0 0", " 50 50 50 1 1 1", "-1 1 100 1 1 1", "+5 5 90 1 1 1",
+		"1 2 97 inf 1 1", "1 2 97 1e3 1 1", "1 2 97 . 1 1", "\x00", "",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		busy, header, err := parseIostatLine(s)
+		switch {
+		case err != nil || header:
+			if busy != 0 || (err != nil && header) {
+				t.Errorf("parseIostatLine(%q) = %v, %v, %v", s, busy, header, err)
+			}
+		case math.IsNaN(busy) || busy < 0 || busy > 1:
+			t.Errorf("parseIostatLine(%q) busy = %v, want 0..1", s, busy)
+		}
+	})
+}
