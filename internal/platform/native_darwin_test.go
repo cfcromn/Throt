@@ -128,7 +128,11 @@ func TestKernelCollectorMatchesPS(t *testing.T) {
 		}
 	}
 	b, a := index(before), index(after)
-	const cpuSlack = 10 * time.Millisecond // ps prints hundredths
+	// ps prints hundredths, and on Apple silicon its total runs 10–20 ms
+	// ahead of proc_info for some processes (seen in CI). Rates are deltas,
+	// so the offset only shows when a sample falls back to ps: a one-off
+	// 20 ms over a 2 s interval, under 1% of a core.
+	const cpuSlack = 50 * time.Millisecond
 	var compared, measured, rssOff int
 	for pid, pb := range b {
 		pa, ok := a[pid]
