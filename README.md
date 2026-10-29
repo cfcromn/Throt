@@ -351,7 +351,7 @@ The scheduler stays off by default. In the benchmarks it pays off when builds to
 ## Known limitations
 
 - **Attribution is by executable name and ancestry.** An agent started as `node script.js` or `python3 -m …` is not recognized; give it a wrapper with its own name and a [custom rule](#an-agent-is-not-detected). Names are not authenticated: any program called `claude` counts as one.
-- **Heavy work is recognized by name too.** `npm`, `pnpm`, `yarn` and `bun` count only while busy, but long-lived processes with a build tool's name (a Gradle daemon, `next dev`, `vite`) hold a heavy slot for as long as they run.
+- **Heavy work is recognized by name too.** `npm`, `pnpm`, `yarn`, `bun`, `java` and `dotnet` count only while busy, but other long-lived processes with a build tool's name (`next dev`, `vite`) hold a heavy slot for as long as they run.
 - **Throt acts on processes that already exist.** A burst of new builds runs for up to one sample interval (2 s by default) before the extra ones are paused, and a process shorter than one interval is never seen.
 - **Pausing does not free memory.** A paused build keeps what it allocated; the kernel can swap it out, but in a container with little or no swap a job paused right after it started can still be OOM-killed.
 - **Signals are verified, then sent.** On macOS and on Linux without pidfd, a PID could in theory be reused between the identity check and the signal; see [SECURITY.md](SECURITY.md).

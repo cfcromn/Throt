@@ -141,12 +141,13 @@ type proc struct {
 	activeAt time.Time
 }
 
-// A launcher (agent.Launcher: npm, pnpm, yarn, bun) is heavy only while its
-// subtree, itself included, uses at least launcherCPU cores or
-// launcherRSS bytes, and for launcherHold after that, so a build pausing
+// A launcher (agent.Launcher: npm, pnpm, yarn, bun, java, dotnet) is heavy
+// only while its subtree, itself included, uses at least launcherCPU cores
+// or launcherRSS bytes, and for launcherHold after that, so a build pausing
 // for I/O is not dropped and rediscovered. A stopped launcher that was heavy
 // stays heavy: a queued build uses no CPU. An idle one, such as an MCP
-// server under npm exec, never takes a heavy slot.
+// server under npm exec or a Gradle daemon between builds, never takes a
+// heavy slot.
 const (
 	launcherCPU  = 0.5
 	launcherRSS  = 512 << 20

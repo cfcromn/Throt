@@ -469,6 +469,12 @@ func TestCustomAdaptersAndOrder(t *testing.T) {
 // one is, it stays heavy for launcherHold after going idle and while
 // stopped, and is dropped after that.
 func TestLauncherHeavyOnlyWhileActive(t *testing.T) {
+	for _, name := range []string{"npm", "java"} {
+		t.Run(name, func(t *testing.T) { testLauncher(t, name) })
+	}
+}
+
+func testLauncher(t *testing.T, name string) {
 	heavy := func(g *Graph) []int {
 		var out []int
 		for _, h := range g.Snapshot().Heavy {
@@ -478,9 +484,9 @@ func TestLauncherHeavyOnlyWhileActive(t *testing.T) {
 	}
 	g := newGraph()
 	agentP := ps{pid: 10, ppid: 1, name: "claude"}
-	idle := ps{pid: 20, ppid: 10, name: "npm", rss: 7}
+	idle := ps{pid: 20, ppid: 10, name: name, rss: 7}
 	idleNode := ps{pid: 21, ppid: 20, name: "node", rss: 60}
-	build := ps{pid: 30, ppid: 10, name: "npm", rss: 50}
+	build := ps{pid: 30, ppid: 10, name: name, rss: 50}
 	node := ps{pid: 31, ppid: 30, name: "node", rss: 300}
 	g.Update(epoch, samples([]ps{agentP, idle, idleNode, build, node}))
 	if got := heavy(g); len(got) != 0 {

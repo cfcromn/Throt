@@ -27,7 +27,7 @@ The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md
 - A heavy workload that exited but was not reaped yet (a zombie) no longer holds its slot until its parent reaps it.
 - A pause leaves out members someone else already stopped (a Ctrl-Z'd child inside a running build), so the later resume no longer continues a process Throt did not stop. A workload whose top process is already stopped is refused (`already_stopped`).
 - `throt run --timeout` now really runs the command anyway: it asks throtd for a lease past the limit (`acquire` with `overdue`, reason `overdue`), so in enforce mode the scheduler no longer queues the command right after it starts.
-- Idle `npm`, `pnpm`, `yarn` and `bun` processes, such as an MCP server under `npm exec` in every agent session, are no longer heavy workloads; in enforce mode they took every slot. A launcher is heavy only while its subtree uses at least half a core or 512 MiB, and for a minute after.
+- Idle `npm`, `pnpm`, `yarn`, `bun`, `java` and `dotnet` processes, such as an MCP server under `npm exec` in every agent session or a Gradle daemon between builds, are no longer heavy workloads; in enforce mode they took every slot. A launcher is heavy only while its subtree uses at least half a core or 512 MiB, and for a minute after.
 - Work the scheduler queued no longer stays stopped while process sampling keeps failing (on macOS, `ps` failing to fork under memory pressure): no scheduler round runs then, so after `max_queue_wait` of failed samples throtd resumes it (reason `processes_unavailable`).
 
 ### Security
