@@ -360,7 +360,7 @@ func (m *Model) applyPoll(r pollMsg) {
 			m.addEvents(r.events)
 		}
 		if r.status.Host != nil {
-			m.hist.add(*r.status.Host)
+			m.hist.add(*r.status.Host, r.status.Pressure)
 		}
 	}
 	m.resort()

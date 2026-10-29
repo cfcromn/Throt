@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/cfcromn/Throt/internal/app"
 	"github.com/cfcromn/Throt/internal/control"
 	"github.com/cfcromn/Throt/internal/domain"
@@ -15,7 +17,7 @@ import (
 // lineWith returns the first screen line starting with prefix.
 func lineWith(t *testing.T, out, prefix string) string {
 	t.Helper()
-	for _, l := range strings.Split(out, "\n") {
+	for _, l := range strings.Split(cells(out), "\n") {
 		if strings.HasPrefix(l, prefix) {
 			return l
 		}
@@ -64,7 +66,8 @@ func pollHosts(t *testing.T, m Model, c *fakeClient, hosts ...domain.HostSample)
 
 func TestSparklinesInView(t *testing.T) {
 	c := &fakeClient{status: sampleStatus(1, 0)}
-	m := newModel(t, c, 120, 40)
+	// One column: the SYSTEM panel's bars carry the sparklines.
+	m := newModel(t, c, 70, 40)
 	m.hist = history{} // drop newModel's sample so the input is exact
 	base := *sampleStatus(0, 0).Host
 	h := func(cpu float64, swap uint64, lat time.Duration) domain.HostSample {
@@ -83,8 +86,18 @@ func TestSparklinesInView(t *testing.T) {
 	assertContains(t, lineWith(t, out, "CPU "), "100%  "+strings.Repeat(" ", 7)+"▁▅█  load 0.85/cpu")
 	assertContains(t, lineWith(t, out, "MEM "), "75%  "+strings.Repeat(" ", 7)+"▆▆▆  12.0 GiB")
 	assertContains(t, lineWith(t, out, "SWAP "), "25%  "+strings.Repeat(" ", 8)+"█▁  1.0 GiB / 4.0 GiB")
-	assertContains(t, lineWith(t, out, "SYSTEM"), "latency 40ms ▃▅█")
-	assertFits(t, out, 120, 40)
+	assertContains(t, lineWith(t, out, "pressure"), "latency 40ms ▃▅█")
+	assertFits(t, out, 70, 40)
+
+	// On the dashboard each stat panel ends with its sparkline, as wide
+	// as the panel.
+	wide := view(update(t, m, tea.WindowSizeMsg{Width: 200, Height: 50}))
+	for title, want := range map[string]string{"CPU": "▁▅█", "LATENCY": "▃▅█", "PRESSURE": "▅▅▅"} {
+		body := panelBody(t, wide, title)
+		if last := strings.TrimRight(body[len(body)-1], " "); !strings.HasSuffix(last, want) {
+			t.Errorf("%s sparkline = %q, want it to end %q", title, last, want)
+		}
+	}
 
 	// A missing metric leaves a gap in its line.
 	gap := h(0, 1<<30, 0)
@@ -160,15 +173,18 @@ func TestExplainReason(t *testing.T) {
 func TestReasonLine(t *testing.T) {
 	st := sampleStatus(1, 0)
 	st.Reason = "memory_used>=0.9"
-	m := newModel(t, &fakeClient{status: st}, 80, 24)
-	if lines := strings.Split(view(m), "\n"); lines[1] != "  why: memory 90%+ used  (memory_used>=0.9)" {
-		t.Errorf("line under SYSTEM = %q", lines[1])
+	m := newModel(t, &fakeClient{status: st}, 70, 24)
+	if line := panelBody(t, view(m), "SYSTEM")[1]; line != "why: memory 90%+ used  (memory_used>=0.9)" {
+		t.Errorf("line under the pressure = %q", line)
 	}
 	// At 40 columns the raw code gives way.
-	m = newModel(t, &fakeClient{status: st}, 40, 12)
-	if lines := strings.Split(view(m), "\n"); lines[1] != "  why: memory 90%+ used" {
-		t.Errorf("narrow line under SYSTEM = %q", lines[1])
+	m = newModel(t, &fakeClient{status: st}, 40, 24)
+	if line := panelBody(t, view(m), "SYSTEM")[1]; line != "why: memory 90%+ used" {
+		t.Errorf("narrow line under the pressure = %q", line)
 	}
+	// The dashboard says why in the PRESSURE panel.
+	m = newModel(t, &fakeClient{status: st}, 120, 30)
+	assertContains(t, strings.Join(panelBody(t, view(m), "PRESSURE"), " "), "why: memory 90%+")
 	st.Reason = ""
 	m = newModel(t, &fakeClient{status: st}, 80, 24)
 	if strings.Contains(view(m), "why:") {
@@ -188,15 +204,15 @@ func drillStatus() app.StatusResult {
 
 func TestDrilldown(t *testing.T) {
 	c := &fakeClient{status: drillStatus(), events: sampleEvents()}
-	m := press(t, newModel(t, c, 60, 20), "enter")
+	m := press(t, newModel(t, c, 60, 24), "enter")
 	if !m.drill {
 		t.Fatal("enter on the agents pane did not open the drilldown")
 	}
 	out := view(m)
-	assertFits(t, out, 60, 20)
+	assertFits(t, out, 60, 24)
 	assertContains(t, out, "AGENT claude-1", "pid 1000", "cpu 50%", "mem 1.0 GiB", "children 0",
 		"HEAVY WORKLOADS (3)", "QUEUED", "PAUSED", "running", "esc back")
-	for _, gone := range []string{"2003", "cargo", "TIMELINE", "AGENTS"} {
+	for _, gone := range []string{"2003", "cargo", "EVENTS", "AGENTS"} {
 		if strings.Contains(out, gone) {
 			t.Errorf("drilldown shows %q:\n%s", gone, out)
 		}
@@ -231,7 +247,7 @@ func TestDrilldown(t *testing.T) {
 		t.Fatal("esc did not close the drilldown")
 	}
 	out = view(m)
-	assertContains(t, out, "AGENTS (2)", "HEAVY WORKLOADS (4)", "TIMELINE")
+	assertContains(t, out, "AGENTS (2)", "HEAVY WORKLOADS (4)", "EVENTS")
 	assertContains(t, selectedLine(t, out), "claude-1")
 
 	// The second agent sees only its own workload.
@@ -267,11 +283,7 @@ func TestDrilldownNeedsAgent(t *testing.T) {
 // headerLine returns the column header of the table titled title.
 func headerLine(t *testing.T, out, title string) string {
 	t.Helper()
-	i := strings.Index(out, title)
-	if i < 0 {
-		t.Fatalf("no %q table:\n%s", title, out)
-	}
-	return strings.Split(out[i:], "\n")[1]
+	return panelBody(t, out, title)[0]
 }
 
 func TestSortCycling(t *testing.T) {
@@ -371,11 +383,12 @@ func TestNarrowDropOrder(t *testing.T) {
 		width, sparkCells int
 		raw               bool
 	}{
-		{120, maxSparkWidth, true},
-		{60, maxSparkWidth, true},
-		{55, 8, true},
-		{53, minSparkWidth, true},
-		{52, 0, true},
+		// One-column widths; the SYSTEM panel's border takes 4.
+		{79, maxSparkWidth, true},
+		{64, maxSparkWidth, true},
+		{59, 8, true},
+		{57, minSparkWidth, true},
+		{56, 0, true},
 		{40, 0, false},
 	} {
 		c := &fakeClient{status: st}

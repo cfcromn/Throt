@@ -8,8 +8,9 @@ import (
 	"github.com/cfcromn/Throt/internal/domain"
 )
 
-// historyLen bounds the client-side metric history: one sample per poll.
-const historyLen = 60
+// historyLen bounds the client-side metric history: one sample per poll,
+// five minutes of them, for the time-series charts.
+const historyLen = 300
 
 // histSample is what the TUI remembers of one poll's host sample.
 type histSample struct {
@@ -19,8 +20,12 @@ type histSample struct {
 	swapRate float64
 	latency  time.Duration
 	swapUsed uint64
+	// swapFrac is the share of swap in use.
+	swapFrac float64
+	// level is the pressure level throtd reported with the sample.
+	level domain.PressureLevel
 
-	hasCPU, hasMem, hasSwap, hasSwapRate, hasLatency bool
+	hasCPU, hasMem, hasSwap, hasSwapFrac, hasSwapRate, hasLatency bool
 }
 
 // history is a fixed-size ring of the newest historyLen samples. It is a
@@ -31,15 +36,19 @@ type history struct {
 	n    int // samples held, at most historyLen
 }
 
-// add records h, deriving swap growth from the previous sample. A poll that
-// returns the same host sample again keeps the previous growth rate.
-func (r *history) add(h domain.HostSample) {
-	s := histSample{t: h.Time, latency: h.Latency}
+// add records h and the pressure level reported with it, deriving swap
+// growth from the previous sample. A poll that returns the same host sample
+// again keeps the previous growth rate.
+func (r *history) add(h domain.HostSample, level domain.PressureLevel) {
+	s := histSample{t: h.Time, latency: h.Latency, level: level}
 	s.cpu, s.hasCPU = h.CPUUsage, h.Has(domain.MetricCPU)
 	if h.Has(domain.MetricMemory) && h.MemTotal > 0 {
 		s.mem, s.hasMem = ratio(h.MemTotal-min(h.MemAvailable, h.MemTotal), h.MemTotal), true
 	}
 	s.swapUsed, s.hasSwap = h.SwapUsed, h.Has(domain.MetricSwap)
+	if s.hasSwap && h.SwapTotal > 0 {
+		s.swapFrac, s.hasSwapFrac = ratio(h.SwapUsed, h.SwapTotal), true
+	}
 	s.hasLatency = h.Has(domain.MetricLatency)
 	if prev, ok := r.last(); ok && prev.hasSwap && s.hasSwap {
 		switch dt := s.t.Sub(prev.t).Seconds(); {
@@ -117,6 +126,10 @@ func sparkline(vals []float64, ok []bool, scale, floor float64, width int) strin
 func cpuOf(s histSample) (float64, bool)  { return s.cpu, s.hasCPU }
 func memOf(s histSample) (float64, bool)  { return s.mem, s.hasMem }
 func swapOf(s histSample) (float64, bool) { return s.swapRate, s.hasSwapRate }
+func swapUsedOf(s histSample) (float64, bool) {
+	return s.swapFrac, s.hasSwapFrac
+}
+func levelOf(s histSample) (float64, bool) { return float64(s.level), true }
 func latencyOf(s histSample) (float64, bool) {
 	return float64(s.latency), s.hasLatency
 }

@@ -119,11 +119,15 @@ func checkFacts(t *testing.T, name, out string, w int) {
 	case "connecting":
 		assertContains(t, out, "connecting to throtd")
 	case "empty":
-		assertContains(t, out, "pressure UNKNOWN")
+		assertContains(t, out, "UNKNOWN")
 	case "observe":
-		assertContains(t, out, "pressure CRITICAL", "observe", "limit 3 (adaptive, start 2, max 8)", "1 would queue")
+		assertContains(t, strings.ToLower(cells(out)), "critical", "observe", "limit 3 (", "1 would queue")
 	default:
-		assertContains(t, out, "pressure CRITICAL", "limit 3 (adaptive, start 2, max 8)", "1 queued")
+		// A narrow SCHEDULER panel shortens the adaptive range to (2–8).
+		assertContains(t, cells(out), "CRITICAL", "limit 3 (", "1 queued")
+	}
+	if strings.Contains(out, "╭") && !strings.Contains(out, "PRESSURE") && !strings.Contains(out, "SYSTEM") {
+		t.Errorf("bordered screen without a PRESSURE or SYSTEM panel:\n%s", out)
 	}
 	if name == "confirm" {
 		// The question is the one thing to answer; it must be whole.
@@ -166,8 +170,8 @@ func TestObserveState(t *testing.T) {
 	if l := lineContaining(t, out, "2001"); !strings.Contains(l, "running (would queue)") {
 		t.Errorf("would-queue row = %q", l)
 	}
-	if l := lineWith(t, out, "SCHEDULER"); !strings.Contains(l, "observe, limit 1, 1 would queue") {
-		t.Errorf("observe scheduler line = %q", l)
+	if b := strings.Join(panelBody(t, out, "SCHEDULER"), "\n"); !strings.Contains(b, "OBSERVE\nlimit 1 · 1 would queue") {
+		t.Errorf("observe scheduler panel = %q", b)
 	}
 	d := view(press(t, m, "enter"))
 	if l := lineContaining(t, d, "2001"); !strings.Contains(l, "running (would queue)") {
@@ -237,9 +241,9 @@ var helpKeys = []struct {
 func TestHelpListsRealKeys(t *testing.T) {
 	c := &fakeClient{status: sampleStatus(3, 3), events: sampleEvents()}
 	base := newModel(t, c, 140, 50)
-	help := view(press(t, base, "?"))
+	help := "\n" + cells(view(press(t, base, "?")))
 	for _, k := range helpKeys {
-		if !strings.Contains(help, "  "+k.help+" ") {
+		if !strings.Contains(help, "\n"+k.help+" ") {
 			t.Errorf("help does not list %q:\n%s", k.help, help)
 		}
 	}

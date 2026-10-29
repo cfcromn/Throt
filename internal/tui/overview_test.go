@@ -86,9 +86,25 @@ func TestOverviewUnderMemoryPressure(t *testing.T) {
 	out := view(m)
 	t.Logf("120x40:\n%s", out)
 	assertFits(t, out, 120, 40)
+	assertContains(t, strings.Join(panelBody(t, out, "PRESSURE"), " "), "ELEVATED", "why: kernel memory pressure warning")
+	// Who is eating memory: one bar per owner, agents (●) and outside
+	// groups (○) together, largest first, then what did not fit.
+	gauge := panelBody(t, out, "MEMORY BY OWNER")
+	for i, want := range []string{
+		"● agents 9.0 GiB  ○ outside 10.1 GiB",
+		"○ com.apple.Virtual… ██████  4.2 GiB",
+		"○ Google Chrome Hel… ███▋░░  2.5 GiB",
+		"● codex-1            ███▎░░  2.2 GiB",
+		"● codex-2            █▌░░░░  1.1 GiB",
+	} {
+		if gauge[i] != want {
+			t.Errorf("gauge row %d = %q, want %q", i, gauge[i], want)
+		}
+	}
+	if last := gauge[len(gauge)-1]; last != "+44 agents 4.4 GiB · ○ other 1.2 GiB" {
+		t.Errorf("gauge summary = %q", last)
+	}
 	assertContains(t, out,
-		"why: kernel memory pressure warning",
-		"OUTSIDE AGENTS  10.1 GiB: com.apple.Virtualizatio… 4.2 GiB, Google Chrome Helper (R… ×31 2.5 GiB, WindowServer 1.1 GiB",
 		"AGENTS (53)  total 339% CPU, 9.0 GiB",
 		"MEM▼",
 		"+44 more (each ≤3% CPU, ≤112 MiB; 87% CPU, 4.4 GiB together)",

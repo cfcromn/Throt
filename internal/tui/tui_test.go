@@ -185,14 +185,15 @@ func TestRenderWide(t *testing.T) {
 	m := newModel(t, c, 120, 40)
 	out := view(m)
 	assertFits(t, out, 120, 40)
+	assertContains(t, strings.Join(panelBody(t, out, "PRESSURE"), " "), "HIGH", "memory used 0.91 >= 0.90")
 	assertContains(t, out,
-		"SYSTEM", "pressure HIGH", "memory used 0.91 >= 0.90",
 		"CPU", "74%", "load 0.85/cpu",
-		"MEM", "75%", "12.0 GiB / 16.0 GiB",
-		"SWAP", "25%", "1.0 GiB / 4.0 GiB",
+		"MEMORY", "75%", "12.0/16.0 GiB",
+		"SWAP", "25%", "1.0/4.0 GiB",
+		"CPU % · last 5m", "MEMORY % · last 5m", "SWAP % · last 5m", "100%┤",
 		"AGENTS (3)", "AGENT", "PID", "CHILDREN", "claude-1", "1000",
 		"HEAVY WORKLOADS (2)", "OWNER", "PROCESS", "CLASS", "gradle", "build", "200%",
-		"TIMELINE", "09:31:06", "pressure normal -> high",
+		"EVENTS", "09:31:06", "pressure normal -> high",
 		"q quit",
 	)
 	// Newest event first.
@@ -266,7 +267,7 @@ func TestDaemonDownThenRecovers(t *testing.T) {
 	if strings.Contains(out, "cannot reach") {
 		t.Errorf("banner still shown after recovery:\n%s", out)
 	}
-	assertContains(t, out, "pressure HIGH", "claude-1")
+	assertContains(t, out, "HIGH", "claude-1")
 
 	// Going down again clears the data instead of showing it as current.
 	c.err = errors.New("connection refused")
@@ -294,20 +295,27 @@ func TestMissingMetricsShowNA(t *testing.T) {
 	st := sampleStatus(1, 0)
 	st.Host.Missing = []domain.Metric{domain.MetricCPU, domain.MetricLoad, domain.MetricSwap}
 	st.Pressure = domain.PressureUnknown
-	m := newModel(t, &fakeClient{status: st}, 80, 24)
+	m := newModel(t, &fakeClient{status: st}, 70, 24)
 	out := view(m)
 	for _, label := range []string{"CPU", "SWAP"} {
-		if !regexp.MustCompile(`(?m)^` + label + `\s+n/a$`).MatchString(out) {
+		if !regexp.MustCompile(`(?m)^` + label + `\s+n/a$`).MatchString(cells(out)) {
 			t.Errorf("%s not shown as n/a:\n%s", label, out)
 		}
 	}
 	assertContains(t, out, "12.0 GiB / 16.0 GiB", "pressure UNKNOWN")
+	grid := view(update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30}))
+	for _, title := range []string{"CPU", "SWAP"} {
+		if v := panelBody(t, grid, title)[0]; v != "n/a" {
+			t.Errorf("%s panel value = %q, want n/a", title, v)
+		}
+	}
+	assertContains(t, grid, "UNKNOWN", "12.0/16.0 GiB")
 	if regexp.MustCompile(`load [0-9]`).MatchString(out) {
 		t.Errorf("missing load rendered:\n%s", out)
 	}
 
 	st.Host = nil // no sample yet
-	m = newModel(t, &fakeClient{status: st}, 80, 24)
+	m = newModel(t, &fakeClient{status: st}, 70, 24)
 	if n := strings.Count(view(m), "n/a"); n != 3 {
 		t.Errorf("no host sample: %d n/a metrics, want 3", n)
 	}
@@ -315,26 +323,28 @@ func TestMissingMetricsShowNA(t *testing.T) {
 
 func TestKernelMemoryPressureShown(t *testing.T) {
 	st := sampleStatus(1, 0)
-	m := newModel(t, &fakeClient{status: st}, 100, 24)
+	m := newModel(t, &fakeClient{status: st}, 79, 24)
 	if out := view(m); strings.Contains(out, "kernel:") {
 		t.Errorf("kernel verdict shown without one:\n%s", out)
 	}
 
 	st.Host.MemoryPressure = domain.MemoryPressureWarning
-	m = newModel(t, &fakeClient{status: st}, 100, 24)
+	m = newModel(t, &fakeClient{status: st}, 79, 24)
 	out := view(m)
-	if !regexp.MustCompile(`(?m)^MEM .*12\.0 GiB / 16\.0 GiB  kernel: warning`).MatchString(out) {
+	if !regexp.MustCompile(`(?m)^MEM .*12\.0 GiB / 16\.0 GiB  kernel: warning`).MatchString(cells(out)) {
 		t.Errorf("kernel verdict not on the MEM line:\n%s", out)
 	}
+	grid := view(update(t, m, tea.WindowSizeMsg{Width: 160, Height: 30}))
+	assertContains(t, strings.Join(panelBody(t, grid, "MEMORY"), "\n"), "\nkernel: warning")
 
 	st.Host.Missing = []domain.Metric{domain.MetricMemory}
-	m = newModel(t, &fakeClient{status: st}, 100, 24)
-	if out := view(m); !regexp.MustCompile(`(?m)^MEM\s+n/a  kernel: warning$`).MatchString(out) {
+	m = newModel(t, &fakeClient{status: st}, 70, 24)
+	if out := view(m); !regexp.MustCompile(`(?m)^MEM\s+n/a  kernel: warning$`).MatchString(cells(out)) {
 		t.Errorf("kernel verdict not shown with memory missing:\n%s", out)
 	}
 
 	st.Host.Missing = []domain.Metric{domain.MetricMemoryPressure}
-	m = newModel(t, &fakeClient{status: st}, 100, 24)
+	m = newModel(t, &fakeClient{status: st}, 70, 24)
 	if out := view(m); strings.Contains(out, "kernel:") {
 		t.Errorf("kernel verdict shown while missing:\n%s", out)
 	}
@@ -349,14 +359,16 @@ func TestPSIShown(t *testing.T) {
 
 	st.Host.MemoryStall = &domain.Stall{Some: 0.031, Full: 0.01}
 	st.Host.IOStall = &domain.Stall{Some: 0, Full: 0}
-	m = newModel(t, &fakeClient{status: st}, 120, 24)
-	if out := view(m); !regexp.MustCompile(`(?m)^SYSTEM .*pressure .*  PSI mem 3% io 0%( |$)`).MatchString(out) {
-		t.Errorf("PSI not on the SYSTEM line:\n%s", out)
+	m = newModel(t, &fakeClient{status: st}, 70, 24)
+	if out := view(m); !regexp.MustCompile(`(?m)^pressure .*  PSI mem 3% io 0%( |$)`).MatchString(cells(out)) {
+		t.Errorf("PSI not on the pressure line:\n%s", out)
 	}
+	grid := view(update(t, m, tea.WindowSizeMsg{Width: 160, Height: 30}))
+	assertContains(t, strings.Join(panelBody(t, grid, "PRESSURE"), "\n"), "\nPSI mem 3% io 0%")
 
 	st.Host.CPUStall = &domain.Stall{Some: 0.6}
 	st.Host.Missing = []domain.Metric{domain.MetricIOStall}
-	m = newModel(t, &fakeClient{status: st}, 120, 24)
+	m = newModel(t, &fakeClient{status: st}, 70, 24)
 	if out := view(m); !strings.Contains(out, "PSI mem 3% cpu 60%") {
 		t.Errorf("missing io stall rendered or cpu stall absent:\n%s", out)
 	}
@@ -364,13 +376,90 @@ func TestPSIShown(t *testing.T) {
 
 func selectedLine(t *testing.T, out string) string {
 	t.Helper()
-	for _, l := range strings.Split(out, "\n") {
+	for _, l := range strings.Split(cells(out), "\n") {
 		if strings.HasPrefix(l, "> ") {
 			return l
 		}
 	}
 	t.Fatalf("no selected row:\n%s", out)
 	return ""
+}
+
+// titleRE matches a panel title in a top border.
+var titleRE = regexp.MustCompile(`[╭┏][─━] (.*?) [─━]+[╮┓]`)
+
+// cells returns the screen as panel contents, one line per panel title and
+// per panel row, borders and padding removed, so tests match text without
+// depending on the grid. Panels side by side give a line each, left first.
+func cells(out string) string {
+	var b []string
+	for _, l := range strings.Split(out, "\n") {
+		for _, seg := range strings.FieldsFunc(l, func(r rune) bool { return r == '│' || r == '┃' }) {
+			switch {
+			case strings.ContainsAny(seg, "╭┏"):
+				for _, m := range titleRE.FindAllStringSubmatch(seg, -1) {
+					b = append(b, m[1])
+				}
+			case strings.ContainsAny(seg, "╰┗"):
+			default:
+				if s := strings.TrimRight(strings.TrimPrefix(seg, " "), " "); s != "" {
+					b = append(b, s)
+				}
+			}
+		}
+	}
+	return strings.Join(b, "\n")
+}
+
+// panelBody returns the rows of the panel whose title contains title,
+// borders and padding removed. A bare panel's rows run to the next blank
+// line.
+func panelBody(t *testing.T, out, title string) []string {
+	t.Helper()
+	lines := strings.Split(out, "\n")
+	for i, l := range lines {
+		j := strings.Index(l, title)
+		if j < 0 {
+			continue
+		}
+		var body []string
+		if !strings.ContainsAny(l, "╭┏") {
+			for _, b := range lines[i+1:] {
+				if strings.TrimSpace(b) == "" {
+					break
+				}
+				body = append(body, b)
+			}
+			return body
+		}
+		col := lipgloss.Width(l[:j])
+		for _, b := range lines[i+1:] {
+			seg, ok := segmentAt(b, col)
+			if !ok || strings.ContainsAny(seg, "╰┗") {
+				break
+			}
+			body = append(body, strings.TrimRight(strings.TrimPrefix(seg, " "), " "))
+		}
+		return body
+	}
+	t.Fatalf("no panel %q:\n%s", title, out)
+	return nil
+}
+
+// segmentAt returns the text between the vertical borders around display
+// column col of line; ok is false when no border follows col.
+func segmentAt(line string, col int) (string, bool) {
+	c, start := 0, 0
+	for i, r := range line {
+		if r == '│' || r == '┃' {
+			if c > col {
+				return line[start:i], true
+			}
+			start = i + len(string(r))
+		}
+		c += lipgloss.Width(string(r))
+	}
+	return "", false
 }
 
 func TestSelectionAndScrolling(t *testing.T) {

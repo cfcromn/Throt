@@ -15,7 +15,18 @@ import (
 type styles struct {
 	title, header, selected, banner, degraded, footer lipgloss.Style
 	pressure                                          [domain.PressureCritical + 1]lipgloss.Style
-	event                                             [eventClassCount]lipgloss.Style
+	// badge is a pressure level as a filled label; levelBorder the border
+	// of the PRESSURE panel at that level.
+	badge, levelBorder [domain.PressureCritical + 1]lipgloss.Style
+	// Dashboard panels: border and panelTitle in the accent color,
+	// focusBorder for the focused panel.
+	border, focusBorder, panelTitle lipgloss.Style
+	// ok, warn and bad color a value by threshold.
+	ok, warn, bad lipgloss.Style
+	// agentBar and outsideBar fill the MEMORY BY OWNER bars; track is
+	// their unfilled part and axis a chart's scale.
+	agentBar, outsideBar, track, axis lipgloss.Style
+	event                             [eventClassCount]lipgloss.Style
 	// splash colors the wordmark's rows, top to bottom; splashShadow its
 	// shadow layer.
 	splash       [wordmarkHeight]lipgloss.Style
@@ -73,6 +84,23 @@ func newStyles(colored, dark bool) styles {
 		s.splash[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(h))
 	}
 	s.splashShadow = lipgloss.NewStyle().Foreground(lipgloss.Color(shadow))
+	// The accent is the splash's sky blue, deeper on light backgrounds.
+	accent := c("#1C70B0", "#4FB3E8")
+	s.border = lipgloss.NewStyle().Foreground(accent)
+	s.focusBorder = lipgloss.NewStyle().Bold(true).Foreground(c("#0B4F86", "#AFE3FB"))
+	s.panelTitle = lipgloss.NewStyle().Bold(true).Foreground(accent)
+	s.ok = lipgloss.NewStyle().Bold(true).Foreground(green)
+	s.warn = lipgloss.NewStyle().Bold(true).Foreground(yellow)
+	s.bad = lipgloss.NewStyle().Bold(true).Foreground(red)
+	s.agentBar = lipgloss.NewStyle().Foreground(accent)
+	s.outsideBar = lipgloss.NewStyle().Foreground(c("97", "141"))
+	s.track = lipgloss.NewStyle().Foreground(c("252", "238"))
+	s.axis = lipgloss.NewStyle().Faint(true)
+	ink := c("231", "16") // text on a filled badge
+	for i, col := range [...]color.Color{grey, green, yellow, orange, red} {
+		s.badge[i] = lipgloss.NewStyle().Bold(true).Foreground(ink).Background(col)
+		s.levelBorder[i] = lipgloss.NewStyle().Foreground(col)
+	}
 	s.event = [...]lipgloss.Style{
 		eventOther:     {},
 		eventControl:   lipgloss.NewStyle().Foreground(c("25", "12")),

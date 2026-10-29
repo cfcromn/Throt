@@ -194,33 +194,43 @@ Shell completion: add `source <(throt completion zsh)` (or `bash`) to your shell
 
 ```text
 $ throt
-SYSTEM  pressure ELEVATED  latency 6ms ▁▁▂▁▃▂▁▁▂▃
-  why: kernel memory pressure warning  (kernel_memory_pressure>=warning)
-CPU   █████████░░░░░░░░░░░   46%  ▃▄▄▅▆▅▄▄▅▄  load 0.62/cpu
-MEM   ██████████████████░░   88%  ▆▆▇▇▇▇▇▇▇▇  21.0 GiB / 24.0 GiB  kernel: warning
-SWAP  █████████████████░░░   87%  ▁▁▂▅█▃▁▁▁▁  10.4 GiB / 12.0 GiB
-OUTSIDE AGENTS  10.1 GiB: com.apple.Virtualizatio… 4.2 GiB, Google Chrome Helper (R… ×31 2.5 GiB
-▸ AGENTS (53)  total 339% CPU, 9.0 GiB
-  AGENT        PID   CPU     MEM▼  CHILDREN
-> codex-1    41350  190%  2.2 GiB        14
-  codex-2    41357   42%  1.1 GiB         6
-  claude-5   41028    2%  112 MiB         2
-  +50 more (each ≤3% CPU, ≤112 MiB; 95% CPU, 5.0 GiB together)
-  HEAVY WORKLOADS (2)
-  OWNER      PID  PROCESS   CLASS   CPU     MEM▼  STATE
-  codex-1  52011  cargo     build  170%  1.8 GiB
-  codex-2  52230  vitest    test    35%  700 MiB
-TIMELINE
-  09:00:09         pressure normal -> elevated
-  09:00:02         53 agents started: claude-1, claude-2, claude-3, claude-4, …
-  09:00:00         throtd started
-
+╭─ PRESSURE ────────╮ ╭─ CPU ──────────╮ ╭─ MEMORY ──────╮ ╭─ SWAP ────────╮ ╭─ SCHEDULER ─────────╮
+│  ELEVATED         │ │ 31%            │ │ 88%           │ │ 91%           │ │ OBSERVE             │
+│ why: kernel memo… │ │ load 0.62/cpu  │ │ 21.1/24.0 GiB │ │ 16.4/18.0 GiB │ │ limit 3 (2–10)      │
+│ latency 6ms       │ │                │ │ kernel: warn… │ │ growth 4 MiB… │ │ 0 would queue       │
+│ ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃ │ │ ▃▄▄▅▅▅▆▆▆▆▅▅▅▅ │ │ ▇▇▇▇▇▇▇▇▇▇▇▇▇ │ │ █████████████ │ │ 0 reserved          │
+╰───────────────────╯ ╰────────────────╯ ╰───────────────╯ ╰───────────────╯ ╰─────────────────────╯
+╭─ CPU % · last 5m ─────────────╮ ╭─ MEMORY % · last 5m ──────────╮ ╭─ SWAP % · last 5m ───────────╮
+│ 100%┤                         │ │ 100%┤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣴⣶ │ │ 100%┤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ │
+│  50%┤⣶⣿  ⢰⣾⣇  ⣴⣾⡄ ⢠⣷⣶  ⣸⣷⡆  ⣿ │ │  50%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │ │  50%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+│   0%┤⣿⣿⣿⣰⣾⣿⣿⣧⣶⣿⣿⣿⣶⣾⣿⣿⣶⣼⣿⣿⣷⣆⣿⣿ │ │   0%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │ │   0%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
+╰───────────────────────────────╯ ╰───────────────────────────────╯ ╰──────────────────────────────╯
+╭─ MEMORY BY OWNER ────────────────╮ ┏━ ▸ AGENTS (53)  total 339% CPU, 9.0 GiB ━━━━━━━━━━━━━━━━━━━━┓
+│ ● agents 9.0 GiB  ○ outside 9.9… │ ┃   AGENT        PID   CPU     MEM▼  CHILDREN                 ┃
+│ ● codex-1        ██████  2.2 GiB │ ┃ > codex-1    41350  190%  2.2 GiB        14                 ┃
+│ ○ com.apple.Vir… █████▉  2.2 GiB │ ┃   codex-2    41357   42%  1.1 GiB         6                 ┃
+│ ● codex-2        ██▉░░░  1.1 GiB │ ┃   codex-3    41364    8%  640 MiB         3                 ┃
+│ ○ Browser ×19    ██░░░░  744 MiB │ ┃   claude-5   41028    2%  112 MiB         2                 ┃
+│ ○ Orca ×13       █▊░░░░  650 MiB │ ┃   claude-10  41063    1%  112 MiB         2                 ┃
+│ ● codex-3        █▋░░░░  640 MiB │ ┃   +48 more (each ≤3% CPU, ≤112 MiB; 96% CPU, 4.9 GiB toget… ┃
+│ ○ WindowServer   █▋░░░░  610 MiB │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+│ ○ Slack Helper … █▏░░░░  420 MiB │ ╭─ HEAVY WORKLOADS ───────────────────────────────────────────╮
+│ ● claude-5       ▎░░░░░  112 MiB │ │   OWNER  PID  PROCESS   CLASS   CPU  MEM▼  STATE            │
+│ +49 agents 5.0 GiB · ○ other 5.… │ │   (no heavy workloads)                                      │
+╰──────────────────────────────────╯ ╰─────────────────────────────────────────────────────────────╯
+╭─ EVENTS ─────────────────────────────────────────────────────────────────────────────────────────╮
+│ 09:00:09  SCHED  queued gradle (pid 2)                                                           │
+│ 09:00:09  SCHED  queued gradle (pid 1)                                                           │
+│ 09:00:09         pressure normal -> elevated                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 tab focus  j/k move  enter open  s sort  / filter  ? help  q quit
 ```
 
-It opens with a short splash (the version and whether `throtd` answers) that any key dismisses; it also goes once `throtd` has answered and 1.5 s have passed. The `why:` line names the signal behind the pressure level. CPU is a percentage of one core (two busy cores show 200%); an agent's CPU and memory include all the processes it owns. Sparklines show the last 10 refreshes (one per second) of CPU, memory, swap growth and foreground latency; the TUI keeps 60 itself and loses them when it exits. `OUTSIDE AGENTS` is the resident memory of every process no agent owns, with the largest names (at most 5, names only), so memory the agents do not explain is visible. Tables sort by memory while the pressure reason is a memory or swap signal and by CPU otherwise. Beyond the first 9 agents, the rest fold into one `+N more` row; moving the selection past them scrolls through all of them. Bursts of agents or heavy workloads found or lost in the same second are one timeline line. Metrics the platform cannot provide show as `n/a`. If `throtd` is not running, the TUI says so and reconnects when it starts. Narrow terminals drop the sparklines first (below 53 columns), then columns; below 40×12 it asks for a larger window.
+The default screen is a dashboard of panels that fills the window. The top row has a stat panel per signal: `PRESSURE` (the level, in its color, and why), `CPU`, `MEMORY`, `SWAP`, `LATENCY` (from 120 columns; narrower, in the `PRESSURE` panel) and `SCHEDULER` (mode, limit, queued and reserved work). Values turn yellow from 70% and red from 85%, are drawn in big digits from 140 columns, and each panel ends with a sparkline of the latest refreshes (one per second; for `SWAP`, swap growth; for `PRESSURE`, the level). Below them, CPU, memory and swap use are charted over the last 5 minutes, which the TUI keeps itself and loses when it exits. `MEMORY BY OWNER` puts agents (`●`) and the processes outside every agent (`○`, grouped by name, at most 5 names, no arguments or paths) on one bar chart, largest first, with the rest summed up, so memory the agents do not explain is visible. Beside it are the `AGENTS` and `HEAVY WORKLOADS` tables (the focused one has a heavy border and `▸`), and `EVENTS` takes the rest of the height.
 
-When the scheduler is on, a `SCHEDULER` line shows its mode, the current adaptive limit with its start and ceiling, the per-agent cap, and queued and reserved counts; a `STOPPED` line counts processes throtd did not pause (see `throt doctor`). Timeline events are tagged `CTL`, `SCHED` and `FAIL`. Every state is shown in text as well as color, and `NO_COLOR` or `TERM=dumb` turns color off entirely.
+It opens with a short splash (the version and whether `throtd` answers) that any key dismisses; it also goes once `throtd` has answered and 1.5 s have passed. CPU is a percentage of one core (two busy cores show 200%); an agent's CPU and memory include all the processes it owns. Tables sort by memory while the pressure reason is a memory or swap signal and by CPU otherwise. Beyond the first 9 agents, the rest fold into one `+N more` row; moving the selection past them scrolls through all of them. Bursts of agents or heavy workloads found or lost in the same second are one event line. Metrics the platform cannot provide show as `n/a`. If `throtd` is not running, the TUI says so and reconnects when it starts. Below 80 columns the panels stack in one column, with CPU, memory and swap as bars in a `SYSTEM` panel; short terminals drop the charts, events and memory panel first, and drop the borders when rows are scarce. Below 40×10 it asks for a larger window.
+
+A `STOPPED` line counts processes throtd did not pause (see `throt doctor`). Events are tagged `CTL`, `SCHED` and `FAIL`. Every state is shown in text as well as color, colors keep their contrast on light and dark backgrounds, and `NO_COLOR` or `TERM=dumb` turns color off entirely.
 
 | Key | Action |
 |---|---|
@@ -230,7 +240,7 @@ When the scheduler is on, a `SCHEDULER` line shows its mode, the current adaptiv
 | `esc` | Leave the drilldown, help, or filter. |
 | `p` / `r` | Pause or resume the selected heavy workload, after a `y/n` confirmation. |
 | `s` | Cycle the sort column: auto (memory under memory pressure, else CPU), CPU, memory, name, then `throtd`'s order (`▼` descending, `▲` ascending). |
-| `/` | Filter the timeline by event kind (case-insensitive substring); `enter` keeps it, `esc` clears it. |
+| `/` | Filter the events by kind or text (case-insensitive substring); `enter` keeps it, `esc` clears it. |
 | `?` | Help. |
 | `q`, `ctrl+c` | Quit. |
 
