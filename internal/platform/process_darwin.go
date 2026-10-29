@@ -199,8 +199,12 @@ func (darwinProcessController) identity(ctx context.Context, pid int) (time.Time
 	return start, uid, nil
 }
 
-// Identify runs ps -o uid=,ppid=,lstart= for pid. Start and UID match what
-// the sampler reports; Name is left empty.
+// Identify reads pid's start time, effective uid, parent and state with
+// one sysctl(kern.proc.pid), as kinfoIdentity does, instead of forking
+// /bin/ps: throtd calls it for every acquire and expect, which the Claude
+// Code hook makes before most tool calls. Start (whole seconds, what ps
+// lstart prints) and UID match what the sampler reports; Name is left
+// empty. A zombie counts as gone.
 func (darwinProcessController) Identify(ctx context.Context, pid int) (domain.ProcessSample, error) {
 	if err := checkIdentityPID(pid); err != nil {
 		return domain.ProcessSample{}, err
@@ -208,20 +212,33 @@ func (darwinProcessController) Identify(ctx context.Context, pid int) (domain.Pr
 	if err := ctx.Err(); err != nil {
 		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, err)
 	}
-	out, err := execPS(ctx, "-o", psIdentifyColumns, "-p", strconv.Itoa(pid))
-	var exitErr *exec.ExitError
-	if len(bytes.TrimSpace(out)) == 0 && (err == nil || errors.As(err, &exitErr)) {
+	k, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	switch {
+	case err != nil && pidExited(pid):
 		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, domain.ErrProcessGone)
-	}
-	if err != nil {
+	case err != nil:
 		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, err)
+	case int(k.Proc.P_pid) != pid:
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: sysctl reports pid %d", pid, k.Proc.P_pid)
+	case k.Proc.P_stat == sZomb:
+		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: zombie: %w", pid, domain.ErrProcessGone)
 	}
-	p, err := parsePSIdentify(out, time.Local)
-	if err != nil {
-		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: %w", pid, err)
+	state := domain.StateOther
+	switch k.Proc.P_stat {
+	case sRun:
+		state = domain.StateRunning
+	case sSleep:
+		state = domain.StateSleeping
+	case sStop:
+		state = domain.StateStopped
 	}
-	p.PID = pid
-	return p, nil
+	return domain.ProcessSample{
+		PID:   pid,
+		PPID:  int(k.Eproc.Ppid),
+		UID:   k.Eproc.Ucred.Uid,
+		Start: time.Unix(k.Proc.P_starttime.Sec, 0).In(time.Local),
+		State: state,
+	}, nil
 }
 
 // runPS runs ps for all processes with the given -o columns and returns its

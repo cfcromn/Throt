@@ -21,8 +21,12 @@ const (
 	// state, as `taskpolicy -b -p PID` does: lowest CPU priority, efficiency
 	// cores on Apple silicon, throttled disk and network I/O. 0 clears it.
 	prioDarwinBG = 0x1000
-	// sZomb is struct extern_proc's p_stat for a zombie.
-	sZomb = 5
+	// struct extern_proc's p_stat values (sys/proc.h): running,
+	// sleeping, stopped, zombie.
+	sRun   = 2
+	sSleep = 3
+	sStop  = 4
+	sZomb  = 5
 )
 
 // Background puts key's process in the macOS background state if key still

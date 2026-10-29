@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -312,5 +313,40 @@ func TestCheckSignalTarget(t *testing.T) {
 		if err := checkSignalTarget(tc.pid); (err == nil) != tc.ok {
 			t.Errorf("checkSignalTarget(%d) = %v, want ok=%v", tc.pid, err, tc.ok)
 		}
+	}
+}
+
+// TestProcessControllerIdentifyStopped checks that Identify reports a
+// stopped child as stopped, which a pause relies on to leave members
+// someone else stopped alone.
+func TestProcessControllerIdentifyStopped(t *testing.T) {
+	skipUnlessControl(t)
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	if err := cmd.Process.Signal(syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	id := NewProcessController().(ProcessIdentifier)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := id.Identify(ctx, cmd.Process.Pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.State == domain.StateStopped {
+			if got.PPID != os.Getpid() {
+				t.Errorf("PPID = %d, want %d", got.PPID, os.Getpid())
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state = %q, want stopped", got.State)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
