@@ -426,3 +426,28 @@ func TestQueuedWorkloadOfDeadAgentResumes(t *testing.T) {
 	w.exit(11)
 	waitFor(t, "pid 12 resumed", func() bool { return w.signals() == "stop:12 cont:12" })
 }
+
+// TestPauseOfExitedWorkloadIsQuiet checks that a workload whose top process
+// exits between the snapshot and the scheduler's pause is skipped without a
+// control_failed event: nothing was stopped and nothing failed.
+func TestPauseOfExitedWorkloadIsQuiet(t *testing.T) {
+	w := newWorld(
+		domain.ProcessSample{PID: 10, PPID: 1, Name: "claude"},
+		domain.ProcessSample{PID: 11, PPID: 10, Name: "go"},
+	)
+	cfg := config.Default()
+	cfg.SocketPath = filepath.Join(t.TempDir(), "throtd.sock")
+	cfg.Scheduler.Mode = "enforce"
+	d := NewDaemon(cfg, w, w, w, slog.New(slog.DiscardHandler))
+	d.tick(context.Background())
+	w.exit(11)
+	d.schedulerPause(context.Background(), scheduler.Decision{
+		Key: domain.ProcessKey{PID: 11, Start: time.Unix(11, 0)}, Name: "go", Owner: "claude-1", Action: scheduler.ActionQueue,
+	})
+	if ev := eventsOf(d, domain.EventControlFailed); len(ev) != 0 {
+		t.Errorf("control_failed events = %v, want none", ev)
+	}
+	if got := d.ctl.Paused(); len(got) != 0 {
+		t.Errorf("records = %v, want none", got)
+	}
+}

@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strconv"
 	"time"
 
@@ -125,10 +127,23 @@ func (d *Daemon) schedulerPause(parent context.Context, dec scheduler.Decision) 
 	}
 	ctx, cancel := context.WithTimeout(parent, sampleTimeout)
 	defer cancel()
-	if err := d.ctl.PauseAs(ctx, target, control.OriginScheduler); err != nil {
-		d.emit(domain.EventControlFailed, fmt.Sprintf("scheduler %s %s failed: %v", dec.Action, dec.Name, err),
-			map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action)})
+	err := d.ctl.PauseAs(ctx, target, control.OriginScheduler)
+	if err == nil {
+		return
 	}
+	if errors.Is(err, domain.ErrProcessGone) && !d.recorded(dec.Key) {
+		// The top process exited between the snapshot and the pause, and
+		// the rollback was complete: like a workload that exited before
+		// the round, there is nothing to queue and nothing failed.
+		return
+	}
+	d.emit(domain.EventControlFailed, fmt.Sprintf("scheduler %s %s failed: %v", dec.Action, dec.Name, err),
+		map[string]string{"pid": strconv.Itoa(dec.Key.PID), "action": string(dec.Action)})
+}
+
+// recorded reports whether the controller holds a record for key.
+func (d *Daemon) recorded(key domain.ProcessKey) bool {
+	return slices.ContainsFunc(d.ctl.Paused(), func(w control.PausedWorkload) bool { return w.Key == key })
 }
 
 // schedulerResume resumes a scheduler-paused workload. A non-empty reason
