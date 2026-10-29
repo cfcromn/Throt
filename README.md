@@ -168,7 +168,7 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 |---|---|
 | `throt`, `throt top` | Terminal UI. Quitting it never affects `throtd`. |
 | `throt status [--json]` | Pressure and its reason, host resources, agents, heavy workloads, scheduler state, stopped processes. |
-| `throt status --idle` | Every agent session by memory with its age, CPU, and whether it looks idle (under 1% CPU and no heavy workload over three samples). Report only: it never stops a process. |
+| `throt status --idle` | Every agent session by memory with its age, CPU, and whether it looks idle (under 1% CPU, or 5% for a session over an hour old, and no heavy workload over three samples). Report only: it never stops a process. |
 | `throt stats [--json]` | Per agent: CPU time, peak memory, heavy jobs and time queued since `throtd` started. |
 | `throt learned [--forget SIGNATURE \| --clear]` | The commands `throtd` learned heavy, which the Claude Code hook then waits for; `--forget` or `--clear` drops them. See [Learned heavy commands](#learned-heavy-commands). |
 | `throt events [-f] [-n N]` | Recent daemon events as JSON lines (default 50); `-f` keeps printing new ones. |
@@ -185,7 +185,8 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 | `throt update` | Install a newer (or older) release. See [Update and roll back](#update-and-roll-back). |
 | `throt mcp` | Read-only MCP server on stdio for coding agents. |
 | `throt setup claude-code\|codex [--write]` | Print the configuration to paste into a coding agent; `--write` installs it in your home directory instead (it only adds, and keeps a `.throt-backup` of each file it changes). |
-| `throt hook claude-code [--max-wait D]` | The Claude Code hook. |
+| `throt hook claude-code [--max-wait D] [--defer]` | The Claude Code hook. |
+| `throt wait [--timeout D]` | Wait until a heavy slot is held for the calling agent, for the hook's `--defer` (default 30m). |
 | `throt completion bash\|zsh\|fish` | Shell completion script. |
 
 Global flags go before the command: `-config PATH` uses another config file, and `-n N` sets how many events `throt events` prints. `throt -h` lists every command, and `-h` after any command prints that command's usage. `throtd -h` lists the daemon's flags, and `throtd -version` prints its version.
@@ -261,6 +262,8 @@ claude mcp add --scope user throt -- throt mcp
 - Everything else passes at once: pipes, `;`, `||`, `&`, redirections, subshells, substitutions, heredocs, comments, a heavy tool after another command (`make && ./run`), `throt run` itself, input it cannot parse, and [light invocations](#the-claude-code-hook-delays-commands) such as `--version` or `go env`. So does everything when `throtd` is down. Of these, only a single simple command other than a common light tool (`ls`, `git`, `grep`, `cat`, …) contacts `throtd`, once, to report its signature.
 - It never changes, approves or denies the command, so your permission rules apply unchanged. After it waited, it shows a one-line `systemMessage`.
 - It is advisory: it reserves no slot, so two commands let through at the same moment can both start. Use `throt run --` for a reserved slot. Do not add permission allow rules for `throt run`: such a rule would allow every command run through it.
+
+**Defer instead of waiting (opt-in).** With `throt hook claude-code --defer` the hook does not block when no slot is free. `throtd` holds the agent's place in line (the same line as queued workloads and `throt run` callers), and the hook denies the call with a reason telling Claude its place in line, to do other work, to run `throt wait` in the background, and to rerun the command when that returns. `throt wait` exits 0 once a slot is held for the agent; the slot then waits 60s for the agent's next heavy command, which the hook admits at once. A slot that is free right away is also held for the command. A place in line that no deferred call or `throt wait` renews for 10 minutes is dropped, and a held slot that is not used is released after 60s. On any error, or with a `throtd` older than this feature, the hook waits as above. `throt setup` does not add `--defer` yet; add it to the hook command in `settings.json` yourself.
 
 #### Learned heavy commands
 
@@ -483,6 +486,7 @@ Outcomes, not dates.
 | v0.8 Integration and readiness | Wait for capacity without being told | Claude Code hook, `throt setup`, `throt config check`/`show`, `throt version --json`, log levels, soak test | shipped (v0.8.0-rc.1) |
 | v0.9 Evidence and upkeep | Measure on real machines and stay current | `throt update`, real-machine CPU and memory benchmarks, soak on CI runners, an adaptive limit that grows under CPU-only load, `start_limit`, MCP `2026-07-28` with `throt_wait_for_capacity` and `throt_explain`, TUI scheduler line and event filter | shipped (v0.9.0-rc.1) |
 | 1.0 | Turn the scheduler on confidently under an explicit profile | stable compatibility policy, real-machine benchmarks; the scheduler stays opt-in, as the benchmark evidence decided | shipped (v1.0.0-rc.1) |
+| 1.x Usage | "How many tokens and hours did each agent spend?" | `throt usage`: tokens (input, output, cache) and active time per agent session, project and hour, read from Claude Code and Codex session logs; counts and timestamps only, never conversation content; read-only, no `throtd` needed | planned |
 
 **1.0** means the scheduler is ready to turn on with confidence under an explicit `scheduler.mode` and `profile`; it stays off by default (see "Default decision" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#results)). It requires two supported OS families, the [compatibility policy](docs/ARCHITECTURE.md#compatibility) in force, no known process-loss bug, reproducible benchmarks, and a security review of IPC and process-control boundaries.
 

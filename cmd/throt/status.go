@@ -150,6 +150,8 @@ func printStatus(w io.Writer, st app.StatusResult) {
 			state = "PAUSED"
 		case slices.ContainsFunc(st.Scheduler.WouldQueue, func(k domain.ProcessKey) bool { return k.PID == h.Key.PID }):
 			state = "running (would queue)"
+		case h.Idle:
+			state = "running (idle)"
 		case h.Background:
 			state = "running (background)"
 		}

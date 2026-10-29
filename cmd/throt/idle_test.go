@@ -42,8 +42,13 @@ func TestIdleSessions(t *testing.T) {
 			want:    []want{{1, false}},
 		},
 		{
-			name:    "at the threshold is not idle",
-			samples: []app.StatusResult{{Agents: []process.AgentView{ag(1, idleCPU, 100)}}},
+			name:    "an old session at a few percent is idle",
+			samples: []app.StatusResult{{Agents: []process.AgentView{ag(1, 0.04, 100)}}},
+			want:    []want{{1, true}},
+		},
+		{
+			name:    "at the old-session threshold is not idle",
+			samples: []app.StatusResult{{Agents: []process.AgentView{ag(1, oldIdleCPU, 100)}}},
 			want:    []want{{1, false}},
 		},
 		{
@@ -86,6 +91,17 @@ func TestIdleSessions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestIdleYoungSession(t *testing.T) {
+	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	key := domain.ProcessKey{PID: 1, Start: now.Add(-10 * time.Minute)}
+	for cpu, want := range map[float64]bool{0.005: true, idleCPU: false, 0.04: false} {
+		rows := idleSessions([]app.StatusResult{{Agents: []process.AgentView{{Key: key, CPU: cpu}}}}, now)
+		if rows[0].Idle != want {
+			t.Errorf("10m-old session at %.3f cores: idle %v, want %v", cpu, rows[0].Idle, want)
+		}
 	}
 }
 

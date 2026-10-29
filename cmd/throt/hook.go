@@ -28,12 +28,19 @@ import (
 // until throtd's capacity verdict says a heavy job may start, then exits
 // 0. To let throtd learn, it reports each simple command's signature
 // (internal/signature: program and first argument base names, nothing
-// more) to throtd before it starts. It never modifies, approves,
-// or denies the call, so the command runs exactly as Claude wrote it under
-// the user's own permission rules. The only output is an optional
-// systemMessage (shown to the user) after it has waited; nothing is
-// written while waiting. Admission is advisory: the hook exits before the
-// command starts, so it cannot hold a lease for it.
+// more) to throtd before it starts. It never modifies or approves the
+// call, so the command runs exactly as Claude wrote it under the user's
+// own permission rules. The only output is an optional systemMessage
+// (shown to the user) after it has waited; nothing is written while
+// waiting. Admission is advisory: the hook exits before the command
+// starts, so it cannot hold a lease for it.
+//
+// With --defer it does not wait: it asks throtd ("reserve") for a slot
+// held for its agent. Granted, the call runs and the agent's slot covers
+// it; otherwise the agent keeps its place in line and the hook denies the
+// call, telling Claude to run `throt wait` in the background and then
+// rerun the command. Any error, or a throtd without the method, falls
+// back to waiting as above.
 
 const (
 	// maxHookInput bounds what the hook reads from stdin. Larger input is
@@ -48,7 +55,7 @@ const (
 // input. Claude Code never shows that stderr when the hook exits 0.
 const hookDebugEnv = "THROT_HOOK_DEBUG"
 
-const hookUsage = `Usage: throt hook claude-code [--max-wait D]
+const hookUsage = `Usage: throt hook claude-code [--max-wait D] [--defer]
 
 Claude Code PreToolUse hook for the Bash tool. When the command is a heavy
 tool (alone, or after "cd DIR &&", variable assignments, or "time"), or a
@@ -56,9 +63,15 @@ command throtd learned heavy because it started a heavy workload before,
 wait up to D for throtd to report capacity for a heavy job, then let it run
 unchanged. Only the command's signature (program and first argument base
 names) is sent to throtd, to learn from. Advisory: no slot is reserved.
-It never blocks, denies, or changes a tool call, and returns at once on
+Without --defer it never blocks, denies, or changes a tool call. It returns at once on
 any error or when throtd is unreachable. Keep D below the hook's "timeout" in settings.json. With
 THROT_HOOK_DEBUG=1 it says on stderr why it ignored an event.
+
+With --defer it does not wait when no slot is free: throtd holds the
+agent's place in line and the hook denies the call, telling Claude to run
+'throt wait' in the background and rerun the command when it returns; the
+rerun takes the slot held for it. On any error, or with an older throtd,
+it waits as above.
 
 Flags:
 `
@@ -72,8 +85,11 @@ type hookWaiter struct {
 	// throtd and returns whether throtd learned it heavy. named says the
 	// hook already treats it as heavy by name. nil skips it.
 	expect func(ctx context.Context, sig string, named bool) (bool, error)
-	now    func() time.Time
-	sleep  func(ctx context.Context, d time.Duration) error
+	// reserve, set by --defer, asks throtd for a slot for this process's
+	// agent, holding its place in line when none is free.
+	reserve func(ctx context.Context) (app.ReserveResult, error)
+	now     func() time.Time
+	sleep   func(ctx context.Context, d time.Duration) error
 	// debug, when set, gets a one-line hint about input the hook ignores.
 	debug io.Writer
 }
@@ -91,12 +107,13 @@ func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) e
 	if len(args) == 0 || args[0] != "claude-code" {
 		// Exit 1, not exitUsage: Claude Code blocks the tool call on exit 2,
 		// so a typo in settings.json must not block every Bash command.
-		return exitError{code: 1, msg: "usage: throt hook claude-code [--max-wait D]"}
+		return exitError{code: 1, msg: "usage: throt hook claude-code [--max-wait D] [--defer]"}
 	}
 	flags := flag.NewFlagSet("throt hook", flag.ContinueOnError)
 	flags.SetOutput(errw)
 	flags.Usage = func() { fmt.Fprint(flags.Output(), hookUsage); flags.PrintDefaults() }
 	maxWait := flags.Duration("max-wait", defaultHookMaxWait, "wait at most this long for capacity (keep it below the hook timeout)")
+	deferCall := flags.Bool("defer", false, "when no slot is free, hold the agent's place in line and deny the call instead of waiting")
 	err := parseFlags(flags, args[1:], out)
 	if errors.Is(err, flag.ErrHelp) {
 		return err
@@ -119,6 +136,13 @@ func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) e
 		},
 		now:   time.Now,
 		sleep: sleepCtx,
+	}
+	if *deferCall {
+		h.reserve = func(ctx context.Context) (app.ReserveResult, error) {
+			ctx, cancel := context.WithTimeout(ctx, runCallTimeout)
+			defer cancel()
+			return daemonClient{socket: socket()}.Reserve(ctx, app.ReserveParams{PID: os.Getpid()})
+		}
 	}
 	if os.Getenv(hookDebugEnv) == "1" {
 		h.debug = errw
@@ -180,6 +204,20 @@ func (h hookWaiter) claudeCode(ctx context.Context, in io.Reader, out io.Writer,
 	if !named && !learned {
 		return
 	}
+	if h.reserve != nil {
+		r, err := h.reserve(ctx)
+		switch {
+		case err != nil:
+			h.hint("reserve failed (" + err.Error() + "); waiting instead")
+		case r.Granted:
+			return
+		case r.Position > 0:
+			writeHookJSON(out, deferDecision(r))
+			return
+		default:
+			h.hint("throtd holds no place in line (" + r.Reason + "); waiting instead")
+		}
+	}
 	msg := h.wait(ctx, maxWait)
 	if msg != "" && hasSig && h.expect != nil {
 		// The command starts only now: report it again, so throtd still
@@ -190,13 +228,48 @@ func (h hookWaiter) claudeCode(ctx context.Context, in io.Reader, out io.Writer,
 		msg += " (learned heavy: it started a heavy workload before; see 'throt learned')"
 	}
 	if msg != "" {
-		resp, err := json.Marshal(struct {
+		writeHookJSON(out, struct {
 			SystemMessage string `json:"systemMessage"`
 		}{msg})
-		if err == nil {
-			out.Write(append(resp, '\n'))
-		}
 	}
+}
+
+// writeHookJSON writes v as the hook's one line of JSON output.
+func writeHookJSON(out io.Writer, v any) {
+	if resp, err := json.Marshal(v); err == nil {
+		out.Write(append(resp, '\n'))
+	}
+}
+
+// hookDecision is a PreToolUse decision
+// (https://code.claude.com/docs/en/hooks#pretooluse-decision-control):
+// "deny" blocks the call and shows the reason to Claude.
+type hookDecision struct {
+	HookSpecificOutput struct {
+		HookEventName            string `json:"hookEventName"`
+		PermissionDecision       string `json:"permissionDecision"`
+		PermissionDecisionReason string `json:"permissionDecisionReason"`
+	} `json:"hookSpecificOutput"`
+}
+
+// deferDecision denies a call whose agent now waits in line at r.Position.
+func deferDecision(r app.ReserveResult) hookDecision {
+	var d hookDecision
+	d.HookSpecificOutput.HookEventName = "PreToolUse"
+	d.HookSpecificOutput.PermissionDecision = "deny"
+	d.HookSpecificOutput.PermissionDecisionReason = deferMessage(r)
+	return d
+}
+
+// deferMessage tells Claude why the call was deferred and what to do.
+func deferMessage(r app.ReserveResult) string {
+	v := r.Verdict
+	state := "no heavy-build slot is free (" + r.Reason + ")"
+	if busy := v.RunningHeavy + v.Reserved; v.SchedulerMode != "off" && v.HeavyLimit > 0 && busy >= v.HeavyLimit {
+		state = fmt.Sprintf("%d heavy builds running (limit %d)", busy, v.HeavyLimit)
+	}
+	return fmt.Sprintf("Throt: %s; you are #%d in line. Your place is held. Do other non-build work now. "+
+		"Run `throt wait` with run_in_background so you are notified when a slot frees, then rerun this exact command.", state, r.Position)
 }
 
 // wait polls the capacity check until it says ok, maxWait passes, or the

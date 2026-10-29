@@ -46,11 +46,13 @@ func (s *darwinSampler) SampleHost(ctx context.Context) (domain.HostSample, erro
 	out := domain.HostSample{Time: time.Now()}
 	var fails sampleErrors
 
-	if busy, ok, err := s.cpu.busy(out.Time); ok {
+	busy, ok, err := s.cpu.busy(out.Time)
+	if ok {
 		out.CPUUsage = busy
 	} else {
 		fails.fail(domain.MetricCPU, err)
 	}
+	noteHostCPU(out.Time, ok)
 
 	if load, err := darwinLoad1(); err != nil {
 		fails.fail(domain.MetricLoad, err)

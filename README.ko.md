@@ -168,7 +168,7 @@ WantedBy=default.target
 |---|---|
 | `throt`, `throt top` | 터미널 UI. 종료해도 `throtd`에는 영향이 없다. |
 | `throt status [--json]` | 압력과 그 이유, 호스트 리소스, 에이전트, 무거운 작업, 스케줄러 상태, 정지된 프로세스. |
-| `throt status --idle` | 모든 에이전트 세션을 메모리 순으로 나이, CPU, 유휴 여부(세 번의 샘플 동안 CPU 1% 미만이고 무거운 작업이 없음)와 함께 보여 준다. 보고만 하며 프로세스를 멈추지 않는다. |
+| `throt status --idle` | 모든 에이전트 세션을 메모리 순으로 나이, CPU, 유휴 여부(세 번의 샘플 동안 CPU 1% 미만, 1시간 넘은 세션은 5% 미만이고 무거운 작업이 없음)와 함께 보여 준다. 보고만 하며 프로세스를 멈추지 않는다. |
 | `throt stats [--json]` | 에이전트별 CPU 시간, 최대 메모리, 무거운 작업 수, `throtd` 시작 이후 대기한 시간. |
 | `throt learned [--forget SIGNATURE \| --clear]` | `throtd`가 무겁다고 학습한 명령 목록. Claude Code 훅은 이 명령들 앞에서도 기다린다. `--forget`이나 `--clear`로 지운다. [학습한 무거운 명령](#학습한-무거운-명령) 참고. |
 | `throt events [-f] [-n N]` | 최근 데몬 이벤트를 JSON lines로 출력한다(기본 50개). `-f`를 주면 새 이벤트를 계속 출력한다. |
@@ -185,7 +185,8 @@ WantedBy=default.target
 | `throt update` | 더 새(또는 더 옛) 릴리스를 설치한다. [업데이트와 롤백](#업데이트와-롤백)을 참고한다. |
 | `throt mcp` | 코딩 에이전트용 읽기 전용 MCP 서버(stdio). |
 | `throt setup claude-code\|codex [--write]` | 코딩 에이전트에 붙여 넣을 설정을 출력한다. `--write`를 주면 대신 홈 디렉터리에 직접 설치한다(추가만 하고, 바꾸는 파일마다 `.throt-backup`을 남긴다). |
-| `throt hook claude-code [--max-wait D]` | Claude Code 훅(hook). |
+| `throt hook claude-code [--max-wait D] [--defer]` | Claude Code 훅(hook). |
+| `throt wait [--timeout D]` | 호출한 에이전트 몫으로 무거운 작업 슬롯이 잡힐 때까지 기다린다. 훅의 `--defer`와 함께 쓴다(기본 30m). |
 | `throt completion bash\|zsh\|fish` | 셸 자동 완성 스크립트. |
 
 전역 플래그는 명령 앞에 둔다. `-config PATH`는 다른 설정 파일을 쓰고, `-n N`은 `throt events`가 출력할 이벤트 수를 정한다. `throt -h`는 모든 명령을 나열하고, 명령 뒤에 `-h`를 붙이면 그 명령의 사용법을 출력한다. `throtd -h`는 데몬의 플래그를 나열하고, `throtd -version`은 데몬 버전을 출력한다.
@@ -261,6 +262,8 @@ claude mcp add --scope user throt -- throt mcp
 - 그 밖의 경우는 바로 통과한다. 파이프, `;`, `||`, `&`, 리다이렉션, 서브셸, 치환, heredoc, 주석, 다른 명령 뒤의 무거운 도구(`make && ./run`), `throt run` 자체, 파싱할 수 없는 입력, 그리고 `--version`이나 `go env` 같은 [가벼운 호출](#claude-code-훅-때문에-명령-실행이-늦어진다)이 그렇다. `throtd`가 꺼져 있을 때도 모두 통과한다. 이 중 `throtd`에 연락하는 것은 자주 쓰는 가벼운 도구(`ls`, `git`, `grep`, `cat` 등)가 아닌 단순 명령 하나뿐이고, 그것도 시그니처를 알리려고 한 번 연락할 뿐이다.
 - 명령을 바꾸거나, 승인하거나, 거부하지 않는다. 따라서 권한 규칙은 그대로 적용된다. 기다린 뒤에는 한 줄짜리 `systemMessage`를 보여 준다.
 - 권고일 뿐이다. 슬롯을 예약하지 않으므로 같은 순간에 통과한 두 명령이 함께 시작될 수 있다. 슬롯을 예약하려면 `throt run --`을 쓴다. `throt run`에 대한 권한 allow 규칙은 추가하지 않는다. 그런 규칙은 `throt run`을 거쳐 실행되는 모든 명령을 허용하게 된다.
+
+**기다리지 않고 미루기(선택 사항).** `throt hook claude-code --defer`를 쓰면 빈 슬롯이 없을 때 훅이 기다리지 않는다. `throtd`가 에이전트의 대기 순번을 잡아 두고(큐에 들어간 워크로드, `throt run` 호출과 같은 줄이다), 훅은 호출을 거부하면서 그 이유로 Claude에게 몇 번째인지 알리고, 그동안 다른 작업을 하다가 `throt wait`를 백그라운드로 실행해 두고 그것이 끝나면 같은 명령을 다시 실행하라고 전한다. `throt wait`는 에이전트 몫으로 슬롯이 잡히면 0으로 끝난다. 잡힌 슬롯은 에이전트의 다음 무거운 명령을 60s 동안 기다리고, 훅은 그 명령을 바로 통과시킨다. 처음부터 슬롯이 비어 있을 때도 그 명령 몫으로 슬롯을 잡아 둔다. 미뤄진 호출이나 `throt wait`가 10분 동안 갱신하지 않은 순번은 사라지고, 잡아 둔 슬롯을 쓰지 않으면 60s 뒤에 풀린다. 오류가 나거나 `throtd`가 이 기능보다 오래된 버전이면 훅은 위에서 설명한 대로 기다린다. `throt setup`은 아직 `--defer`를 넣지 않으므로 `settings.json`의 훅 명령에 직접 추가한다.
 
 #### 학습한 무거운 명령
 
@@ -483,6 +486,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 | v0.8 Integration and readiness | 지시 없이도 용량을 기다리기 | Claude Code 훅, `throt setup`, `throt config check`/`show`, `throt version --json`, 로그 레벨, soak 테스트 | 출시 (v0.8.0-rc.1) |
 | v0.9 Evidence and upkeep | 실제 머신에서 측정하고 최신 상태 유지하기 | `throt update`, 실제 머신 CPU·메모리 벤치마크, CI 러너에서 soak, CPU만 바쁠 때 늘어나는 적응형 한도, `start_limit`, `throt_wait_for_capacity`와 `throt_explain`을 갖춘 MCP `2026-07-28`, TUI 스케줄러 줄과 이벤트 필터 | 출시 (v0.9.0-rc.1) |
 | 1.0 | 명시한 프로필 아래에서 자신 있게 스케줄러 켜기 | 안정된 호환성 정책, 실제 머신 벤치마크. 벤치마크 근거에 따라 스케줄러는 옵트인으로 남긴다 | 출시 (v1.0.0-rc.1) |
+| 1.x 사용량 | "에이전트마다 토큰과 시간을 얼마나 썼나?" | `throt usage`: Claude Code와 Codex 세션 기록에서 에이전트 세션·프로젝트·시간대별 토큰(입력, 출력, 캐시)과 실제 작업 시간을 읽는다. 숫자와 시각만 읽고 대화 내용은 읽지 않는다. 읽기 전용이며 `throtd`가 필요 없다 | 계획 |
 
 **1.0**은 명시한 `scheduler.mode`와 `profile` 아래에서 스케줄러를 자신 있게 켤 수 있다는 뜻이다. 기본값은 여전히 꺼짐이다([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#results)의 "Default decision" 참고). 1.0의 조건은 지원 OS 계열 두 개, [호환성 정책](docs/ARCHITECTURE.md#compatibility) 시행, 알려진 프로세스 유실 버그 없음, 재현 가능한 벤치마크, IPC와 프로세스 제어 경계에 대한 보안 검토다.
 

@@ -80,6 +80,9 @@ func (d *Daemon) tick(parent context.Context) {
 		d.background(parent, nil, nil)
 	}
 	d.publishScheduler()
+	for _, l := range d.grantReservations(d.ctl.Paused(), time.Now()) {
+		d.emitAgentLease(l, "its turn, and a slot is free")
+	}
 }
 
 // failOpenQueued resumes the scheduler's queued work once process sampling
@@ -194,9 +197,10 @@ func hostReading(s sample, snap process.Snapshot) domain.HostSample {
 }
 
 // publish stores the round's results in the status under d.mu and, in the
-// same step, ends the leases and drops the waiters the sample supersedes.
-// It returns the previous pressure level, the ended leases, and the
-// lease owners and waiters for the scheduler.
+// same step, ends the leases and drops the waiters and reservations the
+// sample supersedes. It returns the previous pressure level, the ended
+// leases, and the lease owners and waiters (reservations included) for
+// the scheduler.
 func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level domain.PressureLevel, reason string) (from domain.PressureLevel, ended []leaseEnd, reserved []string, waiters []scheduler.Waiter) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -212,17 +216,20 @@ func (d *Daemon) publish(s sample, r processRound, host domain.HostSample, level
 		d.stopped = r.snap.Stopped
 		ended = d.leases.observe(s.sampled, s.now, s.procs, r.snap.Heavy)
 		d.waiting.prune(s.now, s.sampled, s.procs)
+		d.reserved.prune(s.now, s.sampled, s.procs)
 	} else {
 		ended = d.leases.expire(s.now)
 		d.waiting.prune(s.now, s.sampled, nil)
+		d.reserved.prune(s.now, s.sampled, nil)
 	}
-	return from, ended, d.leases.owners(), d.waiting.line()
+	return from, ended, d.leases.owners(), append(d.waiting.line(), d.reserved.line()...)
 }
 
 // publishScheduler stores the scheduler's state after this round: its
 // status, and the queue and policy acquire shares the line with.
 func (d *Daemon) publishScheduler() {
 	sched := d.schedulerStatus()
+	idle := d.sched.Idle()
 	line, linePolicy := d.sched.Queued(), d.sched.Policy()
 	if linePolicy.Mode == scheduler.ModeEnforce {
 		// Only work the controller still holds waits in line: work resumed
@@ -232,8 +239,24 @@ func (d *Daemon) publishScheduler() {
 	}
 	d.mu.Lock()
 	d.status.Scheduler = sched
+	d.status.Heavy = withIdle(d.status.Heavy, idle)
 	d.queuedLine, d.linePolicy = line, linePolicy
 	d.mu.Unlock()
+}
+
+// withIdle returns heavy with Idle set for the workloads in idle, copying
+// it only when a flag changes: status readers may still hold the old slice.
+func withIdle(heavy []process.WorkloadView, idle []domain.ProcessKey) []process.WorkloadView {
+	out, cloned := heavy, false
+	for i, h := range heavy {
+		if is := slices.Contains(idle, h.Key); is != h.Idle {
+			if !cloned {
+				out, cloned = slices.Clone(heavy), true
+			}
+			out[i].Idle = is
+		}
+	}
+	return out
 }
 
 // track records a sampler's result and emits an event on each transition

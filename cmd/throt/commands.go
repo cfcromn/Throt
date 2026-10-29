@@ -68,6 +68,8 @@ agent; --force resumes any other such process of yours too,
 such as a shell job suspended with Ctrl-Z (prefer fg there)`},
 		{name: "run", run: cmdRun, flags: true, synopsis: "[--timeout D] [--no-wait] -- CMD [ARGS...]", help: `wait until throtd grants a heavy slot, reserved for CMD, then
 exec CMD (runs immediately if throtd is down)`},
+		{name: "wait", run: cmdWait, flags: true, synopsis: "[--timeout D]", help: `wait until a heavy slot is held for the calling agent (its place
+in line from 'hook claude-code --defer'), at most D (default 30m)`},
 		{name: "reload", run: cmdReload, help: "make throtd re-read its config file"},
 		{name: "doctor", run: cmdDoctor, help: "print a sanitized diagnostic report (safe to share)"},
 		{name: "mcp", run: cmdMCP, help: "run a read-only MCP server on stdio for coding agents"},
@@ -75,9 +77,10 @@ exec CMD (runs immediately if throtd is down)`},
 it changes from the defaults, and warns about risky settings;
 'show [--json]' prints the effective config and the source
 (default, profile, or file) of each value. Both accept --config PATH.`},
-		{name: "hook", run: cmdHook, synopsis: "claude-code [--max-wait D]", help: `Claude Code PreToolUse hook: before a lone heavy Bash command,
-wait up to D (default 50s) for heavy-job capacity; never
-changes or blocks the command (advisory; fails open)`},
+		{name: "hook", run: cmdHook, synopsis: "claude-code [--max-wait D] [--defer]", help: `Claude Code PreToolUse hook: before a lone heavy Bash command,
+wait up to D (default 50s) for heavy-job capacity (advisory;
+fails open); --defer instead holds the agent's place in line
+and denies the call, asking Claude to run 'throt wait'`},
 		{name: "setup", run: cmdSetup, synopsis: "claude-code|codex [--write]", help: `print the configuration to paste into a coding agent;
 --write installs it in your home directory instead (adds only,
 keeps a .throt-backup of each changed file)`},

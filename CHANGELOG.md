@@ -6,6 +6,15 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Added
+- Idle holders free their slot: a running heavy workload whose subtree stays under 5% of a core for 2 minutes (a hung build, one waiting on a lock, the network or a container start) no longer counts against `heavy_limit` or `per_agent_limit` below high pressure, so queued work resumes (new decision reason `holder_idle`, one per `resume_cooldown`). It is never paused or signalled for this; when it is busy again it counts again, nothing is preempted, and nothing new starts until the count is under the limit. `status` heavy entries carry `idle`, and `throt status` shows `running (idle)`.
+- `throt hook claude-code --defer` (opt-in): when no heavy slot is free the hook no longer blocks the agent. `throtd` holds the agent's place in line, in the same FIFO as queued workloads and `throt run` callers, and the hook denies the call with a reason telling Claude its place, to do other work, to run the new `throt wait` in the background, and to rerun the command. `throt wait [--timeout D]` (default 30m) exits 0 once a slot is held for the agent; the agent's next heavy command takes it at once, and an unused slot is released after 60s. A place in line not renewed for 10 minutes is dropped. New privileged protocol method `reserve`. On any error, or with an older `throtd`, the hook waits as before; `throt setup` does not add `--defer` yet.
+
+### Changed
+- `throt status --idle` also counts a session at least 1 hour old as idle under 5% of a core (was 1% for every session): long-lived sessions keep a few percent of background CPU when no one uses them. Still report only.
+- High pressure keeps one heavy workload running: with none running, one starts or resumes after the cooldown instead of every build waiting (pausing frees no memory). Critical pressure is unchanged.
+- macOS: the process sampler reads the process table with `sysctl kern.proc.all` and the user's own processes' CPU time and RSS with `proc_info`, instead of forking `/bin/ps` every sample; process identities (PID and start time) are unchanged. Other users' processes, which only `ps` can read, are measured every 15th sample, and every sample while host CPU has no iostat reading; in between their RSS in `unattributed_rss` and `unattributed_memory` is up to 15 samples old and their CPU rate reads 0. If `kern.proc.all` or `proc_info` fails, the sample comes from `ps` as before. On a GitHub macOS runner the sampler's CPU at the default 2 s fell from 2.1% to 0.6% of one core.
+
 ## [1.0.0-rc.1] - 2026-10-29
 
 The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md#compatibility) now applies: the commands, config, local protocol v1, JSON output, events, reason codes, MCP tools and exit codes it lists do not break within 1.x, and tests pin them. The scheduler stays off by default; the benchmarks say when to turn it on.

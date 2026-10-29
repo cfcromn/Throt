@@ -153,3 +153,15 @@ func TestPrintStatusBackground(t *testing.T) {
 		t.Errorf("output lacks the background state:\n%s", buf.String())
 	}
 }
+
+// TestPrintStatusIdle checks that an idle heavy workload says so, ahead of
+// its background priority.
+func TestPrintStatusIdle(t *testing.T) {
+	st := app.StatusResult{Host: &domain.HostSample{MemTotal: 1 << 30}, Scheduler: app.SchedulerStatus{Mode: scheduler.ModeEnforce, HeavyLimit: 3},
+		Heavy: []process.WorkloadView{{Key: domain.ProcessKey{PID: 77}, Name: "gradle", Class: domain.ClassBuild, Owner: "codex-1", Background: true, Idle: true}}}
+	var buf bytes.Buffer
+	printStatus(&buf, st)
+	if !strings.Contains(buf.String(), "running (idle)") {
+		t.Errorf("output lacks the idle state:\n%s", buf.String())
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -25,42 +26,147 @@ const psPath = "/bin/ps"
 const maxPSOutput = 32 << 20
 
 // NewProcessSampler returns a process sampler for the current OS. On macOS
-// it runs /bin/ps for the process table: /bin/ps is setuid root, so it
-// reads the CPU time and RSS of other users' processes, which
-// proc_pidinfo refuses to an unprivileged caller and which the host CPU
-// estimate needs. Names are read in-process where possible (see
-// lookupPSNames). The caller's context deadline bounds how long ps may run.
+// it reads the process set, parents, uids, start times and states with
+// one sysctl(kern.proc.all), and CPU time and RSS of the user's own
+// processes with proc_info (see sampleKernel). proc_info refuses other
+// users' processes, which only /bin/ps, being setuid root, can read: a ps
+// stats pass measures them on the first sample, every othersRefresh
+// samples, and on every sample while host CPU has no fresh iostat reading
+// (the daemon then sums per-process CPU deltas); between passes they carry
+// their last values (otherStats). When the sysctl fails the whole sample
+// comes from ps, as before; when proc_info fails, every stat does. Either
+// way a process gets the start time ps prints (lstartTime), so its
+// identity does not depend on which collector read it. Names are read
+// in-process where possible (see lookupPSNames). The caller's context
+// deadline bounds how long ps may run.
 func NewProcessSampler() ProcessSampler { return &darwinProcessSampler{} }
 
 // darwinProcessSampler is not safe for concurrent use.
 type darwinProcessSampler struct {
-	names psNameCache
+	names  psNameCache
+	others otherStats
+	// psOnly reads every sample with ps alone, the collector before
+	// kern.proc.all; tests and the overhead benchmark compare the two.
+	psOnly bool
+	// path is how the last sample was read (a path* constant).
+	path string
 }
+
+// How a sample was read.
+const (
+	// pathKernel: kern.proc.all and proc_info; other users' stats carried.
+	pathKernel = "kernel"
+	// pathKernelPS: kern.proc.all and proc_info; other users' stats from ps.
+	pathKernelPS = "kernel+ps"
+	// pathKernelPSStats: kern.proc.all; every stat from ps (proc_info failed).
+	pathKernelPSStats = "kernel, ps stats"
+	// pathPS: ps alone (kern.proc.all failed, or psOnly).
+	pathPS = "ps"
+)
 
 func (s *darwinProcessSampler) SampleProcesses(ctx context.Context) ([]domain.ProcessSample, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)
 	}
-	// The stats pass has no attacker-controlled text and defines the process
-	// set; names are looked up separately (see lookupPSNames), and only for
-	// processes not named yet (see psNameCache).
-	stats, err := runPS(ctx, psStatColumns)
-	if err != nil {
-		return nil, fmt.Errorf("sample processes: %w", err)
-	}
-	procs, err := parsePSStats(bytes.NewReader(stats), time.Local)
+	procs, err := s.sample(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)
 	}
 	if len(procs) == 0 {
-		return nil, errors.New("sample processes: ps listed no processes")
+		return nil, errors.New("sample processes: no processes listed")
 	}
+	// Names are looked up separately (see lookupPSNames), and only for
+	// processes not named yet (see psNameCache).
 	if err := s.names.name(procs, func(pids []int) (map[int]string, error) {
 		return lookupPSNames(ctx, pids)
 	}); err != nil {
 		return nil, fmt.Errorf("sample processes: %w", err)
 	}
 	return procs, nil
+}
+
+// sample reads the process table without names.
+func (s *darwinProcessSampler) sample(ctx context.Context) ([]domain.ProcessSample, error) {
+	euid := uint32(os.Geteuid())
+	other := func(uid uint32) bool { return euid != 0 && uid != euid }
+	if !s.psOnly {
+		if procs, secs, err := kinfoProcs(time.Local); err == nil {
+			return s.sampleKernel(ctx, procs, secs, other)
+		}
+	}
+	// The stats pass has no attacker-controlled text and defines the
+	// process set.
+	procs, err := psStatsPass(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.path = pathPS
+	s.others.observe(procs, func(p domain.ProcessSample) bool { return other(p.UID) }, true)
+	return procs, nil
+}
+
+// sampleKernel completes procs, as kinfoProcs listed them, with stats. The
+// process set and identities stay kinfoProcs'; ps, when it runs, supplies
+// only stats (and running against sleeping), matched by PID and start. A
+// process that ps then does not list exited between the two reads and is
+// left out.
+func (s *darwinProcessSampler) sampleKernel(ctx context.Context, procs []domain.ProcessSample, secs []int64, other func(uint32) bool) ([]domain.ProcessSample, error) {
+	isOther := func(p domain.ProcessSample) bool { return other(p.UID) }
+	drop := make([]bool, len(procs))
+	ownErr := readOwnStats(procs, secs, func(uid uint32) bool { return !other(uid) }, drop)
+	hasOthers := slices.ContainsFunc(procs, isOther)
+	needPS := ownErr != nil || hasOthers && (s.others.due() || !hostCPUFresh(time.Now()))
+	var rows map[domain.ProcessKey]domain.ProcessSample
+	if needPS {
+		stats, err := psStatsPass(ctx)
+		if err != nil && ownErr != nil {
+			return nil, fmt.Errorf("%w (proc_info: %w)", err, ownErr)
+		}
+		// Without ps, other users' processes keep their carried values
+		// and the next sample measures them.
+		if err == nil {
+			rows = make(map[domain.ProcessKey]domain.ProcessSample, len(stats))
+			for _, r := range stats {
+				rows[r.Key()] = r
+			}
+		}
+	}
+	out := procs[:0]
+	for i, p := range procs {
+		if drop[i] && ownErr == nil {
+			continue
+		}
+		if ownErr != nil || rows != nil && isOther(p) {
+			r, ok := rows[p.Key()]
+			if !ok {
+				continue
+			}
+			p.CPUTime, p.RSS = r.CPUTime, r.RSS
+			if p.State == domain.StateRunning {
+				p.State = r.State
+			}
+		}
+		out = append(out, p)
+	}
+	switch {
+	case ownErr != nil:
+		s.path = pathKernelPSStats
+	case rows != nil:
+		s.path = pathKernelPS
+	default:
+		s.path = pathKernel
+	}
+	s.others.observe(out, isOther, rows != nil)
+	return out, nil
+}
+
+// psStatsPass runs and parses one ps stats pass.
+func psStatsPass(ctx context.Context) ([]domain.ProcessSample, error) {
+	stats, err := runPS(ctx, psStatColumns)
+	if err != nil {
+		return nil, err
+	}
+	return parsePSStats(bytes.NewReader(stats), time.Local)
 }
 
 // maxPSNameQueries is how many PIDs lookupPSNames asks ps about one at a
@@ -149,7 +255,8 @@ func procComm(pid int) (string, error) {
 func NewProcessController() ProcessController { return darwinProcessController{} }
 
 // NewProcessTools returns a sampler and a controller whose identities agree.
-// On macOS both derive Start from ps lstart, so they share no state.
+// On macOS both report Start as ps lstart prints it (the sampler and
+// Identify through lstartTime), so they share no state.
 func NewProcessTools() (ProcessSampler, ProcessController) {
 	return NewProcessSampler(), NewProcessController()
 }
@@ -223,21 +330,12 @@ func (darwinProcessController) Identify(ctx context.Context, pid int) (domain.Pr
 	case k.Proc.P_stat == sZomb:
 		return domain.ProcessSample{}, fmt.Errorf("identity of pid %d: zombie: %w", pid, domain.ErrProcessGone)
 	}
-	state := domain.StateOther
-	switch k.Proc.P_stat {
-	case sRun:
-		state = domain.StateRunning
-	case sSleep:
-		state = domain.StateSleeping
-	case sStop:
-		state = domain.StateStopped
-	}
 	return domain.ProcessSample{
 		PID:   pid,
 		PPID:  int(k.Eproc.Ppid),
 		UID:   k.Eproc.Ucred.Uid,
-		Start: time.Unix(k.Proc.P_starttime.Sec, 0).In(time.Local),
-		State: state,
+		Start: lstartTime(k.Proc.P_starttime.Sec, time.Local),
+		State: kinfoState(k.Proc.P_stat),
 	}, nil
 }
 

@@ -62,6 +62,10 @@ type WorkloadView struct {
 	// Background is set by throtd when the workload runs at background
 	// priority (scheduler.background); the graph leaves it false.
 	Background bool `json:"background,omitempty"`
+	// Idle is set by throtd when the scheduler finds the running workload
+	// idle (scheduler.IdleWindow): below high pressure it does not count
+	// against the heavy limits. The graph leaves it false.
+	Idle bool `json:"idle,omitempty"`
 }
 
 // MaxUnattributed bounds Snapshot.Unattributed.

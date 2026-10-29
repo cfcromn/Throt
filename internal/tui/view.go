@@ -773,6 +773,8 @@ func (m Model) stateOf() func(process.WorkloadView) string {
 			return "PAUSED"
 		case would[k]:
 			return "running (would queue)"
+		case h.Idle:
+			return "idle"
 		case h.Background:
 			return "bg"
 		}

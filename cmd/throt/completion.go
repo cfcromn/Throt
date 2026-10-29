@@ -33,7 +33,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status stats learned ping events explain pause resume run reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status stats learned ping events explain pause resume run wait reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -92,6 +92,7 @@ _throt() {
         'pause:pause a heavy workload'
         'resume:resume a paused workload'
         'run:wait for heavy-job capacity, then run a command'
+        'wait:wait until a heavy slot is held for this agent'
         'stats:per-agent resource usage since throtd started'
         'learned:list or forget the commands throtd learned heavy'
         'reload:make throtd re-read its config file'
@@ -153,6 +154,7 @@ complete -c throt -n __fish_use_subcommand -a explain -d 'explain why a heavy wo
 complete -c throt -n __fish_use_subcommand -a pause -d 'pause a heavy workload'
 complete -c throt -n __fish_use_subcommand -a resume -d 'resume a paused workload'
 complete -c throt -n __fish_use_subcommand -a run -d 'wait for heavy-job capacity, then run a command'
+complete -c throt -n __fish_use_subcommand -a wait -d 'wait until a heavy slot is held for this agent'
 complete -c throt -n __fish_use_subcommand -a stats -d 'per-agent resource usage since throtd started'
 complete -c throt -n __fish_use_subcommand -a learned -d 'list or forget the commands throtd learned heavy'
 complete -c throt -n __fish_use_subcommand -a reload -d 'make throtd re-read its config file'
