@@ -88,5 +88,5 @@ func kinfoIdentity(ctx context.Context, pid int) (time.Time, uint32, error) {
 	case k.Proc.P_stat == sZomb:
 		return time.Time{}, 0, fmt.Errorf("identity of pid %d: zombie: %w", pid, domain.ErrProcessGone)
 	}
-	return time.Unix(k.Proc.P_starttime.Sec, 0).In(time.Local), k.Eproc.Ucred.Uid, nil
+	return lstartTime(k.Proc.P_starttime.Sec, time.Local), k.Eproc.Ucred.Uid, nil
 }

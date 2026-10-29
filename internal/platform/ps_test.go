@@ -295,6 +295,49 @@ func TestPSNameCacheRefresh(t *testing.T) {
 	}
 }
 
+// psStartOf is the start the ps path parses for a process that started at
+// sec: ps prints lstart in local time, with the day padded.
+func psStartOf(t *testing.T, sec int64, loc *time.Location) time.Time {
+	t.Helper()
+	line := "7 1 501 10 S 0:00.01 " + time.Unix(sec, 0).In(loc).Format("Mon Jan _2 15:04:05 2006")
+	p, ok := parsePSStatLine(line, loc)
+	if !ok {
+		t.Fatalf("parse %q", line)
+	}
+	return p.Start
+}
+
+// TestLstartTime checks that lstartTime gives exactly the start the ps
+// path parses for the same second, compared with == as a map key does,
+// including the hour a clock goes back, where the wall-clock time ps
+// prints occurs twice.
+func TestLstartTime(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("no tz database: %v", err)
+	}
+	// 2026-11-01 01:30 local occurs at 05:30 and at 06:30 UTC.
+	edt := time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC).Unix()
+	if a, b := psStartOf(t, edt, loc), psStartOf(t, edt+3600, loc); a != b {
+		t.Fatalf("test premise: ps starts %v and %v differ", a, b)
+	}
+	// Away from a change it is the plain conversion, as Identify used.
+	sec := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC).Unix()
+	if got := lstartTime(sec, loc); got != time.Unix(sec, 0).In(loc) {
+		t.Errorf("lstartTime(%d) = %v", sec, got)
+	}
+	// Every minute of a year, in a zone with offset changes and one
+	// without.
+	from := time.Date(2026, 1, 1, 0, 0, 7, 0, time.UTC).Unix()
+	for _, l := range []*time.Location{loc, time.FixedZone("test", 9*3600)} {
+		for sec := from; sec < from+366*86400; sec += 60 {
+			if got, want := lstartTime(sec, l), psStartOf(t, sec, l); got != want {
+				t.Fatalf("%s: lstartTime(%d) = %v, ps start %v", l, sec, got, want)
+			}
+		}
+	}
+}
+
 func TestPSNameCacheLookupError(t *testing.T) {
 	var c psNameCache
 	boom := errors.New("boom")

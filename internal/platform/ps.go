@@ -30,6 +30,34 @@ const psNameColumns = "pid=,comm="
 // Fields are re-joined with single spaces, so a padded day still matches.
 const psLstartLayout = "Mon Jan 2 15:04:05 2006"
 
+// lstartSlack is how close to a change of the UTC offset lstartTime takes
+// the slow path. It is wider than any offset change, so every start whose
+// wall-clock time could occur twice takes it.
+const lstartSlack = 25 * time.Hour
+
+// lstartTime returns the start time parsePSStatLine reads from ps for a
+// process that started at Unix second sec. ps prints lstart as local
+// wall-clock time with whole seconds, parsed back in loc; when the clock
+// goes back an hour, a wall-clock time occurs twice and the parse can land
+// an hour away from sec. So near any change of loc's offset the time is
+// formatted and parsed as ps output is, and elsewhere the round trip is
+// the identity: either way a process gets exactly the start, and so the
+// ProcessKey, it gets from ps, whichever collector read it.
+func lstartTime(sec int64, loc *time.Location) time.Time {
+	t := time.Unix(sec, 0).In(loc)
+	_, off := t.Zone()
+	_, before := t.Add(-lstartSlack).Zone()
+	_, after := t.Add(lstartSlack).Zone()
+	if off == before && off == after {
+		return t
+	}
+	p, err := time.ParseInLocation(psLstartLayout, t.Format(psLstartLayout), loc)
+	if err != nil {
+		return t
+	}
+	return p
+}
+
 // parsePS combines a stats pass and a full names pass. lstart is
 // interpreted in loc. Malformed lines are skipped; an error is returned only
 // when a reader fails.

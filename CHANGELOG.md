@@ -9,6 +9,9 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 ### Added
 - Idle holders free their slot: a running heavy workload whose subtree stays under 5% of a core for 2 minutes (a hung build, one waiting on a lock, the network or a container start) no longer counts against `heavy_limit` or `per_agent_limit` below high pressure, so queued work resumes (new decision reason `holder_idle`, one per `resume_cooldown`). It is never paused or signalled for this; when it is busy again it counts again, nothing is preempted, and nothing new starts until the count is under the limit. `status` heavy entries carry `idle`, and `throt status` shows `running (idle)`.
 
+### Changed
+- macOS: the process sampler reads the process table with `sysctl kern.proc.all` and the user's own processes' CPU time and RSS with `proc_info`, instead of forking `/bin/ps` every sample; process identities (PID and start time) are unchanged. Other users' processes, which only `ps` can read, are measured every 15th sample, and every sample while host CPU has no iostat reading; in between their RSS in `unattributed_rss` and `unattributed_memory` is up to 15 samples old and their CPU rate reads 0. If `kern.proc.all` or `proc_info` fails, the sample comes from `ps` as before.
+
 ## [1.0.0-rc.1] - 2026-10-29
 
 The first 1.0 release candidate. The [compatibility policy](docs/ARCHITECTURE.md#compatibility) now applies: the commands, config, local protocol v1, JSON output, events, reason codes, MCP tools and exit codes it lists do not break within 1.x, and tests pin them. The scheduler stays off by default; the benchmarks say when to turn it on.
