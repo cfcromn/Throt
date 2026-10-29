@@ -700,7 +700,11 @@ func (s *Scheduler) Decide(in Input) []Decision {
 		case domain.PressureUnknown:
 			// Degraded metrics: fail open.
 		case domain.PressureHigh:
-			reason = ReasonPressureHigh
+			// Keep one heavy workload running: with none running, queueing
+			// frees no memory and only stops all progress.
+			if running > 0 {
+				reason = ReasonPressureHigh
+			}
 		case domain.PressureCritical:
 			reason = ReasonPressureCritical
 		default:
@@ -871,8 +875,9 @@ func (s *Scheduler) pickResume(in Input, queued []*cand, running int, perOwner m
 		// Pausing frees no memory, so high pressure can outlast the queue.
 		// Aged work still gets a free slot under the configured ceiling (not
 		// the adaptive limit, which halves to 1 here), one per cooldown, so
-		// nothing starves.
-		if running < p.HeavyLimit && aged(best) {
+		// nothing starves. With nothing running, the next one resumes at
+		// once (after the cooldown): pausing all of them frees no memory.
+		if running == 0 || (running < p.HeavyLimit && aged(best)) {
 			return best, reason
 		}
 	case domain.PressureUnknown:
