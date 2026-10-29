@@ -66,6 +66,8 @@ Use [Conventional Commits](https://www.conventionalcommits.org/): `feat(tui): ad
 
 A PR explains the problem, the approach, trade-offs, tests, user-visible changes, and — for process control — risk and rollback. Scheduler-default changes need benchmark evidence. PRs are squash-merged; CI must pass.
 
+`README.ko.md` is a Korean translation of `README.md`: mirror README changes there, or say in the PR that it needs updating if you can't write Korean.
+
 ## Review checklist
 
 - Is the change in scope and as small as it can be? Are failure modes explicit?
