@@ -185,6 +185,9 @@ func goldenCases() []goldenCase {
 		{name: "setup -h", args: []string{"setup", "-h"}},
 		{name: "setup claude-code", args: []string{"setup", "claude-code"}},
 		{name: "setup codex", args: []string{"setup", "codex"}},
+		// $HOME is the test's own, empty home.
+		{name: "setup claude-code --write", args: []string{"setup", "claude-code", "--write"}},
+		{name: "setup codex --write", args: []string{"setup", "codex", "--write"}},
 		{name: "setup bogus", args: []string{"setup", "bogus"}},
 		{name: "setup extra", args: []string{"setup", "codex", "x"}},
 
@@ -500,8 +503,10 @@ Commands:
              Claude Code PreToolUse hook: before a lone heavy Bash command,
              wait up to D (default 50s) for heavy-job capacity; never
              changes or blocks the command (advisory; fails open)
-  setup claude-code|codex
-             print the configuration to paste into a coding agent
+  setup claude-code|codex [--write]
+             print the configuration to paste into a coding agent;
+             --write installs it in your home directory instead (adds only,
+             keeps a .throt-backup of each changed file)
   completion bash|zsh|fish
              print a shell completion script
   version [--json]
@@ -563,7 +568,7 @@ _throt() {
         status|version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
         update) [[ "$prev" == --version || "$prev" == -version ]] || COMPREPLY=($(compgen -W "--check --version --pre --yes" -- "$cur")) ;;
         hook) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code" -- "$cur")) ;;
-        setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) ;;
+        setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) || COMPREPLY=($(compgen -W "--write" -- "$cur")) ;;
         run)
             local j
             for ((j = i + 1; j < COMP_CWORD; j++)); do
@@ -628,6 +633,7 @@ complete -c throt -n '__fish_seen_subcommand_from update' -l pre -d 'include pre
 complete -c throt -n '__fish_seen_subcommand_from update' -l yes -d 'do not ask for confirmation'
 complete -c throt -n '__fish_seen_subcommand_from hook' -x -a 'claude-code'
 complete -c throt -n '__fish_seen_subcommand_from setup' -x -a 'claude-code codex'
+complete -c throt -n '__fish_seen_subcommand_from setup' -l write -d 'install the configuration in your home directory'
 complete -c throt -n '__fish_seen_subcommand_from run' -l timeout -x -d 'run anyway after this long'
 complete -c throt -n '__fish_seen_subcommand_from run' -l no-wait -d 'check once and run regardless'
 complete -c throt -n '__fish_seen_subcommand_from run' -a '(__fish_complete_command)'
@@ -682,7 +688,7 @@ _throt() {
                 status|version) _arguments '--json[print JSON]' ;;
                 update) _arguments '--check[only report whether an update is available]' '--version[install this release]:version:' '--pre[include prereleases]' '--yes[do not ask for confirmation]' ;;
                 hook) (( CURRENT == 2 )) && compadd claude-code ;;
-                setup) (( CURRENT == 2 )) && compadd claude-code codex ;;
+                setup) (( CURRENT == 2 )) && compadd claude-code codex || _arguments '--write[install the configuration in your home directory]' ;;
                 run) _arguments -S '--timeout[run anyway after this long]:duration:' '--no-wait[check once and run regardless]' '*::command:_normal' ;;
             esac
             ;;
@@ -1050,15 +1056,18 @@ Flags:
 		"run no dashes": {code: 4, stdout: "", stderr: ""},
 		"run not found": {code: 127, stdout: "", stderr: `throt: run: throt-no-such-command: command not found
 `},
-		"setup": {code: 2, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
+		"setup": {code: 2, stdout: "", stderr: `throt: usage: throt setup claude-code|codex [--write]
 `},
-		"setup -h": {code: 0, stdout: `usage: throt setup claude-code|codex
+		"setup -h": {code: 0, stdout: `usage: throt setup claude-code|codex [--write]
 
-print the configuration to paste into a coding agent
+print the configuration to paste into a coding agent;
+--write installs it in your home directory instead (adds only,
+keeps a .throt-backup of each changed file)
 `, stderr: ""},
-		"setup bogus": {code: 2, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
+		"setup bogus": {code: 2, stdout: "", stderr: `throt: usage: throt setup claude-code|codex [--write]
 `},
-		"setup claude-code": {code: 0, stdout: `Claude Code setup (nothing is written; paste these yourself).
+		"setup claude-code": {code: 0, stdout: `Claude Code setup (nothing is written; paste these yourself, or run
+"throt setup claude-code --write" to add the hook to ~/.claude/settings.json).
 
 1. Hook: add this to ~/.claude/settings.json (all projects) or
    .claude/settings.json (one project). If the file already has "hooks",
@@ -1113,8 +1122,17 @@ print the configuration to paste into a coding agent
 
 Both need throt on PATH, and the MCP tools need throtd running.
 `, stderr: ""},
-		"setup codex": {code: 0, stdout: "Codex setup (nothing is written; paste these yourself).\n\n1. MCP server (pressure and capacity tools): add this to ~/.codex/config.toml:\n\n[mcp_servers.throt]\ncommand = \"throt\"\nargs = [\"mcp\"]\n\n2. Add this paragraph to your AGENTS.md:\n\nPrefix heavy commands (builds, full test suites, container builds) with `throt run --`, e.g. `throt run -- npm run build` or `cd web && throt run -- make`. It waits for a free heavy-job slot and then runs the command unchanged; if throtd is down it runs at once.\n\nBoth need throt on PATH, and the MCP tools need throtd running.\n", stderr: ""},
-		"setup extra": {code: 2, stdout: "", stderr: `throt: usage: throt setup claude-code|codex
+		"setup claude-code --write": {code: 0, stdout: `Created $DIR/home/.claude/settings.json with a PreToolUse hook for Bash:
+  throt hook claude-code --max-wait 110s (timeout 120s)
+Restart running Claude Code sessions to use it. For the MCP server, run:
+  claude mcp add --scope user throt -- throt mcp
+`, stderr: ""},
+		"setup codex": {code: 0, stdout: "Codex setup (nothing is written; paste these yourself, or run\n\"throt setup codex --write\" to add both to ~/.codex).\n\n1. MCP server (pressure and capacity tools): add this to ~/.codex/config.toml:\n\n[mcp_servers.throt]\ncommand = \"throt\"\nargs = [\"mcp\"]\n\n2. Add this paragraph to ~/.codex/AGENTS.md (all projects) or a project AGENTS.md:\n\nPrefix heavy commands (builds, full test suites, container builds) with `throt run --`, e.g. `throt run -- npm run build` or `cd web && throt run -- make`. It waits for a free heavy-job slot and then runs the command unchanged; if throtd is down it runs at once.\n\nBoth need throt on PATH, and the MCP tools need throtd running.\n", stderr: ""},
+		"setup codex --write": {code: 0, stdout: `Created $DIR/home/.codex/config.toml with [mcp_servers.throt].
+Created $DIR/home/.codex/AGENTS.md with the 'throt run --' paragraph.
+Restart running Codex sessions to use it.
+`, stderr: ""},
+		"setup extra": {code: 2, stdout: "", stderr: `throt: usage: throt setup claude-code|codex [--write]
 `},
 		"stats": {code: 0, stdout: `SINCE 2026-10-28 14:00:00 (AGE ago, in memory; resets when throtd restarts)
 

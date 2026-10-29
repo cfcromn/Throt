@@ -45,7 +45,7 @@ _throt() {
         status|version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
         update) [[ "$prev" == --version || "$prev" == -version ]] || COMPREPLY=($(compgen -W "--check --version --pre --yes" -- "$cur")) ;;
         hook) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code" -- "$cur")) ;;
-        setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) ;;
+        setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) || COMPREPLY=($(compgen -W "--write" -- "$cur")) ;;
         run)
             local j
             for ((j = i + 1; j < COMP_CWORD; j++)); do
@@ -118,7 +118,7 @@ _throt() {
                 status|version) _arguments '--json[print JSON]' ;;
                 update) _arguments '--check[only report whether an update is available]' '--version[install this release]:version:' '--pre[include prereleases]' '--yes[do not ask for confirmation]' ;;
                 hook) (( CURRENT == 2 )) && compadd claude-code ;;
-                setup) (( CURRENT == 2 )) && compadd claude-code codex ;;
+                setup) (( CURRENT == 2 )) && compadd claude-code codex || _arguments '--write[install the configuration in your home directory]' ;;
                 run) _arguments -S '--timeout[run anyway after this long]:duration:' '--no-wait[check once and run regardless]' '*::command:_normal' ;;
             esac
             ;;
@@ -171,6 +171,7 @@ complete -c throt -n '__fish_seen_subcommand_from update' -l pre -d 'include pre
 complete -c throt -n '__fish_seen_subcommand_from update' -l yes -d 'do not ask for confirmation'
 complete -c throt -n '__fish_seen_subcommand_from hook' -x -a 'claude-code'
 complete -c throt -n '__fish_seen_subcommand_from setup' -x -a 'claude-code codex'
+complete -c throt -n '__fish_seen_subcommand_from setup' -l write -d 'install the configuration in your home directory'
 complete -c throt -n '__fish_seen_subcommand_from run' -l timeout -x -d 'run anyway after this long'
 complete -c throt -n '__fish_seen_subcommand_from run' -l no-wait -d 'check once and run regardless'
 complete -c throt -n '__fish_seen_subcommand_from run' -a '(__fish_complete_command)'

@@ -75,7 +75,9 @@ it changes from the defaults, and warns about risky settings;
 		{name: "hook", run: cmdHook, synopsis: "claude-code [--max-wait D]", help: `Claude Code PreToolUse hook: before a lone heavy Bash command,
 wait up to D (default 50s) for heavy-job capacity; never
 changes or blocks the command (advisory; fails open)`},
-		{name: "setup", run: cmdSetup, synopsis: "claude-code|codex", help: "print the configuration to paste into a coding agent"},
+		{name: "setup", run: cmdSetup, synopsis: "claude-code|codex [--write]", help: `print the configuration to paste into a coding agent;
+--write installs it in your home directory instead (adds only,
+keeps a .throt-backup of each changed file)`},
 		{name: "completion", run: cmdCompletion, synopsis: "bash|zsh|fish", help: "print a shell completion script"},
 		{name: "version", run: cmdVersion, synopsis: "[--json]", help: `print the client version; --json adds the protocol and Go
 versions, and throtd's version when it is reachable`},
