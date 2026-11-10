@@ -45,10 +45,10 @@ func (m Model) View() tea.View {
 
 func (m Model) render() string {
 	if m.width == 0 || m.height == 0 {
-		return "starting…"
+		return tr("starting…")
 	}
 	if m.width < minWidth || m.height < minHeight {
-		lines := splitLines(lipgloss.Wrap(fmt.Sprintf("terminal too small (%dx%d); throt needs at least %dx%d. Press q to quit.",
+		lines := splitLines(lipgloss.Wrap(fmt.Sprintf(tr("terminal too small (%dx%d); throt needs at least %dx%d. Press q to quit."),
 			m.width, m.height, minWidth, minHeight), m.width, ""))
 		for i, l := range lines {
 			lines[i] = truncate(l, m.width)
@@ -149,7 +149,7 @@ func (m Model) layout() layout {
 		l.statH = 6
 	}
 	if m.width >= wideWidth && l.avail >= 40 {
-		l.statH = 8
+		l.statH = 7
 	}
 	l.grid = m.width >= gridMinWidth && l.avail >= 5+8
 	if l.grid {
@@ -449,25 +449,25 @@ func (m Model) topLines() []string {
 	var lines []string
 	switch {
 	case !m.polled:
-		lines = append(lines, truncate("connecting to throtd at "+m.socket+"…", w))
+		lines = append(lines, truncate(tr("connecting to throtd at ")+m.socket+"…", w))
 	case !m.connected:
-		msg := fmt.Sprintf("cannot reach throtd at %s: start it with `throtd`", m.socket)
-		detail := fmt.Sprintf("retrying every %s; last error: %v", pollInterval, m.err)
+		msg := fmt.Sprintf(tr("cannot reach throtd at %s: start it with `throtd`"), m.socket)
+		detail := fmt.Sprintf(tr("retrying every %s; last error: %v"), pollInterval, m.err)
 		if nr := (*transport.NotRunningError)(nil); errors.As(m.err, &nr) {
 			// Its error already says to start throtd; say it once.
-			msg = "throtd is not running — start it with `throtd`"
-			detail = fmt.Sprintf("retrying every %s (socket %s)", pollInterval, nr.Socket)
+			msg = tr("throtd is not running — start it with `throtd`")
+			detail = fmt.Sprintf(tr("retrying every %s (socket %s)"), pollInterval, nr.Socket)
 		}
 		lines = append(lines, splitLines(m.st.banner.Render(lipgloss.Wrap(msg, w, "/")))...)
 		lines = append(lines, truncate(detail, w))
 	}
 	if n := m.status.OrphanCount; m.connected && n > 0 {
-		noun := "processes"
+		noun := tr("processes")
 		if n == 1 {
-			noun = "process"
+			noun = tr("process")
 		}
 		lines = append(lines, truncate(m.st.degraded.Render(
-			fmt.Sprintf("STOPPED  %d %s not paused by throtd (see throt doctor)", n, noun)), w))
+			fmt.Sprintf(tr("STOPPED  %d %s not paused by throtd (see throt doctor)"), n, noun)), w))
 	}
 	if m.connected && m.status.Degraded != "" {
 		lines = append(lines, splitLines(m.st.degraded.Render(lipgloss.Wrap("DEGRADED  "+m.status.Degraded, w, "")))...)
@@ -483,19 +483,19 @@ func (m Model) sysLines(cw, room int) []string {
 	pressure := "n/a"
 	if m.connected {
 		p := m.status.Pressure
-		name := strings.ToUpper(p.String())
+		name := tr(strings.ToUpper(p.String()))
 		if int(p) >= 0 && int(p) < len(m.st.pressure) {
 			name = m.st.pressure[p].Render(name)
 		}
 		pressure = name
 		if h := m.status.Host; h != nil && h.Has(domain.MetricLatency) {
-			pressure += "  latency " + h.Latency.Round(time.Millisecond).String()
+			pressure += tr("  latency ") + h.Latency.Round(time.Millisecond).String()
 		}
 		if h := m.status.Host; h != nil {
 			pressure += psiSummary(*h)
 		}
 	}
-	head := "pressure " + pressure
+	head := tr("pressure ") + pressure
 	// The latency sparkline ends the line and only takes the room left.
 	if h := m.status.Host; m.connected && h != nil && h.Has(domain.MetricLatency) {
 		if sw := min(sparkWidth(cw), cw-lipgloss.Width(head)-1); sw >= minSparkWidth/2 {
@@ -543,9 +543,9 @@ func (m Model) schedulerLines(w int) []string {
 		return nil
 	}
 	items := append([]string{string(sc.Mode)}, m.schedulerItems()...)
-	const label = "SCHEDULER  "
+	label := tr("SCHEDULER") + "  "
 	// Continuations line up under the first item when the longest fits.
-	indent := len(label)
+	indent := lipgloss.Width(label)
 	for _, it := range items {
 		if indent+lipgloss.Width(it)+1 > w {
 			indent = 2
@@ -596,7 +596,7 @@ func (m Model) reasonLine(w int) string {
 		// The cause is as prominent as the level it explains.
 		text = m.st.pressure[p].Render(text)
 	}
-	line := "why: " + text
+	line := tr("why: ") + text
 	if raw := "  (" + m.status.Reason + ")"; ok && lipgloss.Width(line+raw) <= w {
 		line += m.st.header.Render(raw)
 	}
@@ -633,9 +633,9 @@ func (m Model) metricLines(w int) []string {
 
 	var cpu, mem, swap string
 	var cpuFrac, memFrac, swapFrac float64
-	load := "load n/a"
+	load := tr("load n/a")
 	if has(domain.MetricLoad) {
-		load = fmt.Sprintf("load %.2f/cpu", h.Load1)
+		load = fmt.Sprintf(tr("load %.2f/cpu"), h.Load1)
 	}
 	if has(domain.MetricCPU) {
 		cpuFrac, cpu = h.CPUUsage, load
@@ -646,11 +646,11 @@ func (m Model) metricLines(w int) []string {
 	}
 	kernel := ""
 	if m.connected && h != nil && h.HasMemoryPressure() {
-		kernel = "kernel: " + h.MemoryPressure.String()
+		kernel = tr("kernel: ") + tr(h.MemoryPressure.String())
 		mem += "  " + kernel
 	}
 	if has(domain.MetricSwap) {
-		swapFrac, swap = ratio(h.SwapUsed, h.SwapTotal), fmt.Sprintf("%s / %s", formatBytes(h.SwapUsed), formatBytes(h.SwapTotal))
+		swapFrac, swap = swapShare(*h), formatBytes(h.SwapUsed)+tr(" used, % of RAM")
 	}
 	// All bars share one width so the percentages line up. A long detail
 	// (the kernel verdict) narrows them, but not below minBarWidth.
@@ -673,12 +673,13 @@ func (m Model) metricLines(w int) []string {
 	return []string{
 		cpuLine,
 		memLine,
-		// The SWAP bar is swap used; its sparkline is swap growth.
-		m.bar(w, "SWAP", width, has(domain.MetricSwap), swapFrac, m.spark(w, swapOf, 0, swapScaleFloor), swap),
+		// The SWAP bar is swap used against physical memory; its sparkline is
+		// swap growth.
+		m.swapBar(w, width, has(domain.MetricSwap), swapFrac, swap),
 	}
 }
 
-// bar renders "LABEL ████░░░░  42%  ▁▂▃▅  detail" with a bar width cells
+// bar renders "LABEL ━━━━────  42%  ▁▂▃▅  detail" with a bar width cells
 // wide, or "LABEL n/a" when !ok. spark is "" when sparklines are dropped.
 func (m Model) bar(w int, label string, width int, ok bool, frac float64, spark, detail string) string {
 	if !ok {
@@ -688,9 +689,15 @@ func (m Model) bar(w int, label string, width int, ok bool, frac float64, spark,
 	if spark != "" {
 		spark += "  "
 	}
-	fill := int(frac*float64(width) + 0.5)
-	return truncate(fmt.Sprintf("%-5s %s%s %4.0f%%  %s%s", label,
-		m.level(frac).UnsetBold().Render(strings.Repeat("█", fill)), m.st.track.Render(strings.Repeat("░", width-fill)), frac*100, spark, detail), w)
+	return truncate(fmt.Sprintf("%-5s %s %4.0f%%  %s%s", label, m.meter(frac, width, m.fill(frac)), frac*100, spark, detail), w)
+}
+
+// swapBar is bar for swap, never in a warning color: how much swap is in
+// use says little, and its growth is what raises pressure.
+func (m Model) swapBar(w, width int, ok bool, frac float64, detail string) string {
+	st := m.st
+	m.st.warn, m.st.bad = st.agentBar, st.agentBar
+	return m.bar(w, "SWAP", width, ok, frac, m.spark(w, swapOf, 0, swapScaleFloor), detail)
 }
 
 func (m Model) agentsPane(rows, w int) panel {
@@ -710,12 +717,12 @@ func (m Model) agentsPane(rows, w int) panel {
 	}
 	note, more := "", ""
 	if len(m.agents) > 1 {
-		note = fmt.Sprintf("  total %s CPU, %s", cores(cpu), formatBytes(rss))
+		note = fmt.Sprintf(tr("  total %s CPU, %s"), cores(cpu), formatBytes(rss))
 	}
 	if m.agentsCollapsed(rows) {
 		more = moreAgents(m.agents[rows-1:])
 	}
-	return m.table(paneAgents, "AGENTS", note, "(no agents detected)", cols, cells, rows, more, w)
+	return m.table(paneAgents, "AGENTS", note, tr("(no agents detected)"), cols, cells, rows, more, w)
 }
 
 // moreAgents summarizes the agents a collapsed table leaves out.
@@ -726,7 +733,7 @@ func moreAgents(rest []process.AgentView) string {
 		maxCPU, maxRSS = max(maxCPU, a.CPU), max(maxRSS, a.RSS)
 		sumCPU, sumRSS = sumCPU+a.CPU, sumRSS+a.RSS
 	}
-	return fmt.Sprintf("+%d more (each ≤%.0f%% CPU, ≤%s; %s CPU, %s together)",
+	return fmt.Sprintf(tr("+%d more (each ≤%.0f%% CPU, ≤%s; %s CPU, %s together)"),
 		len(rest), math.Ceil(maxCPU*100), formatBytes(maxRSS), cores(sumCPU), formatBytes(sumRSS))
 }
 
@@ -746,12 +753,12 @@ func (m Model) heavyPane(rows, w int) panel {
 		cells[i] = []string{owner(h.Owner), fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), state(h)}
 		cols[6].width = max(cols[6].width, lipgloss.Width(cells[i][6]))
 	}
-	return m.table(paneHeavy, "HEAVY WORKLOADS", "", "(no heavy workloads)", cols, cells, rows, "", w)
+	return m.table(paneHeavy, "HEAVY WORKLOADS", "", tr("(no heavy workloads)"), cols, cells, rows, "", w)
 }
 
-// stateOf returns a lookup of each workload's scheduling state: "QUEUED",
-// "PAUSED", "running (would queue)" for work observe mode would have
-// queued, "bg" while it runs at background priority, or "" while it runs.
+// stateOf returns a lookup of each workload's scheduling state: tr("QUEUED"),
+// tr("PAUSED"), tr("running (would queue)") for work observe mode would have
+// queued, tr("bg") while it runs at background priority, or "" while it runs.
 func (m Model) stateOf() func(process.WorkloadView) string {
 	paused := make(map[domain.ProcessKey]bool, len(m.status.Paused))
 	for _, p := range m.status.Paused {
@@ -768,25 +775,27 @@ func (m Model) stateOf() func(process.WorkloadView) string {
 	return func(h process.WorkloadView) string {
 		switch k := h.Key; {
 		case queued[k]:
-			return "QUEUED"
+			return tr("QUEUED")
 		case paused[k]:
-			return "PAUSED"
+			return tr("PAUSED")
 		case would[k]:
-			return "running (would queue)"
+			return tr("running (would queue)")
+		case h.Idle:
+			return tr("idle")
 		case h.Background:
-			return "bg"
+			return tr("bg")
 		}
 		return ""
 	}
 }
 
-func (m Model) drillTitle() string { return "AGENT " + m.drillLabel + "  (esc back)" }
+func (m Model) drillTitle() string { return tr("AGENT") + " " + m.drillLabel + tr("  (esc back)") }
 
 // drillInfoLines summarizes the drilled-into agent, w wide.
 func (m Model) drillInfoLines(w int) []string {
 	a, ok := m.drillAgent()
 	if !ok {
-		return []string{truncate(fmt.Sprintf("pid %d is no longer reported by throtd", m.drillKey.PID), w)}
+		return []string{truncate(fmt.Sprintf(tr("pid %d is no longer reported by throtd"), m.drillKey.PID), w)}
 	}
 	return fieldLines(m.st, agentFields(a), w)
 }
@@ -807,12 +816,12 @@ func (m Model) drillPane(rows, w int) panel {
 	for i, h := range hs {
 		st := state(h)
 		if st == "" {
-			st = "running"
+			st = tr("running")
 		}
 		cells[i] = []string{fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), st}
 		cols[5].width = max(cols[5].width, lipgloss.Width(st))
 	}
-	return m.table(paneDrill, "HEAVY WORKLOADS", "", "(no heavy workloads)", cols, cells, rows, "", w)
+	return m.table(paneDrill, "HEAVY WORKLOADS", "", tr("(no heavy workloads)"), cols, cells, rows, "", w)
 }
 
 // table renders a titled, scrollable table panel: a column header and
@@ -821,22 +830,22 @@ func (m Model) drillPane(rows, w int) panel {
 // more summarizes the rest.
 func (m Model) table(p pane, title, note, empty string, cols []column, cells [][]string, rows int, more string, w int) panel {
 	focused := m.active() == p && !m.help
-	head := title
 	visible := rows
 	if more != "" {
 		visible = rows - 1
 	}
+	head := ""
 	if n := len(cells); n > rows && more == "" {
-		head += fmt.Sprintf(" %d-%d of %d", m.off[p]+1, min(m.off[p]+rows, n), n)
+		head = fmt.Sprintf(tr(" %d-%d of %d"), m.off[p]+1, min(m.off[p]+rows, n), n)
 	} else if n > 0 {
-		head += fmt.Sprintf(" (%d)", n)
+		head = fmt.Sprintf(" (%d)", n)
 	}
 	head += note
 	// Columns are as wide as their widest cell or title (with room for a
 	// sort indicator), within their limits.
 	want := make([]int, len(cols))
 	for i, c := range cols {
-		want[i] = lipgloss.Width(c.title)
+		want[i] = lipgloss.Width(tr(c.title))
 		if c.sort != sortAuto {
 			want[i]++
 		}
@@ -848,7 +857,7 @@ func (m Model) table(p pane, title, note, empty string, cols []column, cells [][
 	sortBy := m.effectiveSort(m.sortBy[m.sortPane(p)])
 	header := make([]string, len(cols))
 	for i, c := range cols {
-		header[i] = c.title
+		header[i] = tr(c.title)
 		if sortBy != sortDaemon && c.sort == sortBy {
 			// Name sorts ascending, CPU and memory descending.
 			if sortBy == sortName {
@@ -862,14 +871,14 @@ func (m Model) table(p pane, title, note, empty string, cols []column, cells [][
 	if len(cells) == 0 {
 		msg := empty
 		if !m.connected {
-			msg = "(no data)"
+			msg = tr("(no data)")
 		}
 		lines = append(lines, truncate(strings.Repeat(" ", markerWidth)+msg, w))
 	}
 	for i := m.off[p]; i < len(cells) && i < m.off[p]+visible; i++ {
 		row := truncate(formatRow(cols, widths, cells[i]), w-markerWidth)
 		if focused && i == m.sel[p] {
-			lines = append(lines, m.st.selected.Render("> "+row))
+			lines = append(lines, m.st.selected.Render(pad("> "+row, w, false)))
 		} else {
 			lines = append(lines, "  "+row)
 		}
@@ -877,7 +886,7 @@ func (m Model) table(p pane, title, note, empty string, cols []column, cells [][
 	if more != "" {
 		lines = append(lines, m.st.header.Render(truncate(strings.Repeat(" ", markerWidth)+more, w)))
 	}
-	return panel{title: head, body: lines, focused: focused}
+	return panel{title: title, note: head, body: lines, focused: focused}
 }
 
 // detailsLines describes the selected row, w wide, using only fields the
@@ -888,11 +897,11 @@ func (m Model) detailsLines(w int) (string, []string) {
 	switch {
 	case m.focus == paneAgents && len(m.agents) > 0:
 		a := m.agents[m.sel[paneAgents]]
-		title = "DETAILS  agent " + a.Agent
+		title = tr("DETAILS  agent ") + a.Agent
 		fields = agentFields(a)
 	case m.focus == paneHeavy && len(m.heavy) > 0:
 		h := m.heavy[m.sel[paneHeavy]]
-		title = "DETAILS  workload " + h.Name
+		title = tr("DETAILS  workload ") + h.Name
 		ownerPID := "-"
 		if h.OwnerPID != 0 {
 			ownerPID = fmt.Sprint(h.OwnerPID)
@@ -902,7 +911,7 @@ func (m Model) detailsLines(w int) (string, []string) {
 			{"owner", owner(h.Owner)}, {"owner pid", ownerPID}, {"cpu", cores(h.CPU)}, {"mem", formatBytes(h.RSS)},
 		}
 	default:
-		return "DETAILS", []string{"nothing selected"}
+		return "DETAILS", []string{tr("nothing selected")}
 	}
 	return title, fieldLines(m.st, fields, w)
 }
@@ -919,7 +928,7 @@ func fieldLines(st styles, fields [][2]string, w int) []string {
 	var lines []string
 	line := ""
 	for _, f := range fields {
-		item := st.header.Render(f[0]) + " " + f[1]
+		item := st.header.Render(tr(f[0])) + " " + f[1]
 		if line != "" && lipgloss.Width(line)+2+lipgloss.Width(item) > w {
 			lines = append(lines, truncate(line, w))
 			line = ""
@@ -939,16 +948,16 @@ func fieldLines(st styles, fields [][2]string, w int) []string {
 // matching events are listed.
 func (m Model) timeline(rows, w int) panel {
 	events := m.shownEvents()
-	title := "EVENTS"
+	title := ""
 	if m.filter != "" || m.filtering {
 		cursor := ""
 		if m.filtering {
 			cursor = "_"
 		}
-		title += fmt.Sprintf("  filter: %s%s (%d of %d)", m.filter, cursor, len(events), len(m.events))
+		title += fmt.Sprintf(tr("  filter: %s%s (%d of %d)"), m.filter, cursor, len(events), len(m.events))
 	}
 	if m.eventsErr != nil {
-		title += "  (events unavailable: " + m.eventsErr.Error() + ")"
+		title += tr("  (events unavailable: ") + m.eventsErr.Error() + ")"
 	}
 	var lines []string
 	// time and tag columns with their gaps
@@ -965,11 +974,11 @@ func (m Model) timeline(rows, w int) panel {
 	}
 	switch {
 	case len(m.events) == 0:
-		lines = append(lines, "(no events)")
+		lines = append(lines, tr("(no events)"))
 	case len(events) == 0:
-		lines = append(lines, truncate("(no event matches the filter; esc clears it)", w))
+		lines = append(lines, truncate(tr("(no event matches the filter; esc clears it)"), w))
 	}
-	return panel{title: title, body: lines}
+	return panel{title: "EVENTS", note: title, body: lines}
 }
 
 // burstText words a burst of same-kind lifecycle events, given their count.
@@ -994,7 +1003,7 @@ func (it timelineItem) text() string {
 	if it.n > 1 {
 		names := slices.Clone(it.names)
 		slices.Reverse(names)
-		return fmt.Sprintf(burstText[it.e.Kind], it.n) + ": " + strings.Join(names, ", ")
+		return fmt.Sprintf(tr(burstText[it.e.Kind]), it.n) + ": " + strings.Join(names, ", ")
 	}
 	if it.e.Message == "" {
 		return string(it.e.Kind)
@@ -1044,11 +1053,12 @@ func (m Model) helpLines(w int) []string {
 		"Sparklines and charts: the latest polls (one a second) of CPU,",
 		"memory used, swap (growth under SWAP), latency and pressure.",
 		"MEMORY BY OWNER: ● agents, ○ processes outside every agent.",
+		"SWAP is the amount in use, drawn against the physical memory.",
 		"The TUI makes no decisions: p and r send only what you confirm,",
 		"and throtd checks ownership before acting.",
 	}
 	for i, l := range lines {
-		lines[i] = truncate(l, w)
+		lines[i] = truncate(tr(l), w)
 	}
 	return lines
 }
@@ -1057,34 +1067,44 @@ func (m Model) helpLines(w int) []string {
 // the key hints.
 func (m Model) footer() string {
 	if a := m.confirm; a != nil {
-		return m.st.title.Render(truncate(fmt.Sprintf("%s %s (pid %d)? y/n", a.verb, a.name, a.key.PID), m.width))
+		return m.st.title.Render(truncate(fmt.Sprintf("%s %s (pid %d)? y/n", tr(a.verb), a.name, a.key.PID), m.width))
 	}
 	if m.notice != "" {
 		return truncate(m.notice, m.width)
 	}
 	if m.filtering {
-		return m.st.footer.Render(truncate("filter: type text  backspace delete  enter keep  esc clear", m.width))
+		return m.st.footer.Render(truncate(tr("filter: type text  backspace delete  enter keep  esc clear"), m.width))
 	}
 	// The footer always ends with ? help and q quit, which fit even at the
 	// minimum width; the other hints give way first, whole.
 	var hints string
 	switch {
 	case m.help:
-		hints = "esc close"
+		hints = tr("esc close")
 	case m.drill:
-		hints = "esc back  j/k move  p/r pause/resume  s sort"
+		hints = tr("esc back  j/k move  p/r pause/resume  s sort")
 	case m.focus == paneHeavy:
-		hints = "tab focus  j/k move  p/r pause/resume  enter details  s sort  / filter"
+		hints = tr("tab focus  j/k move  p/r pause/resume  enter details  s sort  / filter")
 	default:
-		hints = "tab focus  j/k move  enter open  s sort  / filter"
+		hints = tr("tab focus  j/k move  enter open  s sort  / filter")
 	}
-	const always = "? help  q quit"
-	if w := m.width - len(always) - 2; w > 0 {
+	always := tr("? help  q quit")
+	if w := m.width - lipgloss.Width(always) - 2; w > 0 {
 		if hints = truncateWords(hints, w); hints != "" {
-			return m.st.footer.Render(hints + "  " + always)
+			return m.hints(hints + "  " + always)
 		}
 	}
-	return m.st.footer.Render(truncate(always, m.width))
+	return m.hints(truncate(always, m.width))
+}
+
+// hints styles "key what  key what" hints: the keys stand out.
+func (m Model) hints(s string) string {
+	parts := strings.Split(s, "  ")
+	for i, p := range parts {
+		k, what, _ := strings.Cut(p, " ")
+		parts[i] = m.st.key.Render(k) + m.st.footer.Render(" "+what)
+	}
+	return strings.Join(parts, "  ")
 }
 
 // truncateWords cuts s at the last double-space gap that leaves it at most

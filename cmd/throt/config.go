@@ -17,10 +17,18 @@ import (
 	"github.com/cfcromn/Throt/internal/domain"
 )
 
-const configUsage = "usage: throt config check|show [--config PATH] [--json]"
+const configUsage = "usage: throt config check|show [--config PATH] [--json]\n       throt config reload\n       throt config learned [--forget SIGNATURE | --clear]"
 
 // cmdConfig is 'throt config'.
-func cmdConfig(_ context.Context, e env, args []string) error {
+func cmdConfig(ctx context.Context, e env, args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "reload":
+			return cmdReload(ctx, e, args[1:])
+		case "learned":
+			return cmdLearned(ctx, e, args[1:])
+		}
+	}
 	return runConfig(args, e.cfgPath, e.stdout)
 }
 

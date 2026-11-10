@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -491,5 +492,38 @@ func TestRunReportsSignature(t *testing.T) {
 		if strings.Join(reports, ",") != strings.Join(tt.want, ",") {
 			t.Errorf("%q: reports %q, want %q", tt.argv, reports, tt.want)
 		}
+	}
+}
+
+// TestRunStartsAtLowPriority checks that the command starts through the
+// platform's low-priority launcher exactly when throtd runs heavy workloads
+// in the background, with the resolved path, and never when throtd is down.
+func TestRunStartsAtLowPriority(t *testing.T) {
+	bg := free()
+	bg.st.Scheduler.Background = true
+	prefix := []string{"/usr/sbin/taskpolicy", "-c", "utility"}
+	for _, tt := range []struct {
+		name     string
+		reply    statusReply
+		prefix   []string
+		wantPath string
+		wantArgv []string
+	}{
+		{"background on", bg, prefix, "/usr/sbin/taskpolicy", []string{"/usr/sbin/taskpolicy", "-c", "utility", "/usr/bin/go", "build", "./..."}},
+		{"background off", free(), prefix, "/usr/bin/go", []string{"go", "build", "./..."}},
+		{"no launcher", bg, nil, "/usr/bin/go", []string{"go", "build", "./..."}},
+		{"throtd down", down(), prefix, "/usr/bin/go", []string{"go", "build", "./..."}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeRun{replies: []statusReply{tt.reply}}
+			r := f.runner()
+			r.lowPriority = tt.prefix
+			if err := r.run(context.Background(), runOptions{timeout: time.Minute, argv: []string{"go", "build", "./..."}}); err != nil {
+				t.Fatal(err)
+			}
+			if f.execPath != tt.wantPath || !slices.Equal(f.execArgv, tt.wantArgv) {
+				t.Fatalf("exec %s %q, want %s %q", f.execPath, f.execArgv, tt.wantPath, tt.wantArgv)
+			}
+		})
 	}
 }

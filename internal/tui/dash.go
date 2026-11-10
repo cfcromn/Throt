@@ -20,17 +20,15 @@ import (
 // borderSet is the characters of one border style.
 type borderSet struct{ tl, tr, bl, br, h, v string }
 
-var (
-	roundBorder = borderSet{"╭", "╮", "╰", "╯", "─", "│"}
-	// focusBorderSet marks the focused panel in shape as well as color.
-	focusBorderSet = borderSet{"┏", "┓", "┗", "┛", "━", "┃"}
-)
+var roundBorder = borderSet{"╭", "╮", "╰", "╯", "─", "│"}
 
 // panel is one dashboard box before it is drawn.
 type panel struct {
 	title string
-	body  []string
-	// focused draws the heavy border and the ▸ marker.
+	// note follows the title in the secondary color: a count, a time span.
+	note string
+	body []string
+	// focused draws the accent border and the ▸ marker.
 	focused bool
 	// border, when set, replaces the accent border style.
 	border *lipgloss.Style
@@ -49,7 +47,7 @@ func (m Model) draw(p panel, w, h int, bare bool) []string {
 	if h <= 0 || w <= 0 {
 		return nil
 	}
-	title := p.title
+	title := tr(p.title)
 	if title != "" {
 		mark := "  "
 		if p.focused {
@@ -60,10 +58,22 @@ func (m Model) draw(p panel, w, h int, bare bool) []string {
 		}
 		title = mark + title
 	}
+	// heading styles the title and what fits of the note in at most n cells.
+	heading := func(n int) string {
+		st := m.st.panelTitle
+		if p.focused {
+			st = m.st.focusTitle
+		}
+		t := truncate(title+p.note, n)
+		if len(t) < len(title) || !strings.HasPrefix(t, title) {
+			return st.Render(t)
+		}
+		return st.Render(title) + m.st.header.Render(t[len(title):])
+	}
 	if bare || w < 8 || h < 2 {
 		var lines []string
 		if p.title != "" {
-			lines = append(lines, truncate(m.st.panelTitle.Render(title), w))
+			lines = append(lines, heading(w))
 		}
 		for _, l := range p.body {
 			lines = append(lines, truncate(l, w))
@@ -78,12 +88,12 @@ func (m Model) draw(p panel, w, h int, bare bool) []string {
 		b = *p.border
 	}
 	if p.focused {
-		b, bs = m.st.focusBorder, focusBorderSet
+		b = m.st.focusBorder
 	}
 	lines := make([]string, 0, h)
 	top := b.Render(bs.tl + bs.h)
 	if title != "" && w >= 6 {
-		t := truncate(m.st.panelTitle.Render(title), w-5)
+		t := heading(w - 5)
 		top += " " + t + " " + b.Render(strings.Repeat(bs.h, w-5-lipgloss.Width(t))+bs.tr)
 	} else {
 		top += b.Render(strings.Repeat(bs.h, w-3) + bs.tr)
@@ -144,7 +154,7 @@ func splitWidths(total, gap int, weights []float64) []int {
 // gridGap is the space between dashboard panels.
 const gridGap = 1
 
-// level returns the threshold style of a fraction: green below 70%, yellow
+// level returns the threshold style of a fraction: plain below 70%, yellow
 // below 85%, red above.
 func (m Model) level(frac float64) lipgloss.Style {
 	switch {
@@ -154,6 +164,15 @@ func (m Model) level(frac float64) lipgloss.Style {
 		return m.st.warn
 	}
 	return m.st.ok
+}
+
+// fill is the color of a bar or a chart row at a fraction: the accent, and
+// the warning colors from the same thresholds as level.
+func (m Model) fill(frac float64) lipgloss.Style {
+	if frac >= 0.70 {
+		return m.level(frac).UnsetBold()
+	}
+	return m.st.agentBar
 }
 
 // Latency thresholds for the LATENCY panel's color.
@@ -166,15 +185,20 @@ const (
 // sparkline on the last row.
 type stat struct {
 	title string
-	// value is plain text; valueStyle colors it. big allows the big-digit
-	// font for it; badge draws it as a filled label instead.
+	// value is plain text; valueStyle colors it. A figure is a number and
+	// its unit, the unit in the secondary color; badge draws the value as a
+	// filled label instead. meter draws frac as a bar under the value.
 	value      string
 	valueStyle lipgloss.Style
-	big        bool
+	figure     bool
 	badge      bool
-	details    []string
-	spark      string
-	border     *lipgloss.Style
+	meter      bool
+	frac       float64
+	// calm keeps the meter in the accent color whatever frac is.
+	calm    bool
+	details []string
+	spark   string
+	border  *lipgloss.Style
 	// suffix follows a badge on its line when it fits.
 	suffix string
 	// why is set when the first detail is the pressure reason.
@@ -194,18 +218,33 @@ func (m Model) statBody(s stat, cw, rows int) []string {
 			value += "  " + rest
 		}
 	}
-	if g, ok := bigText(s.value); ok && s.big && rows >= 5 && lipgloss.Width(g[0]) <= cw {
-		for _, r := range g {
-			lines = append(lines, s.valueStyle.Render(r))
-		}
-	} else {
+	if n := len(s.value) - len(strings.TrimLeft(s.value, "0123456789.")); s.figure && n > 0 {
+		value = s.valueStyle.Render(s.value[:n]) + m.st.header.Render(s.value[n:])
+	}
+	// The meter goes under the value when there is a row for it, else
+	// beside it.
+	beside := max(6, lipgloss.Width(s.value)+2) // "100%" and two spaces
+	fill := m.fill(s.frac)
+	if s.calm {
+		fill = m.st.agentBar
+	}
+	switch {
+	case !s.meter:
+	case rows >= 5:
+		lines = append(lines, value, m.meter(s.frac, cw, fill))
+	case cw >= beside+6:
+		value += strings.Repeat(" ", beside-lipgloss.Width(value)) + m.meter(s.frac, cw-beside, fill)
+	}
+	if len(lines) == 0 {
 		lines = append(lines, value)
 	}
 	room := rows - len(lines)
 	if s.spark != "" {
 		room--
 	}
-	lines = append(lines, s.details[:min(len(s.details), max(0, room))]...)
+	for _, d := range s.details[:min(len(s.details), max(0, room))] {
+		lines = append(lines, m.st.header.Render(d))
+	}
 	for s.spark != "" && len(lines) < rows-1 {
 		lines = append(lines, "")
 	}
@@ -292,7 +331,7 @@ func (m Model) statRow(w, h int) []string {
 	return hjoin(gridGap, cols...)
 }
 
-// wideWidth is the width from which the stat panels show big numbers;
+// wideWidth is the width from which the stat panels get more room;
 // latencyWidth the width from which latency gets a panel of its own.
 const (
 	wideWidth    = 140
@@ -341,22 +380,25 @@ func (m Model) pressureStat(latencyPanel bool) stat {
 		return s
 	}
 	p := m.status.Pressure
-	s.value = strings.ToUpper(p.String())
+	s.value = tr(strings.ToUpper(p.String()))
 	if int(p) >= 0 && int(p) < len(m.st.badge) {
 		s.valueStyle = m.st.badge[p]
-		b := m.st.levelBorder[p]
-		s.border = &b
+		// The panel takes the level's color only once there is pressure.
+		if p >= domain.PressureElevated {
+			b := m.st.levelBorder[p]
+			s.border = &b
+		}
 	}
 	if m.status.Reason != "" {
 		text, _ := explainReason(m.status.Reason)
-		s.details, s.why = append(s.details, "why: "+text), true
+		s.details, s.why = append(s.details, tr("why: ")+text), true
 	}
 	if h, ok := m.host(); ok {
 		if psi := strings.TrimSpace(psiSummary(*h)); psi != "" {
 			s.details = append(s.details, psi)
 		}
 		if h.Has(domain.MetricLatency) && !latencyPanel {
-			s.suffix = "latency " + h.Latency.Round(time.Millisecond).String()
+			s.suffix = tr("latency ") + h.Latency.Round(time.Millisecond).String()
 		}
 	}
 	return s
@@ -366,11 +408,12 @@ func (m Model) cpuStat() stat {
 	s := stat{title: "CPU", value: "n/a", valueStyle: m.st.header}
 	h, ok := m.host()
 	if ok && h.Has(domain.MetricCPU) {
-		s.value, s.valueStyle, s.big = percent(h.CPUUsage), m.level(h.CPUUsage), true
+		s.value, s.valueStyle, s.figure = percent(h.CPUUsage), m.level(h.CPUUsage), true
+		s.meter, s.frac = true, h.CPUUsage
 	}
 	if ok && h.Has(domain.MetricLoad) {
-		d := fmt.Sprintf("load %.2f/cpu", h.Load1)
-		s.details, s.short = append(s.details, d), map[string]string{d: fmt.Sprintf("load %.2f", h.Load1)}
+		d := fmt.Sprintf(tr("load %.2f/cpu"), h.Load1)
+		s.details, s.short = append(s.details, d), map[string]string{d: fmt.Sprintf(tr("load %.2f"), h.Load1)}
 	}
 	return s
 }
@@ -381,12 +424,13 @@ func (m Model) memStat() stat {
 	if ok && h.Has(domain.MetricMemory) {
 		used := h.MemTotal - min(h.MemAvailable, h.MemTotal)
 		f := ratio(used, h.MemTotal)
-		s.value, s.valueStyle, s.big = percent(f), m.level(f), true
+		s.value, s.valueStyle, s.figure = percent(f), m.level(f), true
+		s.meter, s.frac = true, f
 		d := bytesPair(used, h.MemTotal)
 		s.details, s.short = append(s.details, d), map[string]string{d: formatBytes(used)}
 	}
 	if ok && h.HasMemoryPressure() {
-		s.details = append(s.details, "kernel: "+h.MemoryPressure.String())
+		s.details = append(s.details, tr("kernel: ")+tr(h.MemoryPressure.String()))
 	}
 	return s
 }
@@ -395,15 +439,25 @@ func (m Model) swapStat() stat {
 	s := stat{title: "SWAP", value: "n/a", valueStyle: m.st.header}
 	h, ok := m.host()
 	if ok && h.Has(domain.MetricSwap) {
-		f := ratio(h.SwapUsed, h.SwapTotal)
-		s.value, s.valueStyle, s.big = percent(f), m.level(f), true
-		d := bytesPair(h.SwapUsed, h.SwapTotal)
-		s.details, s.short = append(s.details, d), map[string]string{d: formatBytes(h.SwapUsed)}
+		// The amount, not a share of the swap space: macOS grows that space
+		// as it fills, so it always reads nearly full.
+		s.value, s.valueStyle, s.figure = formatBytes(h.SwapUsed), m.st.ok, true
+		s.meter, s.frac, s.calm = true, swapShare(*h), true
 		if last, ok := m.hist.last(); ok && last.hasSwapRate {
-			s.details = append(s.details, "growth "+formatRate(last.swapRate))
+			s.details = append(s.details, tr("growth ")+formatRate(last.swapRate))
 		}
+		s.details = append(s.details, tr("of ")+formatBytes(h.SwapTotal))
 	}
 	return s
+}
+
+// swapShare is swap in use as a share of physical memory, at most 1, or of
+// the swap space when the sample has no memory size.
+func swapShare(h domain.HostSample) float64 {
+	if h.Has(domain.MetricMemory) && h.MemTotal > 0 {
+		return min(1, ratio(h.SwapUsed, h.MemTotal))
+	}
+	return ratio(h.SwapUsed, h.SwapTotal)
 }
 
 func (m Model) latencyStat() stat {
@@ -411,7 +465,7 @@ func (m Model) latencyStat() stat {
 	h, ok := m.host()
 	if ok && h.Has(domain.MetricLatency) {
 		l := h.Latency.Round(time.Millisecond)
-		s.value, s.big = fmt.Sprintf("%dms", l.Milliseconds()), true
+		s.value, s.figure = fmt.Sprintf("%dms", l.Milliseconds()), true
 		switch {
 		case l >= latencyBad:
 			s.valueStyle = m.st.bad
@@ -420,7 +474,7 @@ func (m Model) latencyStat() stat {
 		default:
 			s.valueStyle = m.st.ok
 		}
-		s.details, s.short = append(s.details, "foreground lag"), map[string]string{"foreground lag": "lag"}
+		s.details, s.short = append(s.details, tr("foreground lag")), map[string]string{tr("foreground lag"): tr("lag")}
 	}
 	return s
 }
@@ -434,11 +488,11 @@ func (m Model) schedulerStat() stat {
 	}
 	sc := m.status.Scheduler
 	if sc.Mode == "" || sc.Mode == "off" {
-		s.value = "OFF"
-		s.details, s.short = []string{"not scheduling"}, map[string]string{"not scheduling": "idle"}
+		s.value = tr("OFF")
+		s.details, s.short = []string{tr("not scheduling")}, map[string]string{tr("not scheduling"): tr("idle")}
 		return s
 	}
-	s.value, s.valueStyle = strings.ToUpper(string(sc.Mode)), m.st.panelTitle
+	s.value, s.valueStyle = strings.ToUpper(string(sc.Mode)), m.st.focusTitle
 	// Queued work comes right after the limit, so a small panel keeps it.
 	items := m.schedulerItems()
 	n := len(items)
@@ -459,28 +513,28 @@ func bytesPair(used, total uint64) string {
 func (m Model) shortLimit() string {
 	sc := m.status.Scheduler
 	if sc.Adaptive {
-		return fmt.Sprintf("limit %d (%d–%d)", sc.HeavyLimit, sc.StartLimit, sc.MaxLimit)
+		return fmt.Sprintf(tr("limit %d (%d–%d)"), sc.HeavyLimit, sc.StartLimit, sc.MaxLimit)
 	}
-	return fmt.Sprintf("limit %d", sc.HeavyLimit)
+	return fmt.Sprintf(tr("limit %d"), sc.HeavyLimit)
 }
 
 // schedulerItems are the scheduler summary in the words of `throt status`.
 func (m Model) schedulerItems() []string {
 	sc := m.status.Scheduler
-	limit := fmt.Sprintf("limit %d", sc.HeavyLimit)
+	limit := fmt.Sprintf(tr("limit %d"), sc.HeavyLimit)
 	if sc.Adaptive {
-		limit += fmt.Sprintf(" (adaptive, start %d, max %d)", sc.StartLimit, sc.MaxLimit)
+		limit += fmt.Sprintf(tr(" (adaptive, start %d, max %d)"), sc.StartLimit, sc.MaxLimit)
 	}
 	items := []string{limit}
 	if sc.PerAgentLimit > 0 {
-		items = append(items, fmt.Sprintf("per-agent %d", sc.PerAgentLimit))
+		items = append(items, fmt.Sprintf(tr("per-agent %d"), sc.PerAgentLimit))
 	}
 	if sc.Mode == "observe" {
-		items = append(items, fmt.Sprintf("%d would queue", len(sc.WouldQueue)))
+		items = append(items, fmt.Sprintf(tr("%d would queue"), len(sc.WouldQueue)))
 	} else {
-		items = append(items, fmt.Sprintf("%d queued", len(sc.Queued)))
+		items = append(items, fmt.Sprintf(tr("%d queued"), len(sc.Queued)))
 	}
-	return append(items, fmt.Sprintf("%d reserved", len(sc.Leases)))
+	return append(items, fmt.Sprintf(tr("%d reserved"), len(sc.Leases)))
 }
 
 // wrapItems joins items with sep into lines at most width wide, breaking
@@ -507,56 +561,17 @@ func wrapItems(items []string, width int, sep string) []string {
 
 func percent(f float64) string { return fmt.Sprintf("%.0f%%", max(0, f)*100) }
 
-// bigGlyphs is a three-row seven-segment font for digits, drawn with
-// box-drawing lines.
-var bigGlyphs = map[rune][3]string{
-	'0': {"┏━┓", "┃ ┃", "┗━┛"},
-	'1': {"╺┓ ", " ┃ ", "╺┻╸"},
-	'2': {"╺━┓", "┏━┛", "┗━╸"},
-	'3': {"╺━┓", " ━┫", "╺━┛"},
-	'4': {"╻ ╻", "┗━┫", "  ╹"},
-	'5': {"┏━╸", "┗━┓", "╺━┛"},
-	'6': {"┏━╸", "┣━┓", "┗━┛"},
-	'7': {"╺━┓", "  ┃", "  ╹"},
-	'8': {"┏━┓", "┣━┫", "┗━┛"},
-	'9': {"┏━┓", "┗━┫", "╺━┛"},
-}
-
-// bigText renders s in the big font, glyphs a cell apart. Anything else
-// (units such as "%" and "ms", a decimal point) sits on the bottom row in
-// normal size, like a unit beside a figure. ok is false when s has no
-// digit.
-func bigText(s string) (rows [3]string, ok bool) {
-	for i, r := range s {
-		g, known := bigGlyphs[r]
-		if !known {
-			g = [3]string{" ", " ", string(r)}
-		} else {
-			ok = ok || (r >= '0' && r <= '9')
-			if i > 0 {
-				for j := range rows {
-					rows[j] += " "
-				}
-			}
-		}
-		for j := range rows {
-			rows[j] += g[j]
-		}
-	}
-	return rows, ok
-}
-
 // chartRow renders the CPU, MEMORY and SWAP time series side by side.
 func (m Model) chartRow(w, h int) []string {
 	series := []struct {
-		title string
-		get   func(histSample) (float64, bool)
-	}{{"CPU", cpuOf}, {"MEMORY", memOf}, {"SWAP", swapUsedOf}}
+		title, unit string
+		get         func(histSample) (float64, bool)
+	}{{"CPU", " %", cpuOf}, {"MEMORY", " %", memOf}, {"SWAP", " % of RAM", swapUsedOf}}
 	widths := splitWidths(w, gridGap, []float64{1, 1, 1})
 	cols := make([][]string, len(series))
 	for i, s := range series {
-		title := s.title + " % · last " + shortDuration(historyLen*pollInterval)
-		cols[i] = m.draw(panel{title: title, body: m.chart(s.get, innerWidth(widths[i]), h-2)}, widths[i], h, false)
+		note := tr(s.unit) + tr(" · last ") + shortDuration(historyLen*pollInterval)
+		cols[i] = m.draw(panel{title: s.title, note: note, body: m.chart(s.get, innerWidth(widths[i]), h-2)}, widths[i], h, false)
 	}
 	return hjoin(gridGap, cols...)
 }
@@ -568,21 +583,21 @@ func shortDuration(d time.Duration) string {
 	return d.Round(time.Second).String()
 }
 
-// chartAxisWidth is the y axis: a label and the axis line.
+// chartAxisWidth is the y axis: a label and a space.
 const chartAxisWidth = 5
 
-// chart draws a 0–100% area chart of one signal, cw cells wide and rows
+// chart draws a 0–100% line chart of one signal, cw cells wide and rows
 // high, in braille: each cell is two dot columns wide and four steps high.
 // The whole history fits: each dot column is the largest of the samples it
-// covers, newest on the right. Rows take the threshold color of their
-// height.
+// covers, newest on the right. Rows take the color of their height, and a
+// faint baseline runs where there is nothing to draw.
 func (m Model) chart(get func(histSample) (float64, bool), cw, rows int) []string {
 	if rows <= 0 {
 		return nil
 	}
 	plotW := cw - chartAxisWidth
 	if !m.connected || m.hist.n == 0 || plotW < 4 {
-		return []string{m.st.header.Render("(no data yet)")}
+		return []string{m.st.header.Render(tr("(no data yet)"))}
 	}
 	// The chart always spans the whole history: with fewer dot columns
 	// than samples each column covers several, newest on the right.
@@ -606,6 +621,19 @@ func (m Model) chart(get func(histSample) (float64, bool), cw, rows int) []strin
 			}
 		}
 	}
+	// on reports whether dot row y of dot column b is on the line: the
+	// column's own height, and the steps up or down from the column before.
+	on := func(b, y int) bool {
+		if level[b] < 0 {
+			return false
+		}
+		top := max(level[b], 1) - 1
+		if y == top || b == 0 || level[b-1] < 0 {
+			return y == top
+		}
+		prev := max(level[b-1], 1) - 1
+		return (y > prev && y < top) || (y < prev && y > top)
+	}
 	// Braille dot bits, bottom to top, of a cell's left and right column.
 	leftBits := [4]rune{0x40, 0x04, 0x02, 0x01}
 	rightBits := [4]rune{0x80, 0x20, 0x10, 0x08}
@@ -620,30 +648,29 @@ func (m Model) chart(get func(histSample) (float64, bool), cw, rows int) []strin
 		case rows%2 == 1 && r == rows/2:
 			label = "50%"
 		}
-		axis := "│"
-		if label != "" {
-			axis = "┤"
-		}
+		st := m.fill((float64(rows-r) - 0.5) / float64(rows))
 		var cells strings.Builder
 		base := (rows - 1 - r) * 4
 		for c := range plotW {
 			var bits rune
 			for k := range 4 {
-				if level[2*c] > base+k {
+				if on(2*c, base+k) {
 					bits |= leftBits[k]
 				}
-				if level[2*c+1] > base+k {
+				if on(2*c+1, base+k) {
 					bits |= rightBits[k]
 				}
 			}
-			if bits == 0 {
+			switch {
+			case bits != 0:
+				cells.WriteString(st.Render(string(0x2800 + bits)))
+			case r == rows-1:
+				cells.WriteString(m.st.track.Render("⣀"))
+			default:
 				cells.WriteByte(' ')
-			} else {
-				cells.WriteRune(0x2800 + bits)
 			}
 		}
-		row := m.level((float64(rows-r) - 0.5) / float64(rows)).UnsetBold()
-		lines[r] = m.st.axis.Render(fmt.Sprintf("%4s%s", label, axis)) + row.Render(cells.String())
+		lines[r] = m.st.axis.Render(fmt.Sprintf("%4s ", label)) + cells.String()
 	}
 	return lines
 }
@@ -682,26 +709,26 @@ const maxGaugeLabel = 26
 // outside groups ○.
 func (m Model) gaugeBody(cw, rows int) []string {
 	if !m.connected {
-		return []string{"(no data)"}
+		return []string{tr("(no data)")}
 	}
 	var agentRSS uint64
 	for _, a := range m.status.Agents {
 		agentRSS += a.RSS
 	}
-	head := fmt.Sprintf("● agents %s", formatBytes(agentRSS))
+	head := fmt.Sprintf(tr("● agents %s"), formatBytes(agentRSS))
 	var listed uint64
 	for _, u := range m.status.UnattributedMemory {
 		listed += u.RSS
 	}
 	if len(m.status.UnattributedMemory) > 0 || m.status.UnattributedRSS > 0 {
-		head += fmt.Sprintf("  ○ outside %s", formatBytes(m.status.UnattributedRSS))
+		head += fmt.Sprintf(tr("  ○ outside %s"), formatBytes(m.status.UnattributedRSS))
 	}
 	// throtd names only the largest outside groups; the rest is "other".
 	other := m.status.UnattributedRSS - min(listed, m.status.UnattributedRSS)
 	lines := []string{m.st.header.Render(truncate(head, cw))}
 	all := m.owners()
 	if len(all) == 0 {
-		return append(lines, "(no agents detected)")
+		return append(lines, tr("(no agents detected)"))
 	}
 	n := min(len(all), rows-1)
 	if n < len(all) || other > 0 {
@@ -722,7 +749,7 @@ func (m Model) gaugeBody(cw, rows int) []string {
 		}
 		line := mark + " " + pad(truncate(u.label, labelW), labelW, false) + " "
 		if barW >= 4 {
-			line += m.gaugeBar(float64(u.rss)/float64(max(top, 1)), barW, bar) + " "
+			line += m.meter(float64(u.rss)/float64(max(top, 1)), barW, bar) + " "
 		}
 		lines = append(lines, line+pad(formatBytes(u.rss), valueW, true))
 	}
@@ -738,34 +765,30 @@ func (m Model) gaugeBody(cw, rows int) []string {
 		}
 		var parts []string
 		if agents > 0 {
-			parts = append(parts, fmt.Sprintf("+%d agents %s", agents, formatBytes(aRSS)))
+			parts = append(parts, fmt.Sprintf(tr("+%d agents %s"), agents, formatBytes(aRSS)))
 		}
 		if outside > 0 {
-			parts = append(parts, fmt.Sprintf("+%d outside %s", outside, formatBytes(oRSS)))
+			parts = append(parts, fmt.Sprintf(tr("+%d outside %s"), outside, formatBytes(oRSS)))
 		}
 		if other > 0 {
 			// Outside memory throtd does not break down by name.
-			parts = append(parts, "○ other "+formatBytes(other))
+			parts = append(parts, tr("○ other ")+formatBytes(other))
 		}
 		lines = append(lines, m.st.header.Render(truncate(strings.Join(parts, " · "), cw)))
 	}
 	return lines
 }
 
-// eighths are the partial cells of a bar, an eighth to a whole.
-var eighths = [...]string{"", "▏", "▎", "▍", "▌", "▋", "▊", "▉"}
-
-// gaugeBar is a bar of frac of width cells, in eighths, on a faint track.
-func (m Model) gaugeBar(frac float64, width int, st lipgloss.Style) string {
-	e := int(math.Round(max(0, min(frac, 1)) * float64(width*8)))
+// meter is a thin bar of frac of width cells, in half cells, on a faint
+// track.
+func (m Model) meter(frac float64, width int, st lipgloss.Style) string {
+	if width <= 0 {
+		return ""
+	}
+	halves := int(math.Round(max(0, min(frac, 1)) * float64(width*2)))
 	if frac > 0 {
-		e = max(e, 1)
+		halves = max(halves, 1)
 	}
-	full, part := e/8, e%8
-	bar := strings.Repeat("█", full) + eighths[part]
-	used := full
-	if part > 0 {
-		used++
-	}
-	return st.Render(bar) + m.st.track.Render(strings.Repeat("░", width-used))
+	bar := strings.Repeat("━", halves/2) + strings.Repeat("╸", halves%2)
+	return st.Render(bar) + m.st.track.Render(strings.Repeat("─", width-(halves+1)/2))
 }

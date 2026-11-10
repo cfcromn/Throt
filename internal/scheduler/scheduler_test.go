@@ -14,8 +14,9 @@ var t0 = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func key(pid int) domain.ProcessKey { return domain.ProcessKey{PID: pid, Start: t0} }
 
+// wv is a busy heavy workload: one core, so it is never idle.
 func wv(pid int, owner string) process.WorkloadView {
-	return process.WorkloadView{Key: key(pid), Name: "go", Class: domain.ClassBuild, Owner: owner}
+	return process.WorkloadView{Key: key(pid), Name: "go", Class: domain.ClassBuild, Owner: owner, CPU: 1}
 }
 
 func keys(pids ...int) []domain.ProcessKey {
@@ -116,7 +117,8 @@ func TestNewWorkloadByPressure(t *testing.T) {
 		{"normal over limit", domain.PressureNormal, 3, []brief{{ActionQueue, 100, ReasonSlotsExhausted}}},
 		{"elevated free slot", domain.PressureElevated, 0, nil},
 		{"elevated full", domain.PressureElevated, 2, []brief{{ActionQueue, 100, ReasonSlotsExhausted}}},
-		{"high free slot", domain.PressureHigh, 0, []brief{{ActionQueue, 100, ReasonPressureHigh}}},
+		{"high free slot keeps one running", domain.PressureHigh, 0, nil},
+		{"high one running", domain.PressureHigh, 1, []brief{{ActionQueue, 100, ReasonPressureHigh}}},
 		{"high full", domain.PressureHigh, 2, []brief{{ActionQueue, 100, ReasonPressureHigh}}},
 		{"critical free slot", domain.PressureCritical, 0, []brief{{ActionQueue, 100, ReasonPressureCritical}}},
 		{"unknown full fails open", domain.PressureUnknown, 5, nil},
@@ -211,7 +213,8 @@ func TestResumeConditions(t *testing.T) {
 		{"unknown free fails open", domain.PressureUnknown, 1, time.Minute, []brief{{ActionResume, 100, ReasonSlotAvailable}}},
 		{"normal full", domain.PressureNormal, 2, time.Minute, nil},
 		{"unknown full not aged", domain.PressureUnknown, 2, time.Minute, nil},
-		{"high free", domain.PressureHigh, 0, time.Minute, nil},
+		{"high none running", domain.PressureHigh, 0, time.Minute, []brief{{ActionResume, 100, ReasonSlotAvailable}}},
+		{"high one running", domain.PressureHigh, 1, time.Minute, nil},
 		{"critical free", domain.PressureCritical, 0, time.Minute, nil},
 		{"cooldown pending", domain.PressureElevated, 0, 9 * time.Second, nil},
 		{"cooldown just elapsed", domain.PressureElevated, 0, 10 * time.Second, []brief{{ActionResume, 100, ReasonSlotAvailable}}},

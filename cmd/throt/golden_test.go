@@ -212,6 +212,20 @@ func goldenCases() []goldenCase {
 		{name: "version -json down", args: []string{"version", "-json"}, down: true},
 		{name: "version -h", args: []string{"version", "-h"}},
 		{name: "version extra", args: []string{"version", "x"}},
+
+		// The logs under $HOME are written by TestGolden.
+		{name: "usage", args: []string{"usage", "--since", "2026-10-28"}},
+		{name: "usage --by project", args: []string{"usage", "--by", "project", "--since", "2026-10-28"}},
+		{name: "usage --by hour", args: []string{"usage", "--by", "hour", "--since", "2026-10-28"}},
+		{name: "usage --json", args: []string{"usage", "--json", "--since", "2026-10-28T10:00:00Z"}},
+		{name: "usage none", args: []string{"usage", "--since", "2026-10-29"}},
+		{name: "usage -h", args: []string{"usage", "-h"}},
+		{name: "usage bad by", args: []string{"usage", "--by", "day"}},
+		{name: "usage bad since", args: []string{"usage", "--since", "never"}},
+		{name: "usage extra", args: []string{"usage", "x"}},
+
+		{name: "wait -h", args: []string{"wait", "-h"}},
+		{name: "wait extra", args: []string{"wait", "x"}},
 		{name: "version invalid config", args: []string{"-config", "$DIR/bad.json", "version"}},
 
 		{name: "update -h", args: []string{"update", "-h"}},
@@ -335,6 +349,36 @@ func TestGolden(t *testing.T) {
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Synthetic session logs for 'throt usage': the fields of real ones,
+	// with "SECRET" where a real log has conversation content.
+	const (
+		claudeSession = "11111111-aaaa-4bbb-8ccc-000000000001"
+		codexSession  = "01a00000-0000-7000-8000-000000000002"
+	)
+	claudeLine := func(at, id, usage string) string {
+		return `{"type":"assistant","timestamp":"` + at + `","sessionId":"` + claudeSession + `","cwd":"/work/app",` +
+			`"message":{"id":"` + id + `","model":"claude-x","content":[{"type":"text","text":"SECRET"}],"usage":` + usage + `}}` + "\n"
+	}
+	logs := map[string]string{
+		".claude/projects/-work-app/" + claudeSession + ".jsonl": `{"type":"user","timestamp":"2026-10-28T09:58:00.000Z","sessionId":"` + claudeSession + `","cwd":"/work/app","message":{"role":"user","content":"SECRET"}}` + "\n" +
+			claudeLine("2026-10-28T09:59:30.000Z", "msg_1", `{"input_tokens":12,"output_tokens":350,"cache_creation_input_tokens":20000,"cache_read_input_tokens":1500000}`) +
+			claudeLine("2026-10-28T09:59:31.000Z", "msg_1", `{"input_tokens":12,"output_tokens":350,"cache_creation_input_tokens":20000,"cache_read_input_tokens":1500000}`) +
+			"SECRET not json\n" +
+			claudeLine("2026-10-28T10:02:00.000Z", "msg_2", `{"input_tokens":3,"output_tokens":1250,"cache_creation_input_tokens":0,"cache_read_input_tokens":1520000}`) +
+			claudeLine("2026-10-28T11:30:00.000Z", "msg_3", `{"input_tokens":1,"output_tokens":40,"cache_creation_input_tokens":300,"cache_read_input_tokens":9000}`),
+		".codex/sessions/2026/10/28/rollout-2026-10-28T10-10-00-" + codexSession + ".jsonl": `{"timestamp":"2026-10-28T10:10:00.000Z","type":"session_meta","payload":{"id":"` + codexSession + `","cwd":"/work/tools","base_instructions":{"text":"SECRET"}}}` + "\n" +
+			`{"timestamp":"2026-10-28T10:10:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":25000,"cached_input_tokens":0,"output_tokens":200},"last_token_usage":{"input_tokens":25000,"cached_input_tokens":0,"output_tokens":200}}}}` + "\n" +
+			`{"timestamp":"2026-10-28T10:11:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":53000,"cached_input_tokens":24000,"output_tokens":330},"last_token_usage":{"input_tokens":28000,"cached_input_tokens":24000,"output_tokens":130}}}}` + "\n",
+	}
+	for name, body := range logs {
+		path := filepath.Join(dir, "home", name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -499,16 +543,17 @@ const goldenUsage = `Usage: throt [flags] [command]
 
 Commands:
   top        open the terminal UI (the default with no command)
-  status     show host resources and pressure; --json for JSON; --idle
-             lists agent sessions by memory and which look idle (report only)
-  stats      show per-agent resource usage since throtd started; --json for JSON
-  learned [--forget SIGNATURE | --clear]
-             list the commands throtd learned heavy, which the hook then
-             waits for like heavy tools; --forget or --clear drops them
-  ping       check that throtd is reachable
+  status [--json | --idle | --stats | PID]
+             show host resources and pressure; --json for JSON; --idle
+             lists agent sessions by memory and which look idle (report
+             only); --stats shows per-agent usage since throtd started;
+             PID explains why that heavy workload runs, is paused or queued
+  usage [--by session|project|hour] [--since D] [--json]
+             tokens and active time per agent session, project or hour, from
+             the Claude Code and Codex session logs (default: the last 24h);
+             counts and timestamps only, read-only, needs no throtd. Active
+             time: the gaps under 5 minutes between a session's log entries
   events     print recent daemon events as JSON lines; -f keeps printing new ones
-  explain PID
-             explain why a heavy workload is running, paused, or queued
   pause PID  pause a heavy workload (SIGSTOP) shown in 'status'
   resume [--force] PID
              resume a paused workload (SIGCONT). Also resumes a stopped
@@ -519,24 +564,18 @@ Commands:
   run [--timeout D] [--no-wait] -- CMD [ARGS...]
              wait until throtd grants a heavy slot, reserved for CMD, then
              exec CMD (runs immediately if throtd is down)
-  reload     make throtd re-read its config file
   doctor     print a sanitized diagnostic report (safe to share)
-  mcp        run a read-only MCP server on stdio for coding agents
-  config check|show
+  config check|show|reload|learned
              'check' validates the config file as throtd would, lists what
              it changes from the defaults, and warns about risky settings;
              'show [--json]' prints the effective config and the source
              (default, profile, or file) of each value. Both accept --config PATH.
-  hook claude-code [--max-wait D]
-             Claude Code PreToolUse hook: before a lone heavy Bash command,
-             wait up to D (default 50s) for heavy-job capacity; never
-             changes or blocks the command (advisory; fails open)
+             'reload' makes throtd re-read the file; 'learned' lists the
+             commands throtd learned heavy (--forget SIGNATURE, --clear)
   setup claude-code|codex [--write]
              print the configuration to paste into a coding agent;
              --write installs it in your home directory instead (adds only,
              keeps a .throt-backup of each changed file)
-  completion bash|zsh|fish
-             print a shell completion script
   version [--json]
              print the client version; --json adds the protocol and Go
              versions, and throtd's version when it is reachable
@@ -546,9 +585,14 @@ Commands:
              date, 10 when an update is available); the only command that
              uses the network
 
+For agents and shells: hook, wait, mcp, completion. 'throt help' lists
+every command, with the older names that still work.
+
 Flags:
   -config string
     	path to config file (default "$DIR/xdg/throt/config.json")
+  -ko
+    	show the terminal UI in Korean
   -n int
     	number of events for 'events' (default 50)
 `
@@ -584,7 +628,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status stats learned ping events explain pause resume run reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status usage events pause resume run config doctor setup version update -config -n -ko" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -592,10 +636,11 @@ _throt() {
         events) COMPREPLY=($(compgen -W "-f -n" -- "$cur")) ;;
         pause|resume|explain) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "$(_throt_pids)" -- "$cur")) ;;
         completion) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
-        config) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "check show" -- "$cur")) || COMPREPLY=($(compgen -W "--config --json" -- "$cur")) ;;
-        status) COMPREPLY=($(compgen -W "--json --idle" -- "$cur")) ;;
+        config) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "check show reload learned" -- "$cur")) || COMPREPLY=($(compgen -W "--config --json" -- "$cur")) ;;
+        status) COMPREPLY=($(compgen -W "--json --idle --stats $(_throt_pids)" -- "$cur")) ;;
         version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
         learned) [[ "$prev" == --forget || "$prev" == -forget ]] || COMPREPLY=($(compgen -W "--forget --clear" -- "$cur")) ;;
+        usage) case "$prev" in --by|-by) COMPREPLY=($(compgen -W "session project hour" -- "$cur")) ;; --since|-since) ;; *) COMPREPLY=($(compgen -W "--by --since --json" -- "$cur")) ;; esac ;;
         update) [[ "$prev" == --version || "$prev" == -version ]] || COMPREPLY=($(compgen -W "--check --version --pre --yes" -- "$cur")) ;;
         hook) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code" -- "$cur")) ;;
         setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) || COMPREPLY=($(compgen -W "--write" -- "$cur")) ;;
@@ -634,30 +679,23 @@ complete -c throt -n __fish_use_subcommand -o config -r -F -d 'path to config fi
 complete -c throt -n __fish_use_subcommand -o n -x -d 'number of events'
 complete -c throt -n __fish_use_subcommand -a top -d 'open the terminal UI'
 complete -c throt -n __fish_use_subcommand -a status -d 'show host resources and pressure'
-complete -c throt -n __fish_use_subcommand -a ping -d 'check that throtd is reachable'
 complete -c throt -n __fish_use_subcommand -a events -d 'print recent daemon events'
-complete -c throt -n __fish_use_subcommand -a explain -d 'explain why a heavy workload is running, paused, or queued'
 complete -c throt -n __fish_use_subcommand -a pause -d 'pause a heavy workload'
 complete -c throt -n __fish_use_subcommand -a resume -d 'resume a paused workload'
 complete -c throt -n __fish_use_subcommand -a run -d 'wait for heavy-job capacity, then run a command'
-complete -c throt -n __fish_use_subcommand -a stats -d 'per-agent resource usage since throtd started'
-complete -c throt -n __fish_use_subcommand -a learned -d 'list or forget the commands throtd learned heavy'
-complete -c throt -n __fish_use_subcommand -a reload -d 'make throtd re-read its config file'
+complete -c throt -n __fish_use_subcommand -a usage -d 'tokens and active time per agent session, from the session logs'
 complete -c throt -n __fish_use_subcommand -a config -d 'check or show the config file'
 complete -c throt -n __fish_use_subcommand -a doctor -d 'print a sanitized diagnostic report'
-complete -c throt -n __fish_use_subcommand -a mcp -d 'run a read-only MCP server on stdio'
-complete -c throt -n __fish_use_subcommand -a hook -d 'Claude Code hook that waits for heavy-job capacity'
 complete -c throt -n __fish_use_subcommand -a setup -d 'print the configuration to paste into a coding agent'
-complete -c throt -n __fish_use_subcommand -a completion -d 'print a shell completion script'
 complete -c throt -n __fish_use_subcommand -a version -d 'print the client version'
 complete -c throt -n __fish_use_subcommand -a update -d 'install the newest verified release in place'
 complete -c throt -n '__fish_seen_subcommand_from events' -o f -d 'keep printing new events'
 complete -c throt -n '__fish_seen_subcommand_from events' -o n -x -d 'number of recent events'
 complete -c throt -n '__fish_seen_subcommand_from pause resume explain' -x -a '(__throt_pids)'
 complete -c throt -n '__fish_seen_subcommand_from completion' -x -a 'bash zsh fish'
-complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show' -x -a 'check show'
+complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show reload learned' -x -a 'check show reload learned'
 complete -c throt -n '__fish_seen_subcommand_from config' -l config -r -F -d 'path to config file'
-complete -c throt -n '__fish_seen_subcommand_from config status version' -l json -d 'print JSON'
+complete -c throt -n '__fish_seen_subcommand_from config status version usage' -l json -d 'print JSON'
 complete -c throt -n '__fish_seen_subcommand_from status' -l idle -d 'list agent sessions and which look idle'
 complete -c throt -n '__fish_seen_subcommand_from update' -l check -d 'only report whether an update is available'
 complete -c throt -n '__fish_seen_subcommand_from update' -l version -x -d 'install this release'
@@ -665,6 +703,8 @@ complete -c throt -n '__fish_seen_subcommand_from update' -l pre -d 'include pre
 complete -c throt -n '__fish_seen_subcommand_from update' -l yes -d 'do not ask for confirmation'
 complete -c throt -n '__fish_seen_subcommand_from learned' -l forget -x -d 'forget one learned command'
 complete -c throt -n '__fish_seen_subcommand_from learned' -l clear -d 'forget every learned command'
+complete -c throt -n '__fish_seen_subcommand_from usage' -l by -x -a 'session project hour' -d 'group the rows'
+complete -c throt -n '__fish_seen_subcommand_from usage' -l since -x -d 'count entries from a duration ago or a date'
 complete -c throt -n '__fish_seen_subcommand_from hook' -x -a 'claude-code'
 complete -c throt -n '__fish_seen_subcommand_from setup' -x -a 'claude-code codex'
 complete -c throt -n '__fish_seen_subcommand_from setup' -l write -d 'install the configuration in your home directory'
@@ -688,21 +728,14 @@ _throt() {
     commands=(
         'top:open the terminal UI'
         'status:show host resources and pressure'
-        'ping:check that throtd is reachable'
         'events:print recent daemon events'
-        'explain:explain why a heavy workload is running, paused, or queued'
         'pause:pause a heavy workload'
         'resume:resume a paused workload'
         'run:wait for heavy-job capacity, then run a command'
-        'stats:per-agent resource usage since throtd started'
-        'learned:list or forget the commands throtd learned heavy'
-        'reload:make throtd re-read its config file'
+        'usage:tokens and active time per agent session, from the session logs'
         'config:check or show the config file'
         'doctor:print a sanitized diagnostic report'
-        'mcp:run a read-only MCP server on stdio'
-        'hook:Claude Code hook that waits for heavy-job capacity'
         'setup:print the configuration to paste into a coding agent'
-        'completion:print a shell completion script'
         'version:print the client version'
         'update:install the newest verified release in place'
     )
@@ -719,10 +752,11 @@ _throt() {
                 events) _arguments '-f[keep printing new events]' '-n[number of recent events]:count:' ;;
                 pause|resume|explain) (( CURRENT == 2 )) && _throt_pids ;;
                 completion) (( CURRENT == 2 )) && compadd bash zsh fish ;;
-                config) (( CURRENT == 2 )) && compadd check show || _arguments '--config[path to config file]:file:_files' '--json[print JSON]' ;;
+                config) (( CURRENT == 2 )) && compadd check show reload learned || _arguments '--config[path to config file]:file:_files' '--json[print JSON]' ;;
                 status) _arguments '(--idle)--json[print JSON]' '(--json)--idle[list agent sessions and which look idle]' ;;
                 version) _arguments '--json[print JSON]' ;;
                 learned) _arguments '--forget[forget one learned command]:signature:' '--clear[forget every learned command]' ;;
+                usage) _arguments '--by[group the rows]:grouping:(session project hour)' '--since[count entries from a duration ago or a date]:since:' '--json[print JSON]' ;;
                 update) _arguments '--check[only report whether an update is available]' '--version[install this release]:version:' '--pre[include prereleases]' '--yes[do not ask for confirmation]' ;;
                 hook) (( CURRENT == 2 )) && compadd claude-code ;;
                 setup) (( CURRENT == 2 )) && compadd claude-code codex || _arguments '--write[install the configuration in your home directory]' ;;
@@ -739,10 +773,16 @@ else
 fi
 `, stderr: ""},
 		"config": {code: 2, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
+       throt config reload
+       throt config learned [--forget SIGNATURE | --clear]
 `},
 		"config -h": {code: 0, stdout: `usage: throt config check|show [--config PATH] [--json]
+       throt config reload
+       throt config learned [--forget SIGNATURE | --clear]
 `, stderr: ""},
 		"config bogus": {code: 2, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
+       throt config reload
+       throt config learned [--forget SIGNATURE | --clear]
 `},
 		"config check": {code: 0, stdout: `ok: $DIR/plain.json
   socket_path $DIR/run/throt/throtd.sock -> /nonexistent/throtd.sock (file)
@@ -752,10 +792,14 @@ fi
 		"config check --json": {code: 2, stdout: "", stderr: `throt: flag provided but not defined: -json; see 'throt config check -h'
 `},
 		"config check -h": {code: 0, stdout: `usage: throt config check|show [--config PATH] [--json]
+       throt config reload
+       throt config learned [--forget SIGNATURE | --clear]
   -config string
     	path to config file (default "$DIR/xdg/throt/config.json")
 `, stderr: ""},
 		"config check extra": {code: 2, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
+       throt config reload
+       throt config learned [--forget SIGNATURE | --clear]
 `},
 		"config check global": {code: 0, stdout: `ok: $DIR/plain.json
   socket_path $DIR/run/throt/throtd.sock -> /nonexistent/throtd.sock (file)
@@ -937,15 +981,16 @@ explain why a heavy workload is running, paused, or queued
 `, stderr: ""},
 		"help":      {code: 0, stdout: goldenUsage, stderr: ""},
 		"help long": {code: 0, stdout: goldenUsage, stderr: ""},
-		"hook": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
+		"hook": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D] [--defer] [--clamp]
 `},
-		"hook -h": {code: 0, stdout: `usage: throt hook claude-code [--max-wait D]
+		"hook -h": {code: 0, stdout: `usage: throt hook claude-code [--max-wait D] [--defer] [--clamp]
 
 Claude Code PreToolUse hook: before a lone heavy Bash command,
-wait up to D (default 50s) for heavy-job capacity; never
-changes or blocks the command (advisory; fails open)
+wait up to D (default 50s) for heavy-job capacity (advisory;
+fails open); --defer instead holds the agent's place in line
+and denies the call, asking Claude to run 'throt wait'
 `, stderr: ""},
-		"hook claude-code -h": {code: 0, stdout: `Usage: throt hook claude-code [--max-wait D]
+		"hook claude-code -h": {code: 0, stdout: `Usage: throt hook claude-code [--max-wait D] [--defer] [--clamp]
 
 Claude Code PreToolUse hook for the Bash tool. When the command is a heavy
 tool (alone, or after "cd DIR &&", variable assignments, or "time"), or a
@@ -953,11 +998,29 @@ command throtd learned heavy because it started a heavy workload before,
 wait up to D for throtd to report capacity for a heavy job, then let it run
 unchanged. Only the command's signature (program and first argument base
 names) is sent to throtd, to learn from. Advisory: no slot is reserved.
-It never blocks, denies, or changes a tool call, and returns at once on
+Without --defer or --clamp it never blocks, denies, or changes a tool call. It returns at once on
 any error or when throtd is unreachable. Keep D below the hook's "timeout" in settings.json. With
 THROT_HOOK_DEBUG=1 it says on stderr why it ignored an event.
 
+With --defer it does not wait when no slot is free: throtd holds the
+agent's place in line and the hook denies the call, telling Claude to run
+'throt wait' in the background and rerun the command when it returns; the
+rerun takes the slot held for it. On any error, or with an older throtd,
+it waits as above.
+
+With --clamp (macOS), while throtd runs heavy workloads at background
+priority, a heavy command that is one plain simple command (no "cd DIR &&",
+assignments or "time") is rewritten to start as
+"/usr/sbin/taskpolicy -c utility COMMAND": it yields to foreground work but
+runs several times faster than a build throtd has to put in the background
+after it started. Claude Code matches your permission rules against the
+rewritten command, so a rule that allowed COMMAND no longer does.
+
 Flags:
+  -clamp
+    	start a heavy simple command at low priority while throtd runs heavy workloads in the background (macOS)
+  -defer
+    	when no slot is free, hold the agent's place in line and deny the call instead of waiting
   -max-wait duration
     	wait at most this long for capacity (keep it below the hook timeout) (default 50s)
 `, stderr: ""},
@@ -969,7 +1032,7 @@ Flags:
 		"hook claude-code heavy": {code: 0, stdout: `{"systemMessage":"throt: no heavy-job slot after 1s (all heavy slots are in use (2 running, limit 2)); running anyway"}
 `, stderr: ""},
 		"hook claude-code light": {code: 0, stdout: "", stderr: ""},
-		"hook codex": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D]
+		"hook codex": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D] [--defer] [--clamp]
 `},
 		"hook invalid config": {code: 0, stdout: `{"systemMessage":"throt: no heavy-job slot after 1s (all heavy slots are in use (2 running, limit 2)); running anyway"}
 `, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
@@ -1382,10 +1445,12 @@ claude-1  4312  make     build  150%  2.0 GiB  running
   }
 }
 `, stderr: ""},
-		"status -h": {code: 0, stdout: `usage: throt status
+		"status -h": {code: 0, stdout: `usage: throt status [--json | --idle | --stats | PID]
 
 show host resources and pressure; --json for JSON; --idle
-lists agent sessions by memory and which look idle (report only)
+lists agent sessions by memory and which look idle (report
+only); --stats shows per-agent usage since throtd started;
+PID explains why that heavy workload runs, is paused or queued
 `, stderr: ""},
 		"status down":                {code: 1, stdout: "", stderr: "throt: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},
 		"status down invalid config": {code: 1, stdout: "", stderr: "throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not \"sometimes\"; using the default socket\nthrot: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},
@@ -1433,6 +1498,148 @@ Flags:
 `},
 		"update extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt update -h'
 `},
+		"usage": {code: 0, stdout: `SINCE 2026-10-28 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+
+AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+claude-code  1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
+codex        1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+total        2         29.0k  1970    20.3k        3.1M        5         5m      2026-10-28 09:58  2026-10-28 11:30
+
+SESSION   AGENT        PROJECT  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+11111111  claude-code  app      16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
+01a00000  codex        tools    29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+
+1 malformed or overlong log line(s) skipped
+`, stderr: ""},
+		"usage --by hour": {code: 0, stdout: `SINCE 2026-10-28 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+
+AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+claude-code  1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
+codex        1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+total        2         29.0k  1970    20.3k        3.1M        5         5m      2026-10-28 09:58  2026-10-28 11:30
+
+HOUR              SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+2026-10-28 09:00  1         12     350     20.0k        1.5M        1         1m      2026-10-28 09:58  2026-10-28 09:59
+2026-10-28 10:00  2         29.0k  1580    0            1.5M        3         3m      2026-10-28 10:02  2026-10-28 10:11
+2026-10-28 11:00  1         1      40      300          9000        1         0s      2026-10-28 11:30  2026-10-28 11:30
+
+1 malformed or overlong log line(s) skipped
+`, stderr: ""},
+		"usage --by project": {code: 0, stdout: `SINCE 2026-10-28 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+
+AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+claude-code  1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
+codex        1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+total        2         29.0k  1970    20.3k        3.1M        5         5m      2026-10-28 09:58  2026-10-28 11:30
+
+PROJECT  SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+app      1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
+tools    1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+
+1 malformed or overlong log line(s) skipped
+`, stderr: ""},
+		"usage --json": {code: 0, stdout: `{
+  "since": "2026-10-28T10:00:00Z",
+  "by": "session",
+  "active_gap_seconds": 300,
+  "agents": [
+    {
+      "agent": "claude-code",
+      "sessions": 1,
+      "input_tokens": 4,
+      "output_tokens": 1290,
+      "cache_write_tokens": 300,
+      "cache_read_tokens": 1529000,
+      "messages": 2,
+      "active_seconds": 0,
+      "first": "2026-10-28T10:02:00Z",
+      "last": "2026-10-28T11:30:00Z"
+    },
+    {
+      "agent": "codex",
+      "sessions": 1,
+      "input_tokens": 29000,
+      "output_tokens": 330,
+      "cache_write_tokens": 0,
+      "cache_read_tokens": 24000,
+      "messages": 2,
+      "active_seconds": 60,
+      "first": "2026-10-28T10:10:00Z",
+      "last": "2026-10-28T10:11:00Z"
+    }
+  ],
+  "total": {
+    "sessions": 2,
+    "input_tokens": 29004,
+    "output_tokens": 1620,
+    "cache_write_tokens": 300,
+    "cache_read_tokens": 1553000,
+    "messages": 4,
+    "active_seconds": 60,
+    "first": "2026-10-28T10:02:00Z",
+    "last": "2026-10-28T11:30:00Z"
+  },
+  "rows": [
+    {
+      "agent": "claude-code",
+      "session": "11111111-aaaa-4bbb-8ccc-000000000001",
+      "project": "app",
+      "sessions": 1,
+      "input_tokens": 4,
+      "output_tokens": 1290,
+      "cache_write_tokens": 300,
+      "cache_read_tokens": 1529000,
+      "messages": 2,
+      "active_seconds": 0,
+      "first": "2026-10-28T10:02:00Z",
+      "last": "2026-10-28T11:30:00Z"
+    },
+    {
+      "agent": "codex",
+      "session": "01a00000-0000-7000-8000-000000000002",
+      "project": "tools",
+      "sessions": 1,
+      "input_tokens": 29000,
+      "output_tokens": 330,
+      "cache_write_tokens": 0,
+      "cache_read_tokens": 24000,
+      "messages": 2,
+      "active_seconds": 60,
+      "first": "2026-10-28T10:10:00Z",
+      "last": "2026-10-28T10:11:00Z"
+    }
+  ],
+  "files": 2,
+  "skipped_lines": 1
+}
+`, stderr: ""},
+		"usage -h": {code: 0, stdout: `usage: throt usage [--by session|project|hour] [--since DURATION|DATE] [--json]
+
+Tokens and active time of Claude Code and Codex sessions, read from their
+session logs ($CLAUDE_CONFIG_DIR or ~/.claude, $CODEX_HOME or ~/.codex).
+Counts and timestamps only, never conversation content; read-only.
+Active time is the sum of the gaps under 5 minutes between consecutive
+log entries of a session. Tokens are as the agent logged them (input
+excludes cached tokens); there is no cost estimate.
+  -by KEY
+    	group the rows by KEY: session, project or hour (default "session")
+  -json
+    	print the report as JSON
+  -since WHEN
+    	count entries from WHEN: a duration ago (90m, 24h, 7d) or a date (2006-01-02, or RFC 3339) (default "24h")
+`, stderr: ""},
+		"usage bad by": {code: 2, stdout: "", stderr: `throt: --by: unknown grouping "day" (want session, project or hour); see 'throt usage -h'
+`},
+		"usage bad since": {code: 2, stdout: "", stderr: `throt: --since: "never" is not a duration (24h, 7d) or a date (2006-01-02); see 'throt usage -h'
+`},
+		"usage extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt usage -h'
+`},
+		"usage none": {code: 0, stdout: `SINCE 2026-10-29 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+
+no agent sessions found in:
+  $DIR/home/.claude/projects
+  $DIR/home/.codex/sessions
+`, stderr: ""},
 		"version": {code: 0, stdout: `dev
 `, stderr: ""},
 		"version --json": {code: 0, stdout: `{
@@ -1457,5 +1664,21 @@ versions, and throtd's version when it is reachable
 `},
 		"version invalid config": {code: 0, stdout: `dev
 `, stderr: ""},
+		"wait -h": {code: 0, stdout: `Usage: throt wait [--timeout D]
+
+Wait until throtd holds a heavy slot for the agent this runs under, then
+print "slot ready" and exit 0. It keeps the agent's place in line (taken
+by 'throt hook claude-code --defer', or now if there is none), renewing it
+once a second; the slot is then held for 60s for the agent's next heavy
+command, which the hook admits at once. Exits 1 when D passes (0 waits
+forever), when throtd is unreachable or too old to hold a place in line,
+or when no agent runs above this process.
+
+Flags:
+  -timeout duration
+    	give up after this long (0 waits forever) (default 30m0s)
+`, stderr: ""},
+		"wait extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt wait -h'
+`},
 	}
 }

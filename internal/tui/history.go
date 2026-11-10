@@ -20,7 +20,7 @@ type histSample struct {
 	swapRate float64
 	latency  time.Duration
 	swapUsed uint64
-	// swapFrac is the share of swap in use.
+	// swapFrac is swap in use as a share of physical memory (swapShare).
 	swapFrac float64
 	// level is the pressure level throtd reported with the sample.
 	level domain.PressureLevel
@@ -47,7 +47,7 @@ func (r *history) add(h domain.HostSample, level domain.PressureLevel) {
 	}
 	s.swapUsed, s.hasSwap = h.SwapUsed, h.Has(domain.MetricSwap)
 	if s.hasSwap && h.SwapTotal > 0 {
-		s.swapFrac, s.hasSwapFrac = ratio(h.SwapUsed, h.SwapTotal), true
+		s.swapFrac, s.hasSwapFrac = swapShare(h), true
 	}
 	s.hasLatency = h.Has(domain.MetricLatency)
 	if prev, ok := r.last(); ok && prev.hasSwap && s.hasSwap {

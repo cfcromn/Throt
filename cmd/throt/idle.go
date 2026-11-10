@@ -22,6 +22,10 @@ const (
 	// idleCPU is the most CPU, in cores, a session's subtree may use in
 	// any observed sample and still count as idle.
 	idleCPU = 0.01
+	// An old session counts as idle up to oldIdleCPU: long-lived sessions
+	// keep a few percent of background CPU even when no one uses them.
+	oldIdleCPU = 0.05
+	oldIdleAge = time.Hour
 )
 
 // idleRow is one agent session as 'status --idle' reports it.
@@ -36,7 +40,8 @@ type idleRow struct {
 
 // idleSessions summarizes the agents in the last of samples, which are in
 // time order. A session is idle when every sample that saw it shows its subtree
-// below idleCPU and no heavy workload owned by it. Rows are sorted by RSS
+// below idleCPU (oldIdleCPU once it is oldIdleAge old) and no heavy workload
+// owned by it. Rows are sorted by RSS
 // descending, then PID.
 func idleSessions(samples []app.StatusResult, now time.Time) []idleRow {
 	if len(samples) == 0 {
@@ -61,7 +66,11 @@ func idleSessions(samples []app.StatusResult, now time.Time) []idleRow {
 				}
 			}
 		}
-		if r.CPU >= idleCPU {
+		limit := idleCPU
+		if r.Age >= oldIdleAge {
+			limit = oldIdleCPU
+		}
+		if r.CPU >= limit {
 			r.Idle = false
 		}
 		rows = append(rows, r)
@@ -93,7 +102,8 @@ func observeStatus(ctx context.Context, n int, gap time.Duration, call func(cont
 }
 
 func printIdle(w io.Writer, rows []idleRow, window time.Duration) {
-	fmt.Fprintf(w, "AGENT SESSIONS (idle: CPU under %.0f%% and no heavy workload over %s; report only)\n", idleCPU*100, window)
+	fmt.Fprintf(w, "AGENT SESSIONS (idle: CPU under %.0f%%, or %.0f%% after %.0fh, and no heavy workload over %s; report only)\n",
+		idleCPU*100, oldIdleCPU*100, oldIdleAge.Hours(), window)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "AGENT\tPID\tAGE\tMEM\tCPU\tIDLE")
 	if len(rows) == 0 {

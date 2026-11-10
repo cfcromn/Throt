@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/cfcromn/Throt/internal/tui"
 	"io"
 	"os"
 
@@ -36,6 +37,7 @@ func globalFlags() (fs *flag.FlagSet, cfgPath *string, limit *int) {
 	defPath, _ := config.DefaultPath()
 	cfgPath = fs.String("config", defPath, "path to config file")
 	limit = fs.Int("n", 50, "number of events for 'events'")
+	fs.Bool("ko", false, "show the terminal UI in Korean")
 	return fs, cfgPath, limit
 }
 
@@ -68,6 +70,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	fs.SetOutput(stderr)
 	if err := parseFlags(fs, args, stdout); err != nil {
 		return err
+	}
+	if fs.Lookup("ko").Value.String() == "true" {
+		tui.SetLanguage("ko")
 	}
 	name, rest := "top", []string(nil)
 	if fs.NArg() > 0 {

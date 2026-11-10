@@ -166,29 +166,37 @@ WantedBy=default.target
 
 | 명령 | 하는 일 |
 |---|---|
-| `throt`, `throt top` | 터미널 UI. 종료해도 `throtd`에는 영향이 없다. |
+| `throt`, `throt top` | 터미널 UI. 종료해도 `throtd`에는 영향이 없다. `throt -ko`는 한국어로 보여 준다. |
 | `throt status [--json]` | 압력과 그 이유, 호스트 리소스, 에이전트, 무거운 작업, 스케줄러 상태, 정지된 프로세스. |
-| `throt status --idle` | 모든 에이전트 세션을 메모리 순으로 나이, CPU, 유휴 여부(세 번의 샘플 동안 CPU 1% 미만이고 무거운 작업이 없음)와 함께 보여 준다. 보고만 하며 프로세스를 멈추지 않는다. |
-| `throt stats [--json]` | 에이전트별 CPU 시간, 최대 메모리, 무거운 작업 수, `throtd` 시작 이후 대기한 시간. |
-| `throt learned [--forget SIGNATURE \| --clear]` | `throtd`가 무겁다고 학습한 명령 목록. Claude Code 훅은 이 명령들 앞에서도 기다린다. `--forget`이나 `--clear`로 지운다. [학습한 무거운 명령](#학습한-무거운-명령) 참고. |
+| `throt status --idle` | 모든 에이전트 세션을 메모리 순으로 나이, CPU, 유휴 여부(세 번의 샘플 동안 CPU 1% 미만, 1시간 넘은 세션은 5% 미만이고 무거운 작업이 없음)와 함께 보여 준다. 보고만 하며 프로세스를 멈추지 않는다. |
+| `throt status --stats [--json]` | 에이전트별 CPU 시간, 최대 메모리, 무거운 작업 수, `throtd` 시작 이후 대기한 시간. |
+| `throt status PID` | 무거운 작업이 실행 중이거나, 일시 정지되었거나, 대기 중인 이유. |
+| `throt usage [--by session\|project\|hour] [--since D] [--json]` | 에이전트 세션·프로젝트·시간대별 토큰과 실제 작업 시간. Claude Code와 Codex 세션 기록에서 읽는다. `throtd` 없이도 동작한다. [`throt usage`](#토큰과-시간-throt-usage) 참고. |
 | `throt events [-f] [-n N]` | 최근 데몬 이벤트를 JSON lines로 출력한다(기본 50개). `-f`를 주면 새 이벤트를 계속 출력한다. |
-| `throt explain PID` | 무거운 작업이 실행 중이거나, 일시 정지되었거나, 대기 중인 이유. |
 | `throt pause PID` | 내 에이전트가 소유한 무거운 작업을 일시 정지(SIGSTOP)한다. |
 | `throt resume [--force] PID` | 다시 재개한다. Throt가 일시 정지하지 않은 정지 프로세스도 재개한다. [문제 해결](#프로세스가-정지-상태t에-멈춰-있다)을 참고한다. |
 | `throt run [--timeout D] [--no-wait] -- CMD` | 무거운 작업 슬롯이 빌 때까지 기다린 뒤 `CMD`를 실행한다. [`throt run`](#시작-전에-기다리기-throt-run)을 참고한다. |
-| `throt doctor` | 버그 리포트에 붙여 넣을 수 있도록 민감 정보를 걸러 낸 진단 정보. `throtd` 없이도 동작한다. |
-| `throt ping` | `throtd`에 닿는지 확인하고 그 버전과 프로토콜을 출력한다. |
-| `throt reload` | `throtd`가 설정을 다시 읽게 한다(SIGHUP을 보내는 것과 같다). |
 | `throt config check` | 설정 파일을 검증하고, 무엇이 바뀌는지 보여 주고, 위험한 설정을 경고한다. |
 | `throt config show [--json]` | 실제로 적용되는 설정과 각 값의 출처. |
+| `throt config reload` | `throtd`가 설정을 다시 읽게 한다(SIGHUP을 보내는 것과 같다). |
+| `throt config learned [--forget SIGNATURE \| --clear]` | `throtd`가 무겁다고 학습한 명령 목록. Claude Code 훅은 이 명령들 앞에서도 기다린다. `--forget`이나 `--clear`로 지운다. [학습한 무거운 명령](#학습한-무거운-명령) 참고. |
+| `throt setup claude-code\|codex [--write]` | 코딩 에이전트에 붙여 넣을 설정을 출력한다. `--write`를 주면 대신 홈 디렉터리에 직접 설치한다(추가만 하고, 바꾸는 파일마다 `.throt-backup`을 남긴다). |
+| `throt doctor` | 버그 리포트에 붙여 넣을 수 있도록 민감 정보를 걸러 낸 진단 정보. `throtd` 없이도 동작한다. |
 | `throt version [--json]` | 클라이언트 버전. `--json`을 주면 프로토콜, Go, `throtd` 버전도 출력한다. |
 | `throt update` | 더 새(또는 더 옛) 릴리스를 설치한다. [업데이트와 롤백](#업데이트와-롤백)을 참고한다. |
+
+에이전트와 셸이 쓰는 명령은 따로 있다. 직접 칠 일은 거의 없다.
+
+| 명령 | 하는 일 |
+|---|---|
 | `throt mcp` | 코딩 에이전트용 읽기 전용 MCP 서버(stdio). |
-| `throt setup claude-code\|codex [--write]` | 코딩 에이전트에 붙여 넣을 설정을 출력한다. `--write`를 주면 대신 홈 디렉터리에 직접 설치한다(추가만 하고, 바꾸는 파일마다 `.throt-backup`을 남긴다). |
-| `throt hook claude-code [--max-wait D]` | Claude Code 훅(hook). |
+| `throt hook claude-code [--max-wait D] [--defer] [--clamp]` | Claude Code 훅(hook). |
+| `throt wait [--timeout D]` | 호출한 에이전트 몫으로 무거운 작업 슬롯이 잡힐 때까지 기다린다. 훅의 `--defer`와 함께 쓴다(기본 30m). |
 | `throt completion bash\|zsh\|fish` | 셸 자동 완성 스크립트. |
 
-전역 플래그는 명령 앞에 둔다. `-config PATH`는 다른 설정 파일을 쓰고, `-n N`은 `throt events`가 출력할 이벤트 수를 정한다. `throt -h`는 모든 명령을 나열하고, 명령 뒤에 `-h`를 붙이면 그 명령의 사용법을 출력한다. `throtd -h`는 데몬의 플래그를 나열하고, `throtd -version`은 데몬 버전을 출력한다.
+`throt stats`, `throt explain PID`, `throt reload`, `throt learned`, `throt ping`처럼 예전 이름도 그대로 동작한다. `throt -h`는 위의 명령만 보여 주고, `throt help`는 전부 보여 준다.
+
+전역 플래그는 명령 앞에 둔다. `-config PATH`는 다른 설정 파일을 쓰고, `-n N`은 `throt events`가 출력할 이벤트 수를 정한다. `throt -h`는 명령을 나열하고, 명령 뒤에 `-h`를 붙이면 그 명령의 사용법을 출력한다. `throtd -h`는 데몬의 플래그를 나열하고, `throtd -version`은 데몬 버전을 출력한다.
 
 종료 코드: 성공하면 0, 오류는 1, 사용법 오류는 2, `throt update --check`에서 업데이트가 있으면 10이다. `throt run`은 실행한 명령의 종료 상태를 그대로 쓴다(명령을 실행할 수 없으면 126, 127). `throt hook claude-code`는 항상 0으로 종료한다. JSON 출력, 이벤트 종류, reason 코드, 종료 코드는 [Compatibility](docs/ARCHITECTURE.md#compatibility)에 정리되어 있다.
 
@@ -196,43 +204,14 @@ WantedBy=default.target
 
 ### 터미널 UI
 
-```text
-$ throt
-╭─ PRESSURE ────────╮ ╭─ CPU ──────────╮ ╭─ MEMORY ──────╮ ╭─ SWAP ────────╮ ╭─ SCHEDULER ─────────╮
-│  ELEVATED         │ │ 31%            │ │ 88%           │ │ 91%           │ │ OBSERVE             │
-│ why: kernel memo… │ │ load 0.62/cpu  │ │ 21.1/24.0 GiB │ │ 16.4/18.0 GiB │ │ limit 3 (2–10)      │
-│ latency 6ms       │ │                │ │ kernel: warn… │ │ growth 4 MiB… │ │ 0 would queue       │
-│ ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃ │ │ ▃▄▄▅▅▅▆▆▆▆▅▅▅▅ │ │ ▇▇▇▇▇▇▇▇▇▇▇▇▇ │ │ █████████████ │ │ 0 reserved          │
-╰───────────────────╯ ╰────────────────╯ ╰───────────────╯ ╰───────────────╯ ╰─────────────────────╯
-╭─ CPU % · last 5m ─────────────╮ ╭─ MEMORY % · last 5m ──────────╮ ╭─ SWAP % · last 5m ───────────╮
-│ 100%┤                         │ │ 100%┤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣴⣶ │ │ 100%┤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ │
-│  50%┤⣶⣿  ⢰⣾⣇  ⣴⣾⡄ ⢠⣷⣶  ⣸⣷⡆  ⣿ │ │  50%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │ │  50%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
-│   0%┤⣿⣿⣿⣰⣾⣿⣿⣧⣶⣿⣿⣿⣶⣾⣿⣿⣶⣼⣿⣿⣷⣆⣿⣿ │ │   0%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │ │   0%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
-╰───────────────────────────────╯ ╰───────────────────────────────╯ ╰──────────────────────────────╯
-╭─ MEMORY BY OWNER ────────────────╮ ┏━ ▸ AGENTS (53)  total 339% CPU, 9.0 GiB ━━━━━━━━━━━━━━━━━━━━┓
-│ ● agents 9.0 GiB  ○ outside 9.9… │ ┃   AGENT        PID   CPU     MEM▼  CHILDREN                 ┃
-│ ● codex-1        ██████  2.2 GiB │ ┃ > codex-1    41350  190%  2.2 GiB        14                 ┃
-│ ○ com.apple.Vir… █████▉  2.2 GiB │ ┃   codex-2    41357   42%  1.1 GiB         6                 ┃
-│ ● codex-2        ██▉░░░  1.1 GiB │ ┃   codex-3    41364    8%  640 MiB         3                 ┃
-│ ○ Browser ×19    ██░░░░  744 MiB │ ┃   claude-5   41028    2%  112 MiB         2                 ┃
-│ ○ Orca ×13       █▊░░░░  650 MiB │ ┃   claude-10  41063    1%  112 MiB         2                 ┃
-│ ● codex-3        █▋░░░░  640 MiB │ ┃   +48 more (each ≤3% CPU, ≤112 MiB; 96% CPU, 4.9 GiB toget… ┃
-│ ○ WindowServer   █▋░░░░  610 MiB │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-│ ○ Slack Helper … █▏░░░░  420 MiB │ ╭─ HEAVY WORKLOADS ───────────────────────────────────────────╮
-│ ● claude-5       ▎░░░░░  112 MiB │ │   OWNER  PID  PROCESS   CLASS   CPU  MEM▼  STATE            │
-│ +49 agents 5.0 GiB · ○ other 5.… │ │   (no heavy workloads)                                      │
-╰──────────────────────────────────╯ ╰─────────────────────────────────────────────────────────────╯
-╭─ EVENTS ─────────────────────────────────────────────────────────────────────────────────────────╮
-│ 09:00:09  SCHED  queued gradle (pid 2)                                                           │
-│ 09:00:09  SCHED  queued gradle (pid 1)                                                           │
-│ 09:00:09         pressure normal -> elevated                                                     │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-tab focus  j/k move  enter open  s sort  / filter  ? help  q quit
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/tui-dark.png">
+  <img alt="throt 터미널 UI: 통계 패널, 5분 차트, 소유자별 메모리, 에이전트와 무거운 작업 표, 이벤트" src="docs/images/tui-light.png">
+</picture>
 
-기본 화면은 창을 가득 채우는 패널 대시보드다. 맨 윗줄에는 신호마다 통계 패널이 하나씩 있다. `PRESSURE`(수준을 해당 색으로 표시하고 그 이유를 보여 준다), `CPU`, `MEMORY`, `SWAP`, `LATENCY`(120열 이상에서 표시하고, 그보다 좁으면 `PRESSURE` 패널 안에 들어간다), `SCHEDULER`(모드, 한도, 대기 중인 작업과 예약된 작업)다. 값은 70%부터 노란색, 85%부터 빨간색이 되고, 140열 이상에서는 큰 숫자로 그린다. 패널마다 맨 아래에 최근 갱신(초당 한 번)의 스파크라인이 있다. `SWAP`은 swap 증가량, `PRESSURE`는 수준을 그린다. 그 아래에는 CPU, 메모리, swap 사용량을 지난 5분 동안 차트로 그린다. 이 기록은 TUI가 직접 보관하므로 종료하면 사라진다. `MEMORY BY OWNER`는 에이전트(`●`)와 어느 에이전트에도 속하지 않은 프로세스(`○`, 이름별로 묶고 최대 5개 이름까지, 인자나 경로는 표시하지 않는다)를 큰 순서대로 한 막대 차트에 놓고 나머지는 합산한다. 그래서 에이전트로 설명되지 않는 메모리가 눈에 띈다. 그 옆에 `AGENTS`와 `HEAVY WORKLOADS` 표가 있고(포커스된 표는 굵은 테두리와 `▸`로 표시한다), 남은 높이는 `EVENTS`가 차지한다.
+기본 화면은 창을 가득 채우는 패널 대시보드다. 맨 윗줄에는 신호마다 통계 패널이 하나씩 있다. `PRESSURE`(수준을 해당 색으로 표시하고 그 이유를 보여 준다), `CPU`, `MEMORY`, `SWAP`, `LATENCY`(120열 이상에서 표시하고, 그보다 좁으면 `PRESSURE` 패널 안에 들어간다), `SCHEDULER`(모드, 한도, 대기 중인 작업과 예약된 작업)다. 값은 70%부터 노란색, 85%부터 빨간색이 되고, 옆에(140열 이상에서는 아래에) 막대가 붙는다. `SWAP`은 사용량을 보여 주고, 막대는 물리 메모리 대비이며 경고 색을 쓰지 않는다. macOS는 swap 공간을 차는 대로 늘려서, 공간 대비 비율은 늘 거의 가득 찬 것으로 나오기 때문이다. 패널마다 맨 아래에 최근 갱신(초당 한 번)의 스파크라인이 있다. `SWAP`은 swap 증가량, `PRESSURE`는 수준을 그린다. 그 아래에는 CPU, 메모리, swap 사용량을 지난 5분 동안 차트로 그린다. 이 기록은 TUI가 직접 보관하므로 종료하면 사라진다. `MEMORY BY OWNER`는 에이전트(`●`)와 어느 에이전트에도 속하지 않은 프로세스(`○`, 이름별로 묶고 최대 5개 이름까지, 인자나 경로는 표시하지 않는다)를 큰 순서대로 한 막대 차트에 놓고 나머지는 합산한다. 그래서 에이전트로 설명되지 않는 메모리가 눈에 띈다. 그 옆에 `AGENTS`와 `HEAVY WORKLOADS` 표가 있고(포커스된 표는 `▸`와 강조색으로 표시한다), 남은 높이는 `EVENTS`가 차지한다.
 
-처음에는 짧은 시작 화면(버전과 `throtd` 응답 여부)이 뜨고, 아무 키나 누르면 사라진다. `throtd`가 응답하고 1.5 s가 지나도 사라진다. CPU는 코어 하나 기준 백분율이다(코어 두 개가 바쁘면 200%). 에이전트의 CPU와 메모리에는 그 에이전트가 소유한 모든 프로세스가 포함된다. 압력의 이유가 메모리나 swap 신호이면 표를 메모리 기준으로, 아니면 CPU 기준으로 정렬한다. 처음 9개를 넘는 에이전트는 `+N more` 한 줄로 접히고, 선택을 그 아래로 옮기면 전체를 스크롤할 수 있다. 같은 초에 에이전트나 무거운 작업이 한꺼번에 나타나거나 사라지면 이벤트 한 줄로 묶는다. 플랫폼이 제공하지 않는 지표는 `n/a`로 표시한다. `throtd`가 실행 중이 아니면 TUI가 그렇게 알리고, 데몬이 시작되면 다시 연결한다. 80열보다 좁으면 패널을 한 열로 쌓고, CPU, 메모리, swap은 `SYSTEM` 패널 안에 막대로 표시한다. 터미널 높이가 낮으면 차트, 이벤트, 메모리 패널부터 빼고, 행이 더 모자라면 테두리도 뺀다. 40×10보다 작으면 창을 키우라고 안내한다.
+처음에는 짧은 시작 화면(버전과 `throtd` 응답 여부)이 뜨고, 아무 키나 누르면 사라진다. `throtd`가 응답하고 1.5 s가 지나도 사라진다. CPU는 코어 하나 기준 백분율이다(코어 두 개가 바쁘면 200%). 에이전트의 CPU와 메모리에는 그 에이전트가 소유한 모든 프로세스가 포함된다. macOS에서 프로세스 메모리는 내 프로세스면 physical footprint(상주, 압축, swap으로 나간 메모리를 합친 값으로, 활성 상태 보기와 같다)이고, 다른 사용자의 프로세스면 상주 크기다. 압력의 이유가 메모리나 swap 신호이면 표를 메모리 기준으로, 아니면 CPU 기준으로 정렬한다. 처음 9개를 넘는 에이전트는 `+N more` 한 줄로 접히고, 선택을 그 아래로 옮기면 전체를 스크롤할 수 있다. 같은 초에 에이전트나 무거운 작업이 한꺼번에 나타나거나 사라지면 이벤트 한 줄로 묶는다. 플랫폼이 제공하지 않는 지표는 `n/a`로 표시한다. `throtd`가 실행 중이 아니면 TUI가 그렇게 알리고, 데몬이 시작되면 다시 연결한다. 80열보다 좁으면 패널을 한 열로 쌓고, CPU, 메모리, swap은 `SYSTEM` 패널 안에 막대로 표시한다. 터미널 높이가 낮으면 차트, 이벤트, 메모리 패널부터 빼고, 행이 더 모자라면 테두리도 뺀다. 40×10보다 작으면 창을 키우라고 안내한다.
 
 `STOPPED` 줄은 throtd가 일시 정지하지 않은 프로세스의 수를 센다(`throt doctor` 참고). 이벤트에는 `CTL`, `SCHED`, `FAIL` 태그가 붙는다. 모든 상태는 색뿐 아니라 텍스트로도 표시하고, 색은 밝은 배경과 어두운 배경에서 모두 대비를 유지한다. `NO_COLOR`나 `TERM=dumb`를 설정하면 색을 완전히 끈다.
 
@@ -261,6 +240,10 @@ claude mcp add --scope user throt -- throt mcp
 - 그 밖의 경우는 바로 통과한다. 파이프, `;`, `||`, `&`, 리다이렉션, 서브셸, 치환, heredoc, 주석, 다른 명령 뒤의 무거운 도구(`make && ./run`), `throt run` 자체, 파싱할 수 없는 입력, 그리고 `--version`이나 `go env` 같은 [가벼운 호출](#claude-code-훅-때문에-명령-실행이-늦어진다)이 그렇다. `throtd`가 꺼져 있을 때도 모두 통과한다. 이 중 `throtd`에 연락하는 것은 자주 쓰는 가벼운 도구(`ls`, `git`, `grep`, `cat` 등)가 아닌 단순 명령 하나뿐이고, 그것도 시그니처를 알리려고 한 번 연락할 뿐이다.
 - 명령을 바꾸거나, 승인하거나, 거부하지 않는다. 따라서 권한 규칙은 그대로 적용된다. 기다린 뒤에는 한 줄짜리 `systemMessage`를 보여 준다.
 - 권고일 뿐이다. 슬롯을 예약하지 않으므로 같은 순간에 통과한 두 명령이 함께 시작될 수 있다. 슬롯을 예약하려면 `throt run --`을 쓴다. `throt run`에 대한 권한 allow 규칙은 추가하지 않는다. 그런 규칙은 `throt run`을 거쳐 실행되는 모든 명령을 허용하게 된다.
+
+**기다리지 않고 미루기(선택 사항).** `throt hook claude-code --defer`를 쓰면 빈 슬롯이 없을 때 훅이 기다리지 않는다. `throtd`가 에이전트의 대기 순번을 잡아 두고(큐에 들어간 워크로드, `throt run` 호출과 같은 줄이다), 훅은 호출을 거부하면서 그 이유로 Claude에게 몇 번째인지 알리고, 그동안 다른 작업을 하다가 `throt wait`를 백그라운드로 실행해 두고 그것이 끝나면 같은 명령을 다시 실행하라고 전한다. `throt wait`는 에이전트 몫으로 슬롯이 잡히면 0으로 끝난다. 잡힌 슬롯은 에이전트의 다음 무거운 명령을 60s 동안 기다리고, 훅은 그 명령을 바로 통과시킨다. 처음부터 슬롯이 비어 있을 때도 그 명령 몫으로 슬롯을 잡아 둔다. 미뤄진 호출이나 `throt wait`가 10분 동안 갱신하지 않은 순번은 사라지고, 잡아 둔 슬롯을 쓰지 않으면 60s 뒤에 풀린다. 오류가 나거나 `throtd`가 이 기능보다 오래된 버전이면 훅은 위에서 설명한 대로 기다린다. `throt setup`은 아직 `--defer`를 넣지 않으므로 `settings.json`의 훅 명령에 직접 추가한다.
+
+**빌드를 utility 우선순위로 시작하기(선택 사항, macOS).** 이미 돌고 있는 빌드를 `throtd`가 발견했을 때 쓸 수 있는 수단은 macOS 백그라운드 상태뿐인데, 이 상태는 포그라운드 반응성은 지키지만 빌드를 몇 배 느리게 만든다. 프로세스를 직접 시작하는 쪽은 더 나은 방법을 쓸 수 있다. utility QoS 제한(clamp)을 걸고 시작한 빌드는 포그라운드 작업에 똑같이 양보하면서 속도는 거의 잃지 않는다([`scheduler.background`](#설정) 참고). `throt run`은 명령을 스스로 그렇게 시작한다. `throt hook claude-code --clamp`를 쓰면 훅이 Claude의 명령에도 같은 일을 한다. `throtd`가 무거운 작업을 백그라운드 우선순위로 돌리는 동안, 단순 명령 하나로 된 무거운 명령(`./gradlew build`, `make -j8`. `cd web && npm run build`, `CI=1 make`, `time make`는 해당하지 않는다)을 `/usr/sbin/taskpolicy -c utility COMMAND`로 고쳐 쓴다. 그 밖의 명령은 그대로 실행되고 전처럼 백그라운드 상태가 된다. 훅은 호출을 승인하지 않는다. Claude Code는 고쳐 쓴 명령을 기준으로 권한 규칙을 확인하므로, `./gradlew`를 허용한 규칙은 더 이상 맞지 않아 확인 창이 뜬다. `throt setup`은 `--clamp`를 넣지 않는다.
 
 #### 학습한 무거운 명령
 
@@ -304,6 +287,19 @@ printf '\norg.gradle.daemon=false\nkotlin.compiler.execution.strategy=in-process
 Prefix heavy commands (builds, full test suites, container builds) with `throt run --`, e.g. `throt run -- npm run build`.
 ```
 
+### 토큰과 시간: `throt usage`
+
+`throt usage`는 에이전트 세션마다 토큰을 얼마나 썼고 얼마나 오래 일했는지 보여 준다. 에이전트가 이미 남기는 세션 기록(`~/.claude/projects` 또는 `CLAUDE_CONFIG_DIR` 아래, `~/.codex/sessions` 또는 `CODEX_HOME` 아래)을 읽는다. `throtd`가 필요 없고 아무것도 쓰지 않는다.
+
+```console
+$ throt usage --since 7d --by project
+```
+
+- **에이전트 종류별 합계를 먼저, 그다음 표를 보여 준다.** 표는 세션별(기본), `--by project`, `--by hour` 중 하나다. 열은 입력, 출력, 캐시 쓰기, 캐시 읽기 토큰, 메시지 수, 실제 작업 시간, 첫 기록과 마지막 기록 시각이다. `--since`에는 기간(`90m`, `24h`, `7d`, 기본 `24h`)이나 날짜(`2026-11-01`)를 준다. `--json`은 같은 보고서를 정확한 숫자와 전체 세션 id로 출력한다.
+- **실제 작업 시간**은 한 세션의 연속한 기록 사이 간격 중 5분 미만인 것만 더한 값이다. 밤새 열어 둔 세션이라도 그 밤은 세지 않는다. 동시에 돈 세션은 각각 세므로 합계가 실제 흐른 시간보다 클 수 있다.
+- **숫자와 시각만 읽는다.** 각 줄에서 토큰 수, id, 모델 이름, 시각, 작업 디렉터리만 읽는다. 메시지 본문, 프롬프트, 도구 입력과 출력은 보관하지도 출력하지도 기록하지도 않는다. 프로젝트는 디렉터리의 마지막 이름으로만 표시한다.
+- **토큰은 에이전트가 기록한 그대로다.** 입력에는 캐시된 토큰이 들어가지 않는다(둘을 합쳐 기록하는 Codex는 캐시된 토큰을 뺀다). 응답 하나는 몇 줄에 기록되어 있든 한 번만 세고, 서브에이전트는 자신을 시작한 세션에 합산한다. 가격은 바뀌므로 비용은 추정하지 않는다. 기록에 토큰 수가 없는 Codex 세션은 시간만 보고한다. 형식이 깨졌거나 4 MiB를 넘는 줄은 건너뛰고 그 수를 보고서에 적는다.
+
 ## 설정
 
 설정 파일은 선택 사항이다. 위치는 `~/.config/throt/config.json` 또는 `$XDG_CONFIG_HOME/throt/config.json`이고, 두 프로그램 모두 `-config PATH`로 덮어쓸 수 있다. 알 수 없는 키는 오류다. 일반적인 파일은 다음과 같다.
@@ -340,7 +336,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 | `scheduler.start_limit` | 프로필에서 | 적응형 한도의 시작값(0–`heavy_limit`. 0이면 프로필 값을 쓰되 `heavy_limit`을 넘지 않는다). `adaptive`가 아니면 무시한다. |
 | `scheduler.adaptive` | 프로필에서 | high 압력에서는 한도를 절반으로 줄인다. 머신이 버티는 동안 30s마다 하나씩 CPU당 하나까지 올리고, 빈 메모리에 들어가는 대기 작업이 있으면 `heavy_limit`까지 즉시 올린다. |
 | `scheduler.per_agent_limit` | `0` (제한 없음) | 한 에이전트가 실행할 수 있는 무거운 작업의 최대 수. 한 에이전트가 모든 슬롯을 차지하지 못하게 한다(0–64). |
-| `scheduler.background` | `true` | `enforce` 모드에서 에이전트가 소유한 무거운 작업을 모두 백그라운드 우선순위로 돌린다. macOS에서는 `taskpolicy -b`와 같은 백그라운드 상태(가장 낮은 CPU 우선순위, Apple silicon에서는 효율 코어, 디스크 I/O 제한)이고, Linux에서는 nice +10과 가장 낮은 best-effort I/O 우선순위다. `enforce`를 끄거나 이 값을 끄거나 `throtd`를 멈추면 원래대로 되돌린다. 다만 Linux에서는 우선순위를 다시 올리는 일을 root만 할 수 있어서, 보통 nice 값은 프로세스가 끝날 때까지 남는다. 프로필은 이 값을 바꾸지 않는다. |
+| `scheduler.background` | `true` | `enforce` 모드에서 에이전트가 소유한 무거운 작업을 모두 백그라운드 우선순위로 돌린다. macOS에서는 `taskpolicy -b`와 같은 백그라운드 상태(가장 낮은 CPU 우선순위, Apple silicon에서는 효율 코어, 디스크 I/O 제한)이고, Linux에서는 nice +10과 가장 낮은 best-effort I/O 우선순위다. macOS에서 utility QoS 제한을 걸고 시작한 프로세스(`throt run`과 `throt hook claude-code --clamp`가 명령을 시작하는 방식)는 백그라운드 상태로 바꾸지 않고 그대로 둔다. M5 Pro에서 클린 빌드 6개를 동시에 돌려 측정하면 제한은 13%(27s 대비 30.5s), 백그라운드 상태는 5.4배(146s) 느렸고 포그라운드 지연은 같았다. `enforce`를 끄거나 이 값을 끄거나 `throtd`를 멈추면 원래대로 되돌린다. 다만 Linux에서는 우선순위를 다시 올리는 일을 root만 할 수 있어서, 보통 nice 값은 프로세스가 끝날 때까지 남는다. 프로필은 이 값을 바꾸지 않는다. |
 | `scheduler.resume_cooldown` | `10s` | 압력이 high나 critical이거나 메모리, swap, latency 때문에 elevated일 때, 그리고 압력 때문에 일시 정지한 뒤에 재개(와 선점) 사이에 두는 최소 간격. 압력이 normal이거나 CPU만 원인일 때, 또는 작업이 종료되었을 때는 빈 슬롯을 즉시 채운다. 최대 `10m`. |
 | `scheduler.max_queue_wait` | `5m` | 이만큼 대기한 작업은 high 압력에서도 다음 빈 슬롯을 받는다. 대기열이 기아 상태에 빠지지 않게 한다(최소 1s). |
 | `scheduler.pause_on_critical` | `false` | critical 압력에서 가장 최근에 시작한 무거운 작업을 일시 정지한다. 마지막 하나는 건드리지 않는다. |
@@ -483,6 +479,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 | v0.8 Integration and readiness | 지시 없이도 용량을 기다리기 | Claude Code 훅, `throt setup`, `throt config check`/`show`, `throt version --json`, 로그 레벨, soak 테스트 | 출시 (v0.8.0-rc.1) |
 | v0.9 Evidence and upkeep | 실제 머신에서 측정하고 최신 상태 유지하기 | `throt update`, 실제 머신 CPU·메모리 벤치마크, CI 러너에서 soak, CPU만 바쁠 때 늘어나는 적응형 한도, `start_limit`, `throt_wait_for_capacity`와 `throt_explain`을 갖춘 MCP `2026-07-28`, TUI 스케줄러 줄과 이벤트 필터 | 출시 (v0.9.0-rc.1) |
 | 1.0 | 명시한 프로필 아래에서 자신 있게 스케줄러 켜기 | 안정된 호환성 정책, 실제 머신 벤치마크. 벤치마크 근거에 따라 스케줄러는 옵트인으로 남긴다 | 출시 (v1.0.0-rc.1) |
+| 1.x 사용량 | "에이전트마다 토큰과 시간을 얼마나 썼나?" | `throt usage`: Claude Code와 Codex 세션 기록에서 에이전트 세션·프로젝트·시간대별 토큰(입력, 출력, 캐시)과 실제 작업 시간을 읽는다. 숫자와 시각만 읽고 대화 내용은 읽지 않는다. 읽기 전용이며 `throtd`가 필요 없다 | 출시 (미릴리스) |
 
 **1.0**은 명시한 `scheduler.mode`와 `profile` 아래에서 스케줄러를 자신 있게 켤 수 있다는 뜻이다. 기본값은 여전히 꺼짐이다([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#results)의 "Default decision" 참고). 1.0의 조건은 지원 OS 계열 두 개, [호환성 정책](docs/ARCHITECTURE.md#compatibility) 시행, 알려진 프로세스 유실 버그 없음, 재현 가능한 벤치마크, IPC와 프로세스 제어 경계에 대한 보안 검토다.
 

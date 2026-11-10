@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 	"sync"
@@ -28,12 +29,25 @@ import (
 // until throtd's capacity verdict says a heavy job may start, then exits
 // 0. To let throtd learn, it reports each simple command's signature
 // (internal/signature: program and first argument base names, nothing
-// more) to throtd before it starts. It never modifies, approves,
-// or denies the call, so the command runs exactly as Claude wrote it under
-// the user's own permission rules. The only output is an optional
-// systemMessage (shown to the user) after it has waited; nothing is
-// written while waiting. Admission is advisory: the hook exits before the
-// command starts, so it cannot hold a lease for it.
+// more) to throtd before it starts. It never approves a call, and without
+// --clamp never modifies one, so the command runs exactly as Claude wrote
+// it under the user's own permission rules. The only output is an optional systemMessage
+// (shown to the user) after it has waited; nothing is written while
+// waiting. Admission is advisory: the hook exits before the command
+// starts, so it cannot hold a lease for it.
+//
+// With --defer it does not wait: it asks throtd ("reserve") for a slot
+// held for its agent. Granted, the call runs and the agent's slot covers
+// it; otherwise the agent keeps its place in line and the hook denies the
+// call, telling Claude to run `throt wait` in the background and then
+// rerun the command. Any error, or a throtd without the method, falls
+// back to waiting as above.
+//
+// With --clamp, while throtd runs heavy workloads at background priority,
+// it rewrites a heavy command that is one plain simple command to start
+// through the platform's low-priority launcher (lowPriorityPrefix), and
+// leaves every other command as it is. It sets no permission decision, so
+// the user's rules apply, to the rewritten command.
 
 const (
 	// maxHookInput bounds what the hook reads from stdin. Larger input is
@@ -48,7 +62,7 @@ const (
 // input. Claude Code never shows that stderr when the hook exits 0.
 const hookDebugEnv = "THROT_HOOK_DEBUG"
 
-const hookUsage = `Usage: throt hook claude-code [--max-wait D]
+const hookUsage = `Usage: throt hook claude-code [--max-wait D] [--defer] [--clamp]
 
 Claude Code PreToolUse hook for the Bash tool. When the command is a heavy
 tool (alone, or after "cd DIR &&", variable assignments, or "time"), or a
@@ -56,9 +70,23 @@ command throtd learned heavy because it started a heavy workload before,
 wait up to D for throtd to report capacity for a heavy job, then let it run
 unchanged. Only the command's signature (program and first argument base
 names) is sent to throtd, to learn from. Advisory: no slot is reserved.
-It never blocks, denies, or changes a tool call, and returns at once on
+Without --defer or --clamp it never blocks, denies, or changes a tool call. It returns at once on
 any error or when throtd is unreachable. Keep D below the hook's "timeout" in settings.json. With
 THROT_HOOK_DEBUG=1 it says on stderr why it ignored an event.
+
+With --defer it does not wait when no slot is free: throtd holds the
+agent's place in line and the hook denies the call, telling Claude to run
+'throt wait' in the background and rerun the command when it returns; the
+rerun takes the slot held for it. On any error, or with an older throtd,
+it waits as above.
+
+With --clamp (macOS), while throtd runs heavy workloads at background
+priority, a heavy command that is one plain simple command (no "cd DIR &&",
+assignments or "time") is rewritten to start as
+"/usr/sbin/taskpolicy -c utility COMMAND": it yields to foreground work but
+runs several times faster than a build throtd has to put in the background
+after it started. Claude Code matches your permission rules against the
+rewritten command, so a rule that allowed COMMAND no longer does.
 
 Flags:
 `
@@ -72,8 +100,19 @@ type hookWaiter struct {
 	// throtd and returns whether throtd learned it heavy. named says the
 	// hook already treats it as heavy by name. nil skips it.
 	expect func(ctx context.Context, sig string, named bool) (bool, error)
-	now    func() time.Time
-	sleep  func(ctx context.Context, d time.Duration) error
+	// reserve, set by --defer, asks throtd for a slot for this process's
+	// agent, holding its place in line when none is free.
+	reserve func(ctx context.Context) (app.ReserveResult, error)
+	// clamp, set by --clamp where the platform has one, is the launcher
+	// prefix a heavy command is rewritten to start through while background
+	// reports that throtd runs heavy workloads at background priority.
+	clamp      []string
+	background func(ctx context.Context) bool
+	// lookPath finds the command word's program; a command whose program
+	// is not found (an alias or a shell function) is not rewritten.
+	lookPath func(file string) (string, error)
+	now      func() time.Time
+	sleep    func(ctx context.Context, d time.Duration) error
 	// debug, when set, gets a one-line hint about input the hook ignores.
 	debug io.Writer
 }
@@ -91,12 +130,14 @@ func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) e
 	if len(args) == 0 || args[0] != "claude-code" {
 		// Exit 1, not exitUsage: Claude Code blocks the tool call on exit 2,
 		// so a typo in settings.json must not block every Bash command.
-		return exitError{code: 1, msg: "usage: throt hook claude-code [--max-wait D]"}
+		return exitError{code: 1, msg: "usage: throt hook claude-code [--max-wait D] [--defer] [--clamp]"}
 	}
 	flags := flag.NewFlagSet("throt hook", flag.ContinueOnError)
 	flags.SetOutput(errw)
 	flags.Usage = func() { fmt.Fprint(flags.Output(), hookUsage); flags.PrintDefaults() }
 	maxWait := flags.Duration("max-wait", defaultHookMaxWait, "wait at most this long for capacity (keep it below the hook timeout)")
+	deferCall := flags.Bool("defer", false, "when no slot is free, hold the agent's place in line and deny the call instead of waiting")
+	clamp := flags.Bool("clamp", false, "start a heavy simple command at low priority while throtd runs heavy workloads in the background (macOS)")
 	err := parseFlags(flags, args[1:], out)
 	if errors.Is(err, flag.ErrHelp) {
 		return err
@@ -119,6 +160,22 @@ func runHook(args []string, cfgPath string, in io.Reader, out, errw io.Writer) e
 		},
 		now:   time.Now,
 		sleep: sleepCtx,
+	}
+	if *deferCall {
+		h.reserve = func(ctx context.Context) (app.ReserveResult, error) {
+			ctx, cancel := context.WithTimeout(ctx, runCallTimeout)
+			defer cancel()
+			return daemonClient{socket: socket()}.Reserve(ctx, app.ReserveParams{PID: os.Getpid()})
+		}
+	}
+	if *clamp {
+		h.clamp, h.lookPath = lowPriorityPrefix(), exec.LookPath
+		h.background = func(ctx context.Context) bool {
+			ctx, cancel := context.WithTimeout(ctx, runCallTimeout)
+			defer cancel()
+			st, err := daemonClient{socket: socket()}.Status(ctx)
+			return err == nil && st.Scheduler.Background
+		}
 	}
 	if os.Getenv(hookDebugEnv) == "1" {
 		h.debug = errw
@@ -180,6 +237,21 @@ func (h hookWaiter) claudeCode(ctx context.Context, in io.Reader, out io.Writer,
 	if !named && !learned {
 		return
 	}
+	if h.reserve != nil {
+		r, err := h.reserve(ctx)
+		switch {
+		case err != nil:
+			h.hint("reserve failed (" + err.Error() + "); waiting instead")
+		case r.Granted:
+			h.finish(ctx, out, data, command, "")
+			return
+		case r.Position > 0:
+			writeHookJSON(out, deferDecision(r))
+			return
+		default:
+			h.hint("throtd holds no place in line (" + r.Reason + "); waiting instead")
+		}
+	}
 	msg := h.wait(ctx, maxWait)
 	if msg != "" && hasSig && h.expect != nil {
 		// The command starts only now: report it again, so throtd still
@@ -189,14 +261,113 @@ func (h hookWaiter) claudeCode(ctx context.Context, in io.Reader, out io.Writer,
 	if msg != "" && learned {
 		msg += " (learned heavy: it started a heavy workload before; see 'throt learned')"
 	}
-	if msg != "" {
-		resp, err := json.Marshal(struct {
-			SystemMessage string `json:"systemMessage"`
-		}{msg})
-		if err == nil {
-			out.Write(append(resp, '\n'))
-		}
+	h.finish(ctx, out, data, command, msg)
+}
+
+// hookOutput is what the hook writes for a call it lets run: a notice for
+// the user after a wait, and with --clamp the rewritten tool input
+// (https://code.claude.com/docs/en/hooks#pretooluse-decision-control). No
+// permissionDecision is set: the user's permission rules decide.
+type hookOutput struct {
+	SystemMessage      string         `json:"systemMessage,omitempty"`
+	HookSpecificOutput *hookRewritten `json:"hookSpecificOutput,omitempty"`
+}
+
+type hookRewritten struct {
+	HookEventName string `json:"hookEventName"`
+	// UpdatedInput replaces the whole tool input, so it carries every field
+	// of the original with only the command changed.
+	UpdatedInput map[string]json.RawMessage `json:"updatedInput"`
+}
+
+// finish writes the output of an admitted call, if there is any.
+func (h hookWaiter) finish(ctx context.Context, out io.Writer, data []byte, command, msg string) {
+	o := hookOutput{SystemMessage: msg}
+	if input := h.clamped(ctx, data, command); input != nil {
+		o.HookSpecificOutput = &hookRewritten{HookEventName: "PreToolUse", UpdatedInput: input}
 	}
+	if o.SystemMessage != "" || o.HookSpecificOutput != nil {
+		writeHookJSON(out, o)
+	}
+}
+
+// clamped returns the event's tool input with command rewritten to start
+// through the low-priority launcher, or nil to leave the call alone: without
+// --clamp, when command is not one plain simple command whose program
+// exists, or when throtd does not run heavy workloads in the background.
+func (h hookWaiter) clamped(ctx context.Context, data []byte, command string) map[string]json.RawMessage {
+	if len(h.clamp) == 0 || !clampable(command, h.lookPath) || h.background == nil || !h.background(ctx) {
+		return nil
+	}
+	var ev struct {
+		ToolInput map[string]json.RawMessage `json:"tool_input"`
+	}
+	if json.Unmarshal(data, &ev) != nil || ev.ToolInput == nil {
+		return nil
+	}
+	rewritten, err := json.Marshal(strings.Join(h.clamp, " ") + " " + strings.TrimSpace(command))
+	if err != nil {
+		return nil
+	}
+	ev.ToolInput["command"] = rewritten
+	return ev.ToolInput
+}
+
+// clampable reports whether command can be prefixed with a launcher
+// without changing what it runs: a single simple command whose first word
+// is a plain command word naming a program lookPath finds. "cd DIR &&"
+// steps, assignments and "time" are left alone (the launcher would not see
+// them as the shell does), as are aliases, functions and builtins, which
+// only the shell can run.
+func clampable(command string, lookPath func(string) (string, error)) bool {
+	cmds, ok := shellwords.Split(command)
+	if !ok || len(cmds) != 1 || len(cmds[0]) == 0 || lookPath == nil {
+		return false
+	}
+	word := cmds[0][0].Raw
+	if word == "time" || !isPlainCommand(word) {
+		return false
+	}
+	_, err := lookPath(word)
+	return err == nil
+}
+
+// writeHookJSON writes v as the hook's one line of JSON output.
+func writeHookJSON(out io.Writer, v any) {
+	if resp, err := json.Marshal(v); err == nil {
+		out.Write(append(resp, '\n'))
+	}
+}
+
+// hookDecision is a PreToolUse decision
+// (https://code.claude.com/docs/en/hooks#pretooluse-decision-control):
+// "deny" blocks the call and shows the reason to Claude.
+type hookDecision struct {
+	HookSpecificOutput struct {
+		HookEventName            string `json:"hookEventName"`
+		PermissionDecision       string `json:"permissionDecision"`
+		PermissionDecisionReason string `json:"permissionDecisionReason"`
+	} `json:"hookSpecificOutput"`
+}
+
+// deferDecision denies a call whose agent now waits in line at r.Position.
+func deferDecision(r app.ReserveResult) hookDecision {
+	var d hookDecision
+	d.HookSpecificOutput.HookEventName = "PreToolUse"
+	d.HookSpecificOutput.PermissionDecision = "deny"
+	d.HookSpecificOutput.PermissionDecisionReason = deferMessage(r)
+	return d
+}
+
+// deferMessage tells Claude why the call was deferred and what to do.
+func deferMessage(r app.ReserveResult) string {
+	v := r.Verdict
+	state := "no heavy-build slot is free (" + r.Reason + ")"
+	if busy := v.RunningHeavy + v.Reserved; v.SchedulerMode != "off" && v.HeavyLimit > 0 && busy >= v.HeavyLimit {
+		state = fmt.Sprintf("%d heavy builds running (limit %d)", busy, v.HeavyLimit)
+	}
+	return fmt.Sprintf("Throt: %s; you are #%d in line. Your place is held. Do other non-build work now. "+
+		"Run `throt wait` with run_in_background so you are notified when a slot frees, then rerun this exact command.", state, r.Position)
 }
 
 // wait polls the capacity check until it says ok, maxWait passes, or the

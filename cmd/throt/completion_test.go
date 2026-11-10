@@ -19,7 +19,7 @@ func TestCompletionCoversEveryCommand(t *testing.T) {
 				words[w] = true
 			}
 			for _, c := range commands() {
-				if !words[c.name] {
+				if !c.hidden && !words[c.name] {
 					t.Errorf("%s script lacks command %q", shell, c.name)
 				}
 			}

@@ -37,6 +37,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Sampler overhead
+        # The macOS process sampler's two collectors side by side
+        # (kern.proc.all and proc_info, and /bin/ps alone): probe lateness,
+        # CPU, wall time percentiles and allocations per sample, before the
+        # benchmarks load the machine. It never fails the benchmarks.
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          THROT_OVERHEAD=30s go test ./internal/platform -run 'Overhead|KernelCollector|SamplerPaths' \
+            -bench SampleProcessesReal -benchtime 60x -v -count=1 -timeout 20m
       - name: Benchmark
         # Build the test binary and run it directly: under `go test`, the
         # `go` process (itself a heavy build) would be an ancestor of every

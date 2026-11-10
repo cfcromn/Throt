@@ -124,6 +124,9 @@ func TestBackgroundLowersAttributedMembersOnce(t *testing.T) {
 		t.Fatalf("priority_lowered events = %v", ev)
 	}
 	st := d.status
+	if !st.Scheduler.Background {
+		t.Error("status scheduler.background = false in enforce mode")
+	}
 	for _, h := range st.Heavy {
 		if want := h.Key.PID == 11; h.Background != want {
 			t.Errorf("heavy %d background = %v, want %v", h.Key.PID, h.Background, want)

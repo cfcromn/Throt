@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+reviews:
+  # CodeRabbit requests changes for blocking findings and approves once its
+  # threads are resolved and the latest commit is reviewed. The approval
+  # counts toward the one required by the main branch ruleset.
+  auto_approvals:
+    enabled: true

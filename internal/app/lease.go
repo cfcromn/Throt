@@ -73,21 +73,73 @@ type leaseTable struct {
 	lastID uint64
 	// parents maps PID to parent PID in the latest process sample.
 	parents map[int]int
+	// held holds the agent leases (see grantAgent), by lease ID.
+	held map[string]*agentLease
 }
 
-// find returns the active lease for exactly key.
+// agentLease is what an agent lease adds to a Lease. An agent lease is
+// granted to an agent's reservation (the "reserve" method), not to one
+// process: its Process is the agent's key, and the command it is for has
+// not been started yet. It is ready until a hook call of that agent
+// consumes it, and then ends when a heavy workload of the agent appears
+// that was not running at that moment.
+type agentLease struct {
+	consumed bool
+	// before holds the agent's heavy workloads when the lease was consumed.
+	before []domain.ProcessKey
+}
+
+// find returns the active process lease for exactly key.
 func (t *leaseTable) find(key domain.ProcessKey) (Lease, bool) {
 	for _, l := range t.leases {
-		if l.Process.PID == key.PID && l.Process.Start.Equal(key.Start) {
+		if t.held[l.ID] == nil && l.Process.PID == key.PID && l.Process.Start.Equal(key.Start) {
 			return l, true
 		}
 	}
 	return Lease{}, false
 }
 
-// holds reports whether pid holds an active lease.
+// holds reports whether pid holds an active process lease. An agent lease
+// does not count: it must not make every command of the agent nested.
 func (t *leaseTable) holds(pid int) bool {
-	return slices.ContainsFunc(t.leases, func(l Lease) bool { return l.Process.PID == pid })
+	return slices.ContainsFunc(t.leases, func(l Lease) bool { return t.held[l.ID] == nil && l.Process.PID == pid })
+}
+
+// grantAgent adds an agent lease for the agent with key, consumed at once
+// when consumed is set, with before as the agent's heavy workloads.
+func (t *leaseTable) grantAgent(key domain.ProcessKey, agent string, now time.Time, consumed bool, before []domain.ProcessKey) Lease {
+	l := t.grant(key, agent, now)
+	if t.held == nil {
+		t.held = map[string]*agentLease{}
+	}
+	t.held[l.ID] = &agentLease{consumed: consumed, before: before}
+	return l
+}
+
+// agentLease returns the agent lease of the agent with exactly key.
+func (t *leaseTable) agentLease(key domain.ProcessKey) (Lease, *agentLease, bool) {
+	for _, l := range t.leases {
+		if a := t.held[l.ID]; a != nil && l.Process.PID == key.PID && l.Process.Start.Equal(key.Start) {
+			return l, a, true
+		}
+	}
+	return Lease{}, nil, false
+}
+
+// consume marks the agent lease id consumed at now by a command about to
+// start, with before as the agent's heavy workloads, and restarts its TTL
+// so the command has leaseTTL to appear.
+func (t *leaseTable) consume(id string, now time.Time, before []domain.ProcessKey) {
+	a := t.held[id]
+	if a == nil || a.consumed {
+		return
+	}
+	a.consumed, a.before = true, before
+	for i := range t.leases {
+		if t.leases[i].ID == id {
+			t.leases[i].Granted = now
+		}
+	}
 }
 
 // grant adds a lease for key with the next ID.
@@ -116,7 +168,8 @@ func (t *leaseTable) owners() []string {
 // sampled: a lease whose process, or a descendant of it, is a heavy
 // workload ends (the workload counts from now on); one whose process is
 // missing from a sample taken after the grant has exited; and one older
-// than leaseTTL expires.
+// than leaseTTL expires. A consumed agent lease ends instead when the
+// agent owns a heavy workload it did not own when the lease was consumed.
 func (t *leaseTable) observe(sampled, now time.Time, procs []domain.ProcessSample, heavy []process.WorkloadView) []leaseEnd {
 	byPID := make(map[int]domain.ProcessSample, len(procs))
 	t.parents = make(map[int]int, len(procs))
@@ -148,6 +201,9 @@ func (t *leaseTable) observe(sampled, now time.Time, procs []domain.ProcessSampl
 		p, seen := byPID[l.Process.PID]
 		alive := seen && p.Start.Equal(l.Process.Start)
 		workload, below := aboveHeavy[p.PID]
+		if a := t.held[l.ID]; a != nil {
+			workload, below = newWorkload(a, l.Process.PID, heavy)
+		}
 		reason := ""
 		switch {
 		case alive && below:
@@ -160,10 +216,25 @@ func (t *leaseTable) observe(sampled, now time.Time, procs []domain.ProcessSampl
 		}
 		if reason != "" {
 			ended = append(ended, leaseEnd{l, reason, workload})
+			delete(t.held, l.ID)
 		}
 		return reason != ""
 	})
 	return ended
+}
+
+// newWorkload returns the heavy workload, lowest key first, of the agent
+// with PID agent that took over the consumed agent lease a.
+func newWorkload(a *agentLease, agent int, heavy []process.WorkloadView) (domain.ProcessKey, bool) {
+	if !a.consumed {
+		return domain.ProcessKey{}, false
+	}
+	for _, h := range heavy {
+		if h.OwnerPID == agent && !slices.Contains(a.before, h.Key) {
+			return h.Key, true
+		}
+	}
+	return domain.ProcessKey{}, false
 }
 
 // expire ends leases older than leaseTTL. It is used when no process sample
@@ -175,6 +246,7 @@ func (t *leaseTable) expire(now time.Time) []leaseEnd {
 			return false
 		}
 		ended = append(ended, leaseEnd{Lease: l, reason: LeaseExpired})
+		delete(t.held, l.ID)
 		return true
 	})
 	return ended

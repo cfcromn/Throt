@@ -30,7 +30,10 @@ const (
 )
 
 // Background puts key's process in the macOS background state if key still
-// names that process owned by uid. The returned token is always 0: macOS
+// names that process owned by uid. A process started under the utility QoS
+// clamp (`taskpolicy -c utility`, as `throt run` starts its command) is left
+// as it is: it already yields to foreground work, and the background state
+// would only slow it several times over. The returned token is always 0: macOS
 // has no way to read the state back without private APIs, so Foreground
 // clears it.
 //
@@ -56,6 +59,9 @@ func setDarwinBG(ctx context.Context, key domain.ProcessKey, uid uint32, prio in
 	}
 	if err := verifyIdentity(ctx, kinfoIdentity, key, uid); err != nil {
 		return fmt.Errorf("set priority of pid %d: %w", key.PID, err)
+	}
+	if prio == prioDarwinBG && isClamped(key.PID) {
+		return nil
 	}
 	err := unix.Setpriority(prioDarwinProcess, key.PID, prio)
 	switch {
@@ -88,5 +94,33 @@ func kinfoIdentity(ctx context.Context, pid int) (time.Time, uint32, error) {
 	case k.Proc.P_stat == sZomb:
 		return time.Time{}, 0, fmt.Errorf("identity of pid %d: zombie: %w", pid, domain.ErrProcessGone)
 	}
-	return time.Unix(k.Proc.P_starttime.Sec, 0).In(time.Local), k.Eproc.Ucred.Uid, nil
+	return lstartTime(k.Proc.P_starttime.Sec, time.Local), k.Eproc.Ucred.Uid, nil
+}
+
+// Task priorities proc_info reports (pti_priority): 31 less the nice value
+// for an ordinary process, 20 under the utility QoS clamp, 4 in the
+// background state.
+const (
+	taskPriorityDefault = 31
+	taskPriorityUtility = 20
+	taskPriorityBG      = 4
+)
+
+// isClamped is utilityClamped, replaced in tests that must lower a process
+// even where the test itself runs clamped (hosted CI runners do).
+var isClamped = utilityClamped
+
+// utilityClamped reports whether pid runs under the utility QoS clamp,
+// which only a spawn attribute sets and children inherit. A priority that
+// nice alone explains does not count, so a heavily niced process is still
+// put in the background, and so is one that cannot be read.
+func utilityClamped(pid int) bool {
+	var buf [sizeofProcTaskAllInfo]byte
+	hz, err := machTimebase()
+	if err != nil {
+		return false
+	}
+	t, err := readProcTask(pid, hz, &buf)
+	return err == nil && t.priority > taskPriorityBG && t.priority <= taskPriorityUtility &&
+		t.priority < taskPriorityDefault-t.nice
 }

@@ -85,7 +85,7 @@ func TestSparklinesInView(t *testing.T) {
 	// 2 MiB/s, 0; latency scaled to its 40ms maximum.
 	assertContains(t, lineWith(t, out, "CPU "), "100%  "+strings.Repeat(" ", 7)+"▁▅█  load 0.85/cpu")
 	assertContains(t, lineWith(t, out, "MEM "), "75%  "+strings.Repeat(" ", 7)+"▆▆▆  12.0 GiB")
-	assertContains(t, lineWith(t, out, "SWAP "), "25%  "+strings.Repeat(" ", 8)+"█▁  1.0 GiB / 4.0 GiB")
+	assertContains(t, lineWith(t, out, "SWAP "), "6%  "+strings.Repeat(" ", 8)+"█▁  1.0 GiB used, % of RAM")
 	assertContains(t, lineWith(t, out, "pressure"), "latency 40ms ▃▅█")
 	assertFits(t, out, 70, 40)
 
@@ -402,7 +402,7 @@ func TestNarrowDropOrder(t *testing.T) {
 			t.Errorf("width %d: %d sparkline cells, want %d: %q", tt.width, got, tt.sparkCells, cpu)
 		}
 		// The bar and percentage outlive the sparkline.
-		if !strings.Contains(cpu, "█") || !strings.Contains(cpu, "74%") {
+		if !strings.Contains(cpu, "━") || !strings.Contains(cpu, "74%") {
 			t.Errorf("width %d: CPU bar lost: %q", tt.width, cpu)
 		}
 		if got := strings.Contains(out, "(memory_used>=0.9)"); got != tt.raw {
