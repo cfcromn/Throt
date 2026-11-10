@@ -339,6 +339,7 @@ From 1.0.0 (and its release candidates), the stable surface is everything below.
 |---|---|
 | `throt status --json` | the `status` result |
 | `throt stats --json` | the `stats` result |
+| `throt usage --json` | `since`, `by` (`session`, `project` or `hour`), `active_gap_seconds`, `agents` (one row per agent kind: `claude-code`, `codex`), `total` and `rows` (one per session, project or hour), `files` (log files read), `skipped_lines`. A row: `agent`, `session`, `project` and `hour` (each only where it applies), `sessions`, `input_tokens`, `output_tokens`, `cache_write_tokens`, `cache_read_tokens`, `messages`, `active_seconds`, `first`, `last` |
 | `throt events` (one per line) | an `events` result element: `seq`, `instance`, `time`, `kind`, `message`, `attrs` |
 | `throt version --json` | `version`, `protocol`, `go`, `daemon` (the `ping` result, or null), `daemon_error` (when `throtd` is unreachable) |
 | `throt config show --json` | `path`, `file` (whether it exists), `profile`, `config` (every config key), `settings` (`key`, `value`, `source`: `default`, `profile` or `file`) |

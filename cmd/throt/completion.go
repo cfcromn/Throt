@@ -33,7 +33,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status stats learned ping events explain pause resume run wait reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status stats learned usage ping events explain pause resume run wait reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -45,6 +45,7 @@ _throt() {
         status) COMPREPLY=($(compgen -W "--json --idle" -- "$cur")) ;;
         version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
         learned) [[ "$prev" == --forget || "$prev" == -forget ]] || COMPREPLY=($(compgen -W "--forget --clear" -- "$cur")) ;;
+        usage) case "$prev" in --by|-by) COMPREPLY=($(compgen -W "session project hour" -- "$cur")) ;; --since|-since) ;; *) COMPREPLY=($(compgen -W "--by --since --json" -- "$cur")) ;; esac ;;
         update) [[ "$prev" == --version || "$prev" == -version ]] || COMPREPLY=($(compgen -W "--check --version --pre --yes" -- "$cur")) ;;
         hook) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code" -- "$cur")) ;;
         setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) || COMPREPLY=($(compgen -W "--write" -- "$cur")) ;;
@@ -95,6 +96,7 @@ _throt() {
         'wait:wait until a heavy slot is held for this agent'
         'stats:per-agent resource usage since throtd started'
         'learned:list or forget the commands throtd learned heavy'
+        'usage:tokens and active time per agent session, from the session logs'
         'reload:make throtd re-read its config file'
         'config:check or show the config file'
         'doctor:print a sanitized diagnostic report'
@@ -122,6 +124,7 @@ _throt() {
                 status) _arguments '(--idle)--json[print JSON]' '(--json)--idle[list agent sessions and which look idle]' ;;
                 version) _arguments '--json[print JSON]' ;;
                 learned) _arguments '--forget[forget one learned command]:signature:' '--clear[forget every learned command]' ;;
+                usage) _arguments '--by[group the rows]:grouping:(session project hour)' '--since[count entries from a duration ago or a date]:since:' '--json[print JSON]' ;;
                 update) _arguments '--check[only report whether an update is available]' '--version[install this release]:version:' '--pre[include prereleases]' '--yes[do not ask for confirmation]' ;;
                 hook) (( CURRENT == 2 )) && compadd claude-code ;;
                 setup) (( CURRENT == 2 )) && compadd claude-code codex || _arguments '--write[install the configuration in your home directory]' ;;
@@ -157,6 +160,7 @@ complete -c throt -n __fish_use_subcommand -a run -d 'wait for heavy-job capacit
 complete -c throt -n __fish_use_subcommand -a wait -d 'wait until a heavy slot is held for this agent'
 complete -c throt -n __fish_use_subcommand -a stats -d 'per-agent resource usage since throtd started'
 complete -c throt -n __fish_use_subcommand -a learned -d 'list or forget the commands throtd learned heavy'
+complete -c throt -n __fish_use_subcommand -a usage -d 'tokens and active time per agent session, from the session logs'
 complete -c throt -n __fish_use_subcommand -a reload -d 'make throtd re-read its config file'
 complete -c throt -n __fish_use_subcommand -a config -d 'check or show the config file'
 complete -c throt -n __fish_use_subcommand -a doctor -d 'print a sanitized diagnostic report'
@@ -172,7 +176,7 @@ complete -c throt -n '__fish_seen_subcommand_from pause resume explain' -x -a '(
 complete -c throt -n '__fish_seen_subcommand_from completion' -x -a 'bash zsh fish'
 complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show' -x -a 'check show'
 complete -c throt -n '__fish_seen_subcommand_from config' -l config -r -F -d 'path to config file'
-complete -c throt -n '__fish_seen_subcommand_from config status version' -l json -d 'print JSON'
+complete -c throt -n '__fish_seen_subcommand_from config status version usage' -l json -d 'print JSON'
 complete -c throt -n '__fish_seen_subcommand_from status' -l idle -d 'list agent sessions and which look idle'
 complete -c throt -n '__fish_seen_subcommand_from update' -l check -d 'only report whether an update is available'
 complete -c throt -n '__fish_seen_subcommand_from update' -l version -x -d 'install this release'
@@ -180,6 +184,8 @@ complete -c throt -n '__fish_seen_subcommand_from update' -l pre -d 'include pre
 complete -c throt -n '__fish_seen_subcommand_from update' -l yes -d 'do not ask for confirmation'
 complete -c throt -n '__fish_seen_subcommand_from learned' -l forget -x -d 'forget one learned command'
 complete -c throt -n '__fish_seen_subcommand_from learned' -l clear -d 'forget every learned command'
+complete -c throt -n '__fish_seen_subcommand_from usage' -l by -x -a 'session project hour' -d 'group the rows'
+complete -c throt -n '__fish_seen_subcommand_from usage' -l since -x -d 'count entries from a duration ago or a date'
 complete -c throt -n '__fish_seen_subcommand_from hook' -x -a 'claude-code'
 complete -c throt -n '__fish_seen_subcommand_from setup' -x -a 'claude-code codex'
 complete -c throt -n '__fish_seen_subcommand_from setup' -l write -d 'install the configuration in your home directory'

@@ -57,6 +57,10 @@ lists agent sessions by memory and which look idle (report only)`},
 		{name: "stats", run: cmdStats, flags: true, help: "show per-agent resource usage since throtd started; --json for JSON"},
 		{name: "learned", run: cmdLearned, flags: true, synopsis: "[--forget SIGNATURE | --clear]", help: `list the commands throtd learned heavy, which the hook then
 waits for like heavy tools; --forget or --clear drops them`},
+		{name: "usage", run: cmdUsage, flags: true, synopsis: "[--by session|project|hour] [--since D] [--json]", help: `tokens and active time per agent session, project or hour, from
+the Claude Code and Codex session logs (default: the last 24h);
+counts and timestamps only, read-only, needs no throtd. Active
+time: the gaps under 5 minutes between a session's log entries`},
 		{name: "ping", run: cmdPing, help: "check that throtd is reachable"},
 		{name: "events", run: cmdEvents, flags: true, help: "print recent daemon events as JSON lines; -f keeps printing new ones"},
 		{name: "explain", run: cmdExplain, synopsis: "PID", help: "explain why a heavy workload is running, paused, or queued"},

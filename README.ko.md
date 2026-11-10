@@ -171,6 +171,7 @@ WantedBy=default.target
 | `throt status --idle` | 모든 에이전트 세션을 메모리 순으로 나이, CPU, 유휴 여부(세 번의 샘플 동안 CPU 1% 미만, 1시간 넘은 세션은 5% 미만이고 무거운 작업이 없음)와 함께 보여 준다. 보고만 하며 프로세스를 멈추지 않는다. |
 | `throt stats [--json]` | 에이전트별 CPU 시간, 최대 메모리, 무거운 작업 수, `throtd` 시작 이후 대기한 시간. |
 | `throt learned [--forget SIGNATURE \| --clear]` | `throtd`가 무겁다고 학습한 명령 목록. Claude Code 훅은 이 명령들 앞에서도 기다린다. `--forget`이나 `--clear`로 지운다. [학습한 무거운 명령](#학습한-무거운-명령) 참고. |
+| `throt usage [--by session\|project\|hour] [--since D] [--json]` | 에이전트 세션·프로젝트·시간대별 토큰과 실제 작업 시간. Claude Code와 Codex 세션 기록에서 읽는다. `throtd` 없이도 동작한다. [`throt usage`](#토큰과-시간-throt-usage) 참고. |
 | `throt events [-f] [-n N]` | 최근 데몬 이벤트를 JSON lines로 출력한다(기본 50개). `-f`를 주면 새 이벤트를 계속 출력한다. |
 | `throt explain PID` | 무거운 작업이 실행 중이거나, 일시 정지되었거나, 대기 중인 이유. |
 | `throt pause PID` | 내 에이전트가 소유한 무거운 작업을 일시 정지(SIGSTOP)한다. |
@@ -308,6 +309,19 @@ printf '\norg.gradle.daemon=false\nkotlin.compiler.execution.strategy=in-process
 ```markdown
 Prefix heavy commands (builds, full test suites, container builds) with `throt run --`, e.g. `throt run -- npm run build`.
 ```
+
+### 토큰과 시간: `throt usage`
+
+`throt usage`는 에이전트 세션마다 토큰을 얼마나 썼고 얼마나 오래 일했는지 보여 준다. 에이전트가 이미 남기는 세션 기록(`~/.claude/projects` 또는 `CLAUDE_CONFIG_DIR` 아래, `~/.codex/sessions` 또는 `CODEX_HOME` 아래)을 읽는다. `throtd`가 필요 없고 아무것도 쓰지 않는다.
+
+```console
+$ throt usage --since 7d --by project
+```
+
+- **에이전트 종류별 합계를 먼저, 그다음 표를 보여 준다.** 표는 세션별(기본), `--by project`, `--by hour` 중 하나다. 열은 입력, 출력, 캐시 쓰기, 캐시 읽기 토큰, 메시지 수, 실제 작업 시간, 첫 기록과 마지막 기록 시각이다. `--since`에는 기간(`90m`, `24h`, `7d`, 기본 `24h`)이나 날짜(`2026-11-01`)를 준다. `--json`은 같은 보고서를 정확한 숫자와 전체 세션 id로 출력한다.
+- **실제 작업 시간**은 한 세션의 연속한 기록 사이 간격 중 5분 미만인 것만 더한 값이다. 밤새 열어 둔 세션이라도 그 밤은 세지 않는다. 동시에 돈 세션은 각각 세므로 합계가 실제 흐른 시간보다 클 수 있다.
+- **숫자와 시각만 읽는다.** 각 줄에서 토큰 수, id, 모델 이름, 시각, 작업 디렉터리만 읽는다. 메시지 본문, 프롬프트, 도구 입력과 출력은 보관하지도 출력하지도 기록하지도 않는다. 프로젝트는 디렉터리의 마지막 이름으로만 표시한다.
+- **토큰은 에이전트가 기록한 그대로다.** 입력에는 캐시된 토큰이 들어가지 않는다(둘을 합쳐 기록하는 Codex는 캐시된 토큰을 뺀다). 응답 하나는 몇 줄에 기록되어 있든 한 번만 세고, 서브에이전트는 자신을 시작한 세션에 합산한다. 가격은 바뀌므로 비용은 추정하지 않는다. 기록에 토큰 수가 없는 Codex 세션은 시간만 보고한다. 형식이 깨졌거나 4 MiB를 넘는 줄은 건너뛰고 그 수를 보고서에 적는다.
 
 ## 설정
 
@@ -488,7 +502,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 | v0.8 Integration and readiness | 지시 없이도 용량을 기다리기 | Claude Code 훅, `throt setup`, `throt config check`/`show`, `throt version --json`, 로그 레벨, soak 테스트 | 출시 (v0.8.0-rc.1) |
 | v0.9 Evidence and upkeep | 실제 머신에서 측정하고 최신 상태 유지하기 | `throt update`, 실제 머신 CPU·메모리 벤치마크, CI 러너에서 soak, CPU만 바쁠 때 늘어나는 적응형 한도, `start_limit`, `throt_wait_for_capacity`와 `throt_explain`을 갖춘 MCP `2026-07-28`, TUI 스케줄러 줄과 이벤트 필터 | 출시 (v0.9.0-rc.1) |
 | 1.0 | 명시한 프로필 아래에서 자신 있게 스케줄러 켜기 | 안정된 호환성 정책, 실제 머신 벤치마크. 벤치마크 근거에 따라 스케줄러는 옵트인으로 남긴다 | 출시 (v1.0.0-rc.1) |
-| 1.x 사용량 | "에이전트마다 토큰과 시간을 얼마나 썼나?" | `throt usage`: Claude Code와 Codex 세션 기록에서 에이전트 세션·프로젝트·시간대별 토큰(입력, 출력, 캐시)과 실제 작업 시간을 읽는다. 숫자와 시각만 읽고 대화 내용은 읽지 않는다. 읽기 전용이며 `throtd`가 필요 없다 | 계획 |
+| 1.x 사용량 | "에이전트마다 토큰과 시간을 얼마나 썼나?" | `throt usage`: Claude Code와 Codex 세션 기록에서 에이전트 세션·프로젝트·시간대별 토큰(입력, 출력, 캐시)과 실제 작업 시간을 읽는다. 숫자와 시각만 읽고 대화 내용은 읽지 않는다. 읽기 전용이며 `throtd`가 필요 없다 | 출시 (미릴리스) |
 
 **1.0**은 명시한 `scheduler.mode`와 `profile` 아래에서 스케줄러를 자신 있게 켤 수 있다는 뜻이다. 기본값은 여전히 꺼짐이다([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#results)의 "Default decision" 참고). 1.0의 조건은 지원 OS 계열 두 개, [호환성 정책](docs/ARCHITECTURE.md#compatibility) 시행, 알려진 프로세스 유실 버그 없음, 재현 가능한 벤치마크, IPC와 프로세스 제어 경계에 대한 보안 검토다.
 

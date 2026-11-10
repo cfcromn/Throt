@@ -171,6 +171,7 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 | `throt status --idle` | Every agent session by memory with its age, CPU, and whether it looks idle (under 1% CPU, or 5% for a session over an hour old, and no heavy workload over three samples). Report only: it never stops a process. |
 | `throt stats [--json]` | Per agent: CPU time, peak memory, heavy jobs and time queued since `throtd` started. |
 | `throt learned [--forget SIGNATURE \| --clear]` | The commands `throtd` learned heavy, which the Claude Code hook then waits for; `--forget` or `--clear` drops them. See [Learned heavy commands](#learned-heavy-commands). |
+| `throt usage [--by session\|project\|hour] [--since D] [--json]` | Tokens and active time per agent session, project or hour, read from the Claude Code and Codex session logs. Works without `throtd`. See [`throt usage`](#tokens-and-time-throt-usage). |
 | `throt events [-f] [-n N]` | Recent daemon events as JSON lines (default 50); `-f` keeps printing new ones. |
 | `throt explain PID` | Why a heavy workload is running, paused or queued. |
 | `throt pause PID` | Pause (SIGSTOP) a heavy workload owned by one of your agents. |
@@ -308,6 +309,19 @@ To have agents use it, add a line like this to `AGENTS.md` or `CLAUDE.md`:
 ```markdown
 Prefix heavy commands (builds, full test suites, container builds) with `throt run --`, e.g. `throt run -- npm run build`.
 ```
+
+### Tokens and time: `throt usage`
+
+`throt usage` reports how many tokens each agent session used and how long it was active. It reads the session logs the agents already keep (`~/.claude/projects`, or under `CLAUDE_CONFIG_DIR`; `~/.codex/sessions`, or under `CODEX_HOME`), needs no `throtd`, and writes nothing.
+
+```console
+$ throt usage --since 7d --by project
+```
+
+- **Totals per agent kind, then a table** by session (the default), `--by project` or `--by hour`: input, output, cache write and cache read tokens, messages, active time, and the first and last entry. `--since` takes a duration (`90m`, `24h`, `7d`; default `24h`) or a date (`2026-11-01`). `--json` prints the same report with exact counts and whole session ids.
+- **Active time** is the sum of the gaps under 5 minutes between consecutive log entries of a session, so a session left open overnight does not count the night. Sessions running at once each count, so a total can exceed wall-clock time.
+- **Counts and timestamps only.** It reads token counts, ids, model names, timestamps and the working directory from each line, and never keeps, prints or logs message text, prompts, or tool input and output. A project is shown as the base name of its directory.
+- **Tokens are as the agent logged them**: input excludes cached tokens (for Codex, which logs them together, cached tokens are subtracted), a response is counted once however many lines record it, and subagents count for the session that started them. There is no cost estimate: prices change. A Codex session whose log has no token counts reports its time only, and a log line that is malformed or over 4 MiB is skipped and counted in the report.
 
 ## Configuration
 
@@ -488,7 +502,7 @@ Outcomes, not dates.
 | v0.8 Integration and readiness | Wait for capacity without being told | Claude Code hook, `throt setup`, `throt config check`/`show`, `throt version --json`, log levels, soak test | shipped (v0.8.0-rc.1) |
 | v0.9 Evidence and upkeep | Measure on real machines and stay current | `throt update`, real-machine CPU and memory benchmarks, soak on CI runners, an adaptive limit that grows under CPU-only load, `start_limit`, MCP `2026-07-28` with `throt_wait_for_capacity` and `throt_explain`, TUI scheduler line and event filter | shipped (v0.9.0-rc.1) |
 | 1.0 | Turn the scheduler on confidently under an explicit profile | stable compatibility policy, real-machine benchmarks; the scheduler stays opt-in, as the benchmark evidence decided | shipped (v1.0.0-rc.1) |
-| 1.x Usage | "How many tokens and hours did each agent spend?" | `throt usage`: tokens (input, output, cache) and active time per agent session, project and hour, read from Claude Code and Codex session logs; counts and timestamps only, never conversation content; read-only, no `throtd` needed | planned |
+| 1.x Usage | "How many tokens and hours did each agent spend?" | `throt usage`: tokens (input, output, cache) and active time per agent session, project and hour, read from Claude Code and Codex session logs; counts and timestamps only, never conversation content; read-only, no `throtd` needed | shipped (unreleased) |
 
 **1.0** means the scheduler is ready to turn on with confidence under an explicit `scheduler.mode` and `profile`; it stays off by default (see "Default decision" in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#results)). It requires two supported OS families, the [compatibility policy](docs/ARCHITECTURE.md#compatibility) in force, no known process-loss bug, reproducible benchmarks, and a security review of IPC and process-control boundaries.
 

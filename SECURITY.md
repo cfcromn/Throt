@@ -107,7 +107,7 @@ Accepted residual risks:
 
 ## Privacy
 
-Throt is local-first. It collects only the metrics needed to operate, keeps them on the machine, and has **no outbound telemetry**. It does not read or store prompts, model responses, source files, command output, or environment variables.
+Throt is local-first. It collects only the metrics needed to operate, keeps them on the machine, and has **no outbound telemetry**. It does not read or store prompts, model responses, source files, command output, or environment variables. The one command that opens agent session logs, `throt usage`, runs only when you ask, decodes only token counts, ids, model names, timestamps and the working directory from them, and stores and sends nothing.
 
 Diagnostic output (`throt doctor`) is produced only on explicit request. It never collects environment variables or command arguments, names no process except stopped ones throtd did not pause (by executable base name only), and redacts home paths and the user name.
 

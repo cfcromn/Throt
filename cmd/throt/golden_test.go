@@ -213,6 +213,17 @@ func goldenCases() []goldenCase {
 		{name: "version -h", args: []string{"version", "-h"}},
 		{name: "version extra", args: []string{"version", "x"}},
 
+		// The logs under $HOME are written by TestGolden.
+		{name: "usage", args: []string{"usage", "--since", "2026-10-28"}},
+		{name: "usage --by project", args: []string{"usage", "--by", "project", "--since", "2026-10-28"}},
+		{name: "usage --by hour", args: []string{"usage", "--by", "hour", "--since", "2026-10-28"}},
+		{name: "usage --json", args: []string{"usage", "--json", "--since", "2026-10-28T10:00:00Z"}},
+		{name: "usage none", args: []string{"usage", "--since", "2026-10-29"}},
+		{name: "usage -h", args: []string{"usage", "-h"}},
+		{name: "usage bad by", args: []string{"usage", "--by", "day"}},
+		{name: "usage bad since", args: []string{"usage", "--since", "never"}},
+		{name: "usage extra", args: []string{"usage", "x"}},
+
 		{name: "wait -h", args: []string{"wait", "-h"}},
 		{name: "wait extra", args: []string{"wait", "x"}},
 		{name: "version invalid config", args: []string{"-config", "$DIR/bad.json", "version"}},
@@ -338,6 +349,36 @@ func TestGolden(t *testing.T) {
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Synthetic session logs for 'throt usage': the fields of real ones,
+	// with "SECRET" where a real log has conversation content.
+	const (
+		claudeSession = "11111111-aaaa-4bbb-8ccc-000000000001"
+		codexSession  = "01a00000-0000-7000-8000-000000000002"
+	)
+	claudeLine := func(at, id, usage string) string {
+		return `{"type":"assistant","timestamp":"` + at + `","sessionId":"` + claudeSession + `","cwd":"/work/app",` +
+			`"message":{"id":"` + id + `","model":"claude-x","content":[{"type":"text","text":"SECRET"}],"usage":` + usage + `}}` + "\n"
+	}
+	logs := map[string]string{
+		".claude/projects/-work-app/" + claudeSession + ".jsonl": `{"type":"user","timestamp":"2026-10-28T09:58:00.000Z","sessionId":"` + claudeSession + `","cwd":"/work/app","message":{"role":"user","content":"SECRET"}}` + "\n" +
+			claudeLine("2026-10-28T09:59:30.000Z", "msg_1", `{"input_tokens":12,"output_tokens":350,"cache_creation_input_tokens":20000,"cache_read_input_tokens":1500000}`) +
+			claudeLine("2026-10-28T09:59:31.000Z", "msg_1", `{"input_tokens":12,"output_tokens":350,"cache_creation_input_tokens":20000,"cache_read_input_tokens":1500000}`) +
+			"SECRET not json\n" +
+			claudeLine("2026-10-28T10:02:00.000Z", "msg_2", `{"input_tokens":3,"output_tokens":1250,"cache_creation_input_tokens":0,"cache_read_input_tokens":1520000}`) +
+			claudeLine("2026-10-28T11:30:00.000Z", "msg_3", `{"input_tokens":1,"output_tokens":40,"cache_creation_input_tokens":300,"cache_read_input_tokens":9000}`),
+		".codex/sessions/2026/10/28/rollout-2026-10-28T10-10-00-" + codexSession + ".jsonl": `{"timestamp":"2026-10-28T10:10:00.000Z","type":"session_meta","payload":{"id":"` + codexSession + `","cwd":"/work/tools","base_instructions":{"text":"SECRET"}}}` + "\n" +
+			`{"timestamp":"2026-10-28T10:10:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":25000,"cached_input_tokens":0,"output_tokens":200},"last_token_usage":{"input_tokens":25000,"cached_input_tokens":0,"output_tokens":200}}}}` + "\n" +
+			`{"timestamp":"2026-10-28T10:11:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":53000,"cached_input_tokens":24000,"output_tokens":330},"last_token_usage":{"input_tokens":28000,"cached_input_tokens":24000,"output_tokens":130}}}}` + "\n",
+	}
+	for name, body := range logs {
+		path := filepath.Join(dir, "home", name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -508,6 +549,11 @@ Commands:
   learned [--forget SIGNATURE | --clear]
              list the commands throtd learned heavy, which the hook then
              waits for like heavy tools; --forget or --clear drops them
+  usage [--by session|project|hour] [--since D] [--json]
+             tokens and active time per agent session, project or hour, from
+             the Claude Code and Codex session logs (default: the last 24h);
+             counts and timestamps only, read-only, needs no throtd. Active
+             time: the gaps under 5 minutes between a session's log entries
   ping       check that throtd is reachable
   events     print recent daemon events as JSON lines; -f keeps printing new ones
   explain PID
@@ -591,7 +637,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status stats learned ping events explain pause resume run wait reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status stats learned usage ping events explain pause resume run wait reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -603,6 +649,7 @@ _throt() {
         status) COMPREPLY=($(compgen -W "--json --idle" -- "$cur")) ;;
         version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
         learned) [[ "$prev" == --forget || "$prev" == -forget ]] || COMPREPLY=($(compgen -W "--forget --clear" -- "$cur")) ;;
+        usage) case "$prev" in --by|-by) COMPREPLY=($(compgen -W "session project hour" -- "$cur")) ;; --since|-since) ;; *) COMPREPLY=($(compgen -W "--by --since --json" -- "$cur")) ;; esac ;;
         update) [[ "$prev" == --version || "$prev" == -version ]] || COMPREPLY=($(compgen -W "--check --version --pre --yes" -- "$cur")) ;;
         hook) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code" -- "$cur")) ;;
         setup) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "claude-code codex" -- "$cur")) || COMPREPLY=($(compgen -W "--write" -- "$cur")) ;;
@@ -650,6 +697,7 @@ complete -c throt -n __fish_use_subcommand -a run -d 'wait for heavy-job capacit
 complete -c throt -n __fish_use_subcommand -a wait -d 'wait until a heavy slot is held for this agent'
 complete -c throt -n __fish_use_subcommand -a stats -d 'per-agent resource usage since throtd started'
 complete -c throt -n __fish_use_subcommand -a learned -d 'list or forget the commands throtd learned heavy'
+complete -c throt -n __fish_use_subcommand -a usage -d 'tokens and active time per agent session, from the session logs'
 complete -c throt -n __fish_use_subcommand -a reload -d 'make throtd re-read its config file'
 complete -c throt -n __fish_use_subcommand -a config -d 'check or show the config file'
 complete -c throt -n __fish_use_subcommand -a doctor -d 'print a sanitized diagnostic report'
@@ -665,7 +713,7 @@ complete -c throt -n '__fish_seen_subcommand_from pause resume explain' -x -a '(
 complete -c throt -n '__fish_seen_subcommand_from completion' -x -a 'bash zsh fish'
 complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show' -x -a 'check show'
 complete -c throt -n '__fish_seen_subcommand_from config' -l config -r -F -d 'path to config file'
-complete -c throt -n '__fish_seen_subcommand_from config status version' -l json -d 'print JSON'
+complete -c throt -n '__fish_seen_subcommand_from config status version usage' -l json -d 'print JSON'
 complete -c throt -n '__fish_seen_subcommand_from status' -l idle -d 'list agent sessions and which look idle'
 complete -c throt -n '__fish_seen_subcommand_from update' -l check -d 'only report whether an update is available'
 complete -c throt -n '__fish_seen_subcommand_from update' -l version -x -d 'install this release'
@@ -673,6 +721,8 @@ complete -c throt -n '__fish_seen_subcommand_from update' -l pre -d 'include pre
 complete -c throt -n '__fish_seen_subcommand_from update' -l yes -d 'do not ask for confirmation'
 complete -c throt -n '__fish_seen_subcommand_from learned' -l forget -x -d 'forget one learned command'
 complete -c throt -n '__fish_seen_subcommand_from learned' -l clear -d 'forget every learned command'
+complete -c throt -n '__fish_seen_subcommand_from usage' -l by -x -a 'session project hour' -d 'group the rows'
+complete -c throt -n '__fish_seen_subcommand_from usage' -l since -x -d 'count entries from a duration ago or a date'
 complete -c throt -n '__fish_seen_subcommand_from hook' -x -a 'claude-code'
 complete -c throt -n '__fish_seen_subcommand_from setup' -x -a 'claude-code codex'
 complete -c throt -n '__fish_seen_subcommand_from setup' -l write -d 'install the configuration in your home directory'
@@ -705,6 +755,7 @@ _throt() {
         'wait:wait until a heavy slot is held for this agent'
         'stats:per-agent resource usage since throtd started'
         'learned:list or forget the commands throtd learned heavy'
+        'usage:tokens and active time per agent session, from the session logs'
         'reload:make throtd re-read its config file'
         'config:check or show the config file'
         'doctor:print a sanitized diagnostic report'
@@ -732,6 +783,7 @@ _throt() {
                 status) _arguments '(--idle)--json[print JSON]' '(--json)--idle[list agent sessions and which look idle]' ;;
                 version) _arguments '--json[print JSON]' ;;
                 learned) _arguments '--forget[forget one learned command]:signature:' '--clear[forget every learned command]' ;;
+                usage) _arguments '--by[group the rows]:grouping:(session project hour)' '--since[count entries from a duration ago or a date]:since:' '--json[print JSON]' ;;
                 update) _arguments '--check[only report whether an update is available]' '--version[install this release]:version:' '--pre[include prereleases]' '--yes[do not ask for confirmation]' ;;
                 hook) (( CURRENT == 2 )) && compadd claude-code ;;
                 setup) (( CURRENT == 2 )) && compadd claude-code codex || _arguments '--write[install the configuration in your home directory]' ;;
@@ -1461,6 +1513,148 @@ Flags:
 `},
 		"update extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt update -h'
 `},
+		"usage": {code: 0, stdout: `SINCE 2026-10-28 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+
+AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+claude-code  1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
+codex        1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+total        2         29.0k  1970    20.3k        3.1M        5         5m      2026-10-28 09:58  2026-10-28 11:30
+
+SESSION   AGENT        PROJECT  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+11111111  claude-code  app      16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
+01a00000  codex        tools    29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+
+1 malformed or overlong log line(s) skipped
+`, stderr: ""},
+		"usage --by hour": {code: 0, stdout: `SINCE 2026-10-28 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+
+AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+claude-code  1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
+codex        1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+total        2         29.0k  1970    20.3k        3.1M        5         5m      2026-10-28 09:58  2026-10-28 11:30
+
+HOUR              SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+2026-10-28 09:00  1         12     350     20.0k        1.5M        1         1m      2026-10-28 09:58  2026-10-28 09:59
+2026-10-28 10:00  2         29.0k  1580    0            1.5M        3         3m      2026-10-28 10:02  2026-10-28 10:11
+2026-10-28 11:00  1         1      40      300          9000        1         0s      2026-10-28 11:30  2026-10-28 11:30
+
+1 malformed or overlong log line(s) skipped
+`, stderr: ""},
+		"usage --by project": {code: 0, stdout: `SINCE 2026-10-28 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+
+AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+claude-code  1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
+codex        1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+total        2         29.0k  1970    20.3k        3.1M        5         5m      2026-10-28 09:58  2026-10-28 11:30
+
+PROJECT  SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
+app      1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
+tools    1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+
+1 malformed or overlong log line(s) skipped
+`, stderr: ""},
+		"usage --json": {code: 0, stdout: `{
+  "since": "2026-10-28T10:00:00Z",
+  "by": "session",
+  "active_gap_seconds": 300,
+  "agents": [
+    {
+      "agent": "claude-code",
+      "sessions": 1,
+      "input_tokens": 4,
+      "output_tokens": 1290,
+      "cache_write_tokens": 300,
+      "cache_read_tokens": 1529000,
+      "messages": 2,
+      "active_seconds": 0,
+      "first": "2026-10-28T10:02:00Z",
+      "last": "2026-10-28T11:30:00Z"
+    },
+    {
+      "agent": "codex",
+      "sessions": 1,
+      "input_tokens": 29000,
+      "output_tokens": 330,
+      "cache_write_tokens": 0,
+      "cache_read_tokens": 24000,
+      "messages": 2,
+      "active_seconds": 60,
+      "first": "2026-10-28T10:10:00Z",
+      "last": "2026-10-28T10:11:00Z"
+    }
+  ],
+  "total": {
+    "sessions": 2,
+    "input_tokens": 29004,
+    "output_tokens": 1620,
+    "cache_write_tokens": 300,
+    "cache_read_tokens": 1553000,
+    "messages": 4,
+    "active_seconds": 60,
+    "first": "2026-10-28T10:02:00Z",
+    "last": "2026-10-28T11:30:00Z"
+  },
+  "rows": [
+    {
+      "agent": "claude-code",
+      "session": "11111111-aaaa-4bbb-8ccc-000000000001",
+      "project": "app",
+      "sessions": 1,
+      "input_tokens": 4,
+      "output_tokens": 1290,
+      "cache_write_tokens": 300,
+      "cache_read_tokens": 1529000,
+      "messages": 2,
+      "active_seconds": 0,
+      "first": "2026-10-28T10:02:00Z",
+      "last": "2026-10-28T11:30:00Z"
+    },
+    {
+      "agent": "codex",
+      "session": "01a00000-0000-7000-8000-000000000002",
+      "project": "tools",
+      "sessions": 1,
+      "input_tokens": 29000,
+      "output_tokens": 330,
+      "cache_write_tokens": 0,
+      "cache_read_tokens": 24000,
+      "messages": 2,
+      "active_seconds": 60,
+      "first": "2026-10-28T10:10:00Z",
+      "last": "2026-10-28T10:11:00Z"
+    }
+  ],
+  "files": 2,
+  "skipped_lines": 1
+}
+`, stderr: ""},
+		"usage -h": {code: 0, stdout: `usage: throt usage [--by session|project|hour] [--since DURATION|DATE] [--json]
+
+Tokens and active time of Claude Code and Codex sessions, read from their
+session logs ($CLAUDE_CONFIG_DIR or ~/.claude, $CODEX_HOME or ~/.codex).
+Counts and timestamps only, never conversation content; read-only.
+Active time is the sum of the gaps under 5 minutes between consecutive
+log entries of a session. Tokens are as the agent logged them (input
+excludes cached tokens); there is no cost estimate.
+  -by KEY
+    	group the rows by KEY: session, project or hour (default "session")
+  -json
+    	print the report as JSON
+  -since WHEN
+    	count entries from WHEN: a duration ago (90m, 24h, 7d) or a date (2006-01-02, or RFC 3339) (default "24h")
+`, stderr: ""},
+		"usage bad by": {code: 2, stdout: "", stderr: `throt: --by: unknown grouping "day" (want session, project or hour); see 'throt usage -h'
+`},
+		"usage bad since": {code: 2, stdout: "", stderr: `throt: --since: "never" is not a duration (24h, 7d) or a date (2006-01-02); see 'throt usage -h'
+`},
+		"usage extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt usage -h'
+`},
+		"usage none": {code: 0, stdout: `SINCE 2026-10-29 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+
+no agent sessions found in:
+  $DIR/home/.claude/projects
+  $DIR/home/.codex/sessions
+`, stderr: ""},
 		"version": {code: 0, stdout: `dev
 `, stderr: ""},
 		"version --json": {code: 0, stdout: `{
