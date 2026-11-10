@@ -60,7 +60,7 @@ func setDarwinBG(ctx context.Context, key domain.ProcessKey, uid uint32, prio in
 	if err := verifyIdentity(ctx, kinfoIdentity, key, uid); err != nil {
 		return fmt.Errorf("set priority of pid %d: %w", key.PID, err)
 	}
-	if prio == prioDarwinBG && utilityClamped(key.PID) {
+	if prio == prioDarwinBG && isClamped(key.PID) {
 		return nil
 	}
 	err := unix.Setpriority(prioDarwinProcess, key.PID, prio)
@@ -105,6 +105,10 @@ const (
 	taskPriorityUtility = 20
 	taskPriorityBG      = 4
 )
+
+// isClamped is utilityClamped, replaced in tests that must lower a process
+// even where the test itself runs clamped (hosted CI runners do).
+var isClamped = utilityClamped
 
 // utilityClamped reports whether pid runs under the utility QoS clamp,
 // which only a spawn attribute sets and children inherit. A priority that

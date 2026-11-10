@@ -17,6 +17,15 @@ import (
 
 const validToken = 0
 
+// TestMain makes Background lower every process, so the tests of the
+// background state also run where the test process is itself under a QoS
+// clamp, as on hosted CI runners. TestBackgroundLeavesUtilityClamp puts the
+// real check back.
+func TestMain(m *testing.M) {
+	isClamped = func(int) bool { return false }
+	os.Exit(m.Run())
+}
+
 // psPri reads pid's scheduling priority with ps: 4 in the background
 // state, about 31 normally. getpriority(PRIO_DARWIN_PROCESS) cannot read
 // the state back (it returns 0 either way).
@@ -116,6 +125,8 @@ func TestBackgroundLeavesUtilityClamp(t *testing.T) {
 	if utilityClamped(os.Getpid()) || inBackground(t, os.Getpid()) {
 		t.Skip("the test itself runs at lowered priority")
 	}
+	isClamped = utilityClamped
+	t.Cleanup(func() { isClamped = func(int) bool { return false } })
 	cmd := exec.Command("/usr/sbin/taskpolicy", "-c", "utility", "/bin/sh", "-c", "/bin/sleep 30 & wait")
 	if err := cmd.Start(); err != nil {
 		t.Skip("taskpolicy unavailable:", err)
