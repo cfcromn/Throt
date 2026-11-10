@@ -166,31 +166,37 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 
 | Command | What it does |
 |---|---|
-| `throt`, `throt top` | Terminal UI. Quitting it never affects `throtd`. |
+| `throt`, `throt top` | Terminal UI. Quitting it never affects `throtd`. `throt -ko` shows it in Korean. |
 | `throt status [--json]` | Pressure and its reason, host resources, agents, heavy workloads, scheduler state, stopped processes. |
 | `throt status --idle` | Every agent session by memory with its age, CPU, and whether it looks idle (under 1% CPU, or 5% for a session over an hour old, and no heavy workload over three samples). Report only: it never stops a process. |
-| `throt stats [--json]` | Per agent: CPU time, peak memory, heavy jobs and time queued since `throtd` started. |
-| `throt learned [--forget SIGNATURE \| --clear]` | The commands `throtd` learned heavy, which the Claude Code hook then waits for; `--forget` or `--clear` drops them. See [Learned heavy commands](#learned-heavy-commands). |
+| `throt status --stats [--json]` | Per agent: CPU time, peak memory, heavy jobs and time queued since `throtd` started. |
+| `throt status PID` | Why a heavy workload is running, paused or queued. |
 | `throt usage [--by session\|project\|hour] [--since D] [--json]` | Tokens and active time per agent session, project or hour, read from the Claude Code and Codex session logs. Works without `throtd`. See [`throt usage`](#tokens-and-time-throt-usage). |
 | `throt events [-f] [-n N]` | Recent daemon events as JSON lines (default 50); `-f` keeps printing new ones. |
-| `throt explain PID` | Why a heavy workload is running, paused or queued. |
 | `throt pause PID` | Pause (SIGSTOP) a heavy workload owned by one of your agents. |
 | `throt resume [--force] PID` | Resume it. Also resumes stopped processes Throt did not pause; see [Troubleshooting](#a-process-is-stuck-stopped-state-t). |
 | `throt run [--timeout D] [--no-wait] -- CMD` | Wait for a free heavy slot, then run `CMD`. See [`throt run`](#wait-before-starting-throt-run). |
-| `throt doctor` | Sanitized diagnostics to paste into a bug report. Works without `throtd`. |
-| `throt ping` | Check that `throtd` is reachable; prints its version and protocol. |
-| `throt reload` | Make `throtd` re-read its config (same as sending it SIGHUP). |
 | `throt config check` | Validate the config file, show what it changes, warn about risky settings. |
 | `throt config show [--json]` | The effective config and where each value came from. |
+| `throt config reload` | Make `throtd` re-read its config (same as sending it SIGHUP). |
+| `throt config learned [--forget SIGNATURE \| --clear]` | The commands `throtd` learned heavy, which the Claude Code hook then waits for; `--forget` or `--clear` drops them. See [Learned heavy commands](#learned-heavy-commands). |
+| `throt setup claude-code\|codex [--write]` | Print the configuration to paste into a coding agent; `--write` installs it in your home directory instead (it only adds, and keeps a `.throt-backup` of each file it changes). |
+| `throt doctor` | Sanitized diagnostics to paste into a bug report. Works without `throtd`. |
 | `throt version [--json]` | Client version; `--json` adds the protocol, Go and `throtd` versions. |
 | `throt update` | Install a newer (or older) release. See [Update and roll back](#update-and-roll-back). |
+
+The rest are for agents and shells; you rarely type them.
+
+| Command | What it does |
+|---|---|
 | `throt mcp` | Read-only MCP server on stdio for coding agents. |
-| `throt setup claude-code\|codex [--write]` | Print the configuration to paste into a coding agent; `--write` installs it in your home directory instead (it only adds, and keeps a `.throt-backup` of each file it changes). |
 | `throt hook claude-code [--max-wait D] [--defer] [--clamp]` | The Claude Code hook. |
 | `throt wait [--timeout D]` | Wait until a heavy slot is held for the calling agent, for the hook's `--defer` (default 30m). |
 | `throt completion bash\|zsh\|fish` | Shell completion script. |
 
-Global flags go before the command: `-config PATH` uses another config file, and `-n N` sets how many events `throt events` prints. `throt -h` lists every command, and `-h` after any command prints that command's usage. `throtd -h` lists the daemon's flags, and `throtd -version` prints its version.
+The older names still work: `throt stats`, `throt explain PID`, `throt reload`, `throt learned` and `throt ping`. `throt -h` lists the commands above, `throt help` every one.
+
+Global flags go before the command: `-config PATH` uses another config file, and `-n N` sets how many events `throt events` prints. `throt -h` lists the commands, and `-h` after any command prints that command's usage. `throtd -h` lists the daemon's flags, and `throtd -version` prints its version.
 
 Exit codes: 0 on success, 1 on an error, 2 on a usage error, 10 from `throt update --check` when an update is available; `throt run` exits with the command's status (126, 127 when it cannot run). `throt hook claude-code` always exits 0. The JSON outputs, event kinds, reason codes and exit codes are listed under [Compatibility](docs/ARCHITECTURE.md#compatibility).
 
@@ -198,43 +204,14 @@ Shell completion: add `source <(throt completion zsh)` (or `bash`) to your shell
 
 ### Terminal UI
 
-```text
-$ throt
-╭─ PRESSURE ────────╮ ╭─ CPU ──────────╮ ╭─ MEMORY ──────╮ ╭─ SWAP ────────╮ ╭─ SCHEDULER ─────────╮
-│  ELEVATED         │ │ 31%            │ │ 88%           │ │ 91%           │ │ OBSERVE             │
-│ why: kernel memo… │ │ load 0.62/cpu  │ │ 21.1/24.0 GiB │ │ 16.4/18.0 GiB │ │ limit 3 (2–10)      │
-│ latency 6ms       │ │                │ │ kernel: warn… │ │ growth 4 MiB… │ │ 0 would queue       │
-│ ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃ │ │ ▃▄▄▅▅▅▆▆▆▆▅▅▅▅ │ │ ▇▇▇▇▇▇▇▇▇▇▇▇▇ │ │ █████████████ │ │ 0 reserved          │
-╰───────────────────╯ ╰────────────────╯ ╰───────────────╯ ╰───────────────╯ ╰─────────────────────╯
-╭─ CPU % · last 5m ─────────────╮ ╭─ MEMORY % · last 5m ──────────╮ ╭─ SWAP % · last 5m ───────────╮
-│ 100%┤                         │ │ 100%┤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣴⣶ │ │ 100%┤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶ │
-│  50%┤⣶⣿  ⢰⣾⣇  ⣴⣾⡄ ⢠⣷⣶  ⣸⣷⡆  ⣿ │ │  50%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │ │  50%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
-│   0%┤⣿⣿⣿⣰⣾⣿⣿⣧⣶⣿⣿⣿⣶⣾⣿⣿⣶⣼⣿⣿⣷⣆⣿⣿ │ │   0%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │ │   0%┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ │
-╰───────────────────────────────╯ ╰───────────────────────────────╯ ╰──────────────────────────────╯
-╭─ MEMORY BY OWNER ────────────────╮ ┏━ ▸ AGENTS (53)  total 339% CPU, 9.0 GiB ━━━━━━━━━━━━━━━━━━━━┓
-│ ● agents 9.0 GiB  ○ outside 9.9… │ ┃   AGENT        PID   CPU     MEM▼  CHILDREN                 ┃
-│ ● codex-1        ██████  2.2 GiB │ ┃ > codex-1    41350  190%  2.2 GiB        14                 ┃
-│ ○ com.apple.Vir… █████▉  2.2 GiB │ ┃   codex-2    41357   42%  1.1 GiB         6                 ┃
-│ ● codex-2        ██▉░░░  1.1 GiB │ ┃   codex-3    41364    8%  640 MiB         3                 ┃
-│ ○ Browser ×19    ██░░░░  744 MiB │ ┃   claude-5   41028    2%  112 MiB         2                 ┃
-│ ○ Orca ×13       █▊░░░░  650 MiB │ ┃   claude-10  41063    1%  112 MiB         2                 ┃
-│ ● codex-3        █▋░░░░  640 MiB │ ┃   +48 more (each ≤3% CPU, ≤112 MiB; 96% CPU, 4.9 GiB toget… ┃
-│ ○ WindowServer   █▋░░░░  610 MiB │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-│ ○ Slack Helper … █▏░░░░  420 MiB │ ╭─ HEAVY WORKLOADS ───────────────────────────────────────────╮
-│ ● claude-5       ▎░░░░░  112 MiB │ │   OWNER  PID  PROCESS   CLASS   CPU  MEM▼  STATE            │
-│ +49 agents 5.0 GiB · ○ other 5.… │ │   (no heavy workloads)                                      │
-╰──────────────────────────────────╯ ╰─────────────────────────────────────────────────────────────╯
-╭─ EVENTS ─────────────────────────────────────────────────────────────────────────────────────────╮
-│ 09:00:09  SCHED  queued gradle (pid 2)                                                           │
-│ 09:00:09  SCHED  queued gradle (pid 1)                                                           │
-│ 09:00:09         pressure normal -> elevated                                                     │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-tab focus  j/k move  enter open  s sort  / filter  ? help  q quit
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/tui-dark.png">
+  <img alt="The throt terminal UI: stat panels, 5-minute charts, memory by owner, the agents and heavy-workload tables, and events" src="docs/images/tui-light.png">
+</picture>
 
-The default screen is a dashboard of panels that fills the window. The top row has a stat panel per signal: `PRESSURE` (the level, in its color, and why), `CPU`, `MEMORY`, `SWAP`, `LATENCY` (from 120 columns; narrower, in the `PRESSURE` panel) and `SCHEDULER` (mode, limit, queued and reserved work). Values turn yellow from 70% and red from 85%, are drawn in big digits from 140 columns, and each panel ends with a sparkline of the latest refreshes (one per second; for `SWAP`, swap growth; for `PRESSURE`, the level). Below them, CPU, memory and swap use are charted over the last 5 minutes, which the TUI keeps itself and loses when it exits. `MEMORY BY OWNER` puts agents (`●`) and the processes outside every agent (`○`, grouped by name, at most 5 names, no arguments or paths) on one bar chart, largest first, with the rest summed up, so memory the agents do not explain is visible. Beside it are the `AGENTS` and `HEAVY WORKLOADS` tables (the focused one has a heavy border and `▸`), and `EVENTS` takes the rest of the height.
+The default screen is a dashboard of panels that fills the window. The top row has a stat panel per signal: `PRESSURE` (the level, in its color, and why), `CPU`, `MEMORY`, `SWAP`, `LATENCY` (from 120 columns; narrower, in the `PRESSURE` panel) and `SCHEDULER` (mode, limit, queued and reserved work). Values turn yellow from 70% and red from 85%, with a meter beside them (under them from 140 columns); `SWAP` is the amount in use, with a meter against physical memory and no warning color, because macOS grows its swap space as it fills and a share of it always reads nearly full. Each panel ends with a sparkline of the latest refreshes (one per second; for `SWAP`, swap growth; for `PRESSURE`, the level). Below them, CPU, memory and swap use are charted over the last 5 minutes, which the TUI keeps itself and loses when it exits. `MEMORY BY OWNER` puts agents (`●`) and the processes outside every agent (`○`, grouped by name, at most 5 names, no arguments or paths) on one bar chart, largest first, with the rest summed up, so memory the agents do not explain is visible. Beside it are the `AGENTS` and `HEAVY WORKLOADS` tables (the focused one has `▸` and the accent color), and `EVENTS` takes the rest of the height.
 
-It opens with a short splash (the version and whether `throtd` answers) that any key dismisses; it also goes once `throtd` has answered and 1.5 s have passed. CPU is a percentage of one core (two busy cores show 200%); an agent's CPU and memory include all the processes it owns. Tables sort by memory while the pressure reason is a memory or swap signal and by CPU otherwise. Beyond the first 9 agents, the rest fold into one `+N more` row; moving the selection past them scrolls through all of them. Bursts of agents or heavy workloads found or lost in the same second are one event line. Metrics the platform cannot provide show as `n/a`. If `throtd` is not running, the TUI says so and reconnects when it starts. Below 80 columns the panels stack in one column, with CPU, memory and swap as bars in a `SYSTEM` panel; short terminals drop the charts, events and memory panel first, and drop the borders when rows are scarce. Below 40×10 it asks for a larger window.
+It opens with a short splash (the version and whether `throtd` answers) that any key dismisses; it also goes once `throtd` has answered and 1.5 s have passed. CPU is a percentage of one core (two busy cores show 200%); an agent's CPU and memory include all the processes it owns. On macOS a process's memory is its physical footprint (resident, compressed and swapped out, as Activity Monitor shows) for your own processes, and the resident size for other users'. Tables sort by memory while the pressure reason is a memory or swap signal and by CPU otherwise. Beyond the first 9 agents, the rest fold into one `+N more` row; moving the selection past them scrolls through all of them. Bursts of agents or heavy workloads found or lost in the same second are one event line. Metrics the platform cannot provide show as `n/a`. If `throtd` is not running, the TUI says so and reconnects when it starts. Below 80 columns the panels stack in one column, with CPU, memory and swap as bars in a `SYSTEM` panel; short terminals drop the charts, events and memory panel first, and drop the borders when rows are scarce. Below 40×10 it asks for a larger window.
 
 A `STOPPED` line counts processes throtd did not pause (see `throt doctor`). Events are tagged `CTL`, `SCHED` and `FAIL`. Every state is shown in text as well as color, colors keep their contrast on light and dark backgrounds, and `NO_COLOR` or `TERM=dumb` turns color off entirely.
 

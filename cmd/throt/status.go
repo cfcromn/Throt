@@ -19,13 +19,17 @@ import (
 func cmdStatus(ctx context.Context, e env, args []string) error {
 	asJSON, idle := false, false
 	switch {
+	case len(args) > 0 && (args[0] == "--stats" || args[0] == "-stats"):
+		return cmdStats(ctx, e, args[1:])
+	case len(args) == 1 && !strings.HasPrefix(args[0], "-"):
+		return cmdExplain(ctx, e, args)
 	case len(args) == 0:
 	case len(args) == 1 && (args[0] == "--json" || args[0] == "-json"):
 		asJSON = true
 	case len(args) == 1 && (args[0] == "--idle" || args[0] == "-idle"):
 		idle = true
 	default:
-		return usageLine("usage: throt status [--json | --idle]")
+		return usageLine("usage: throt status [--json | --idle | --stats [--json] | PID]")
 	}
 	cfg := e.clientConfig()
 	if idle {

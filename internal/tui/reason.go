@@ -42,7 +42,7 @@ var reasonSignals = map[string]struct {
 // text. ok is false for codes it does not know, which come back unchanged.
 func explainReason(code string) (text string, ok bool) {
 	if s, ok := reasonCodes[code]; ok {
-		return s, true
+		return tr(s), true
 	}
 	name, th, found := strings.Cut(code, ">=")
 	sig, known := reasonSignals[name]
@@ -60,7 +60,7 @@ func explainReason(code string) (text string, ok bool) {
 			th = formatRate(v)
 		}
 	}
-	return fmt.Sprintf(sig.format, th), true
+	return fmt.Sprintf(tr(sig.format), tr(th)), true
 }
 
 // formatRate renders bytes per second.

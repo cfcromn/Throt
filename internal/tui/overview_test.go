@@ -92,10 +92,10 @@ func TestOverviewUnderMemoryPressure(t *testing.T) {
 	gauge := panelBody(t, out, "MEMORY BY OWNER")
 	for i, want := range []string{
 		"● agents 9.0 GiB  ○ outside 10.1 GiB",
-		"○ com.apple.Virtual… ██████  4.2 GiB",
-		"○ Google Chrome Hel… ███▋░░  2.5 GiB",
-		"● codex-1            ███▎░░  2.2 GiB",
-		"● codex-2            █▌░░░░  1.1 GiB",
+		"○ com.apple.Virtual… ━━━━━━  4.2 GiB",
+		"○ Google Chrome Hel… ━━━╸──  2.5 GiB",
+		"● codex-1            ━━━───  2.2 GiB",
+		"● codex-2            ━╸────  1.1 GiB",
 	} {
 		if gauge[i] != want {
 			t.Errorf("gauge row %d = %q, want %q", i, gauge[i], want)

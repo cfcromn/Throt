@@ -543,21 +543,17 @@ const goldenUsage = `Usage: throt [flags] [command]
 
 Commands:
   top        open the terminal UI (the default with no command)
-  status     show host resources and pressure; --json for JSON; --idle
-             lists agent sessions by memory and which look idle (report only)
-  stats      show per-agent resource usage since throtd started; --json for JSON
-  learned [--forget SIGNATURE | --clear]
-             list the commands throtd learned heavy, which the hook then
-             waits for like heavy tools; --forget or --clear drops them
+  status [--json | --idle | --stats | PID]
+             show host resources and pressure; --json for JSON; --idle
+             lists agent sessions by memory and which look idle (report
+             only); --stats shows per-agent usage since throtd started;
+             PID explains why that heavy workload runs, is paused or queued
   usage [--by session|project|hour] [--since D] [--json]
              tokens and active time per agent session, project or hour, from
              the Claude Code and Codex session logs (default: the last 24h);
              counts and timestamps only, read-only, needs no throtd. Active
              time: the gaps under 5 minutes between a session's log entries
-  ping       check that throtd is reachable
   events     print recent daemon events as JSON lines; -f keeps printing new ones
-  explain PID
-             explain why a heavy workload is running, paused, or queued
   pause PID  pause a heavy workload (SIGSTOP) shown in 'status'
   resume [--force] PID
              resume a paused workload (SIGCONT). Also resumes a stopped
@@ -568,28 +564,18 @@ Commands:
   run [--timeout D] [--no-wait] -- CMD [ARGS...]
              wait until throtd grants a heavy slot, reserved for CMD, then
              exec CMD (runs immediately if throtd is down)
-  wait [--timeout D]
-             wait until a heavy slot is held for the calling agent (its place
-             in line from 'hook claude-code --defer'), at most D (default 30m)
-  reload     make throtd re-read its config file
   doctor     print a sanitized diagnostic report (safe to share)
-  mcp        run a read-only MCP server on stdio for coding agents
-  config check|show
+  config check|show|reload|learned
              'check' validates the config file as throtd would, lists what
              it changes from the defaults, and warns about risky settings;
              'show [--json]' prints the effective config and the source
              (default, profile, or file) of each value. Both accept --config PATH.
-  hook claude-code [--max-wait D] [--defer] [--clamp]
-             Claude Code PreToolUse hook: before a lone heavy Bash command,
-             wait up to D (default 50s) for heavy-job capacity (advisory;
-             fails open); --defer instead holds the agent's place in line
-             and denies the call, asking Claude to run 'throt wait'
+             'reload' makes throtd re-read the file; 'learned' lists the
+             commands throtd learned heavy (--forget SIGNATURE, --clear)
   setup claude-code|codex [--write]
              print the configuration to paste into a coding agent;
              --write installs it in your home directory instead (adds only,
              keeps a .throt-backup of each changed file)
-  completion bash|zsh|fish
-             print a shell completion script
   version [--json]
              print the client version; --json adds the protocol and Go
              versions, and throtd's version when it is reachable
@@ -599,9 +585,14 @@ Commands:
              date, 10 when an update is available); the only command that
              uses the network
 
+For agents and shells: hook, wait, mcp, completion. 'throt help' lists
+every command, with the older names that still work.
+
 Flags:
   -config string
     	path to config file (default "$DIR/xdg/throt/config.json")
+  -ko
+    	show the terminal UI in Korean
   -n int
     	number of events for 'events' (default 50)
 `
@@ -637,7 +628,7 @@ _throt() {
             -config|--config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
             -n|--n) return ;;
         esac
-        COMPREPLY=($(compgen -W "top status stats learned usage ping events explain pause resume run wait reload config doctor mcp hook setup completion version update -config -n" -- "$cur"))
+        COMPREPLY=($(compgen -W "top status usage events pause resume run config doctor setup version update -config -n -ko" -- "$cur"))
         return
     fi
     local pos=$((COMP_CWORD - i))
@@ -645,8 +636,8 @@ _throt() {
         events) COMPREPLY=($(compgen -W "-f -n" -- "$cur")) ;;
         pause|resume|explain) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "$(_throt_pids)" -- "$cur")) ;;
         completion) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
-        config) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "check show" -- "$cur")) || COMPREPLY=($(compgen -W "--config --json" -- "$cur")) ;;
-        status) COMPREPLY=($(compgen -W "--json --idle" -- "$cur")) ;;
+        config) [[ $pos -eq 1 ]] && COMPREPLY=($(compgen -W "check show reload learned" -- "$cur")) || COMPREPLY=($(compgen -W "--config --json" -- "$cur")) ;;
+        status) COMPREPLY=($(compgen -W "--json --idle --stats $(_throt_pids)" -- "$cur")) ;;
         version) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
         learned) [[ "$prev" == --forget || "$prev" == -forget ]] || COMPREPLY=($(compgen -W "--forget --clear" -- "$cur")) ;;
         usage) case "$prev" in --by|-by) COMPREPLY=($(compgen -W "session project hour" -- "$cur")) ;; --since|-since) ;; *) COMPREPLY=($(compgen -W "--by --since --json" -- "$cur")) ;; esac ;;
@@ -688,30 +679,21 @@ complete -c throt -n __fish_use_subcommand -o config -r -F -d 'path to config fi
 complete -c throt -n __fish_use_subcommand -o n -x -d 'number of events'
 complete -c throt -n __fish_use_subcommand -a top -d 'open the terminal UI'
 complete -c throt -n __fish_use_subcommand -a status -d 'show host resources and pressure'
-complete -c throt -n __fish_use_subcommand -a ping -d 'check that throtd is reachable'
 complete -c throt -n __fish_use_subcommand -a events -d 'print recent daemon events'
-complete -c throt -n __fish_use_subcommand -a explain -d 'explain why a heavy workload is running, paused, or queued'
 complete -c throt -n __fish_use_subcommand -a pause -d 'pause a heavy workload'
 complete -c throt -n __fish_use_subcommand -a resume -d 'resume a paused workload'
 complete -c throt -n __fish_use_subcommand -a run -d 'wait for heavy-job capacity, then run a command'
-complete -c throt -n __fish_use_subcommand -a wait -d 'wait until a heavy slot is held for this agent'
-complete -c throt -n __fish_use_subcommand -a stats -d 'per-agent resource usage since throtd started'
-complete -c throt -n __fish_use_subcommand -a learned -d 'list or forget the commands throtd learned heavy'
 complete -c throt -n __fish_use_subcommand -a usage -d 'tokens and active time per agent session, from the session logs'
-complete -c throt -n __fish_use_subcommand -a reload -d 'make throtd re-read its config file'
 complete -c throt -n __fish_use_subcommand -a config -d 'check or show the config file'
 complete -c throt -n __fish_use_subcommand -a doctor -d 'print a sanitized diagnostic report'
-complete -c throt -n __fish_use_subcommand -a mcp -d 'run a read-only MCP server on stdio'
-complete -c throt -n __fish_use_subcommand -a hook -d 'Claude Code hook that waits for heavy-job capacity'
 complete -c throt -n __fish_use_subcommand -a setup -d 'print the configuration to paste into a coding agent'
-complete -c throt -n __fish_use_subcommand -a completion -d 'print a shell completion script'
 complete -c throt -n __fish_use_subcommand -a version -d 'print the client version'
 complete -c throt -n __fish_use_subcommand -a update -d 'install the newest verified release in place'
 complete -c throt -n '__fish_seen_subcommand_from events' -o f -d 'keep printing new events'
 complete -c throt -n '__fish_seen_subcommand_from events' -o n -x -d 'number of recent events'
 complete -c throt -n '__fish_seen_subcommand_from pause resume explain' -x -a '(__throt_pids)'
 complete -c throt -n '__fish_seen_subcommand_from completion' -x -a 'bash zsh fish'
-complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show' -x -a 'check show'
+complete -c throt -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check show reload learned' -x -a 'check show reload learned'
 complete -c throt -n '__fish_seen_subcommand_from config' -l config -r -F -d 'path to config file'
 complete -c throt -n '__fish_seen_subcommand_from config status version usage' -l json -d 'print JSON'
 complete -c throt -n '__fish_seen_subcommand_from status' -l idle -d 'list agent sessions and which look idle'
@@ -746,23 +728,14 @@ _throt() {
     commands=(
         'top:open the terminal UI'
         'status:show host resources and pressure'
-        'ping:check that throtd is reachable'
         'events:print recent daemon events'
-        'explain:explain why a heavy workload is running, paused, or queued'
         'pause:pause a heavy workload'
         'resume:resume a paused workload'
         'run:wait for heavy-job capacity, then run a command'
-        'wait:wait until a heavy slot is held for this agent'
-        'stats:per-agent resource usage since throtd started'
-        'learned:list or forget the commands throtd learned heavy'
         'usage:tokens and active time per agent session, from the session logs'
-        'reload:make throtd re-read its config file'
         'config:check or show the config file'
         'doctor:print a sanitized diagnostic report'
-        'mcp:run a read-only MCP server on stdio'
-        'hook:Claude Code hook that waits for heavy-job capacity'
         'setup:print the configuration to paste into a coding agent'
-        'completion:print a shell completion script'
         'version:print the client version'
         'update:install the newest verified release in place'
     )
@@ -779,7 +752,7 @@ _throt() {
                 events) _arguments '-f[keep printing new events]' '-n[number of recent events]:count:' ;;
                 pause|resume|explain) (( CURRENT == 2 )) && _throt_pids ;;
                 completion) (( CURRENT == 2 )) && compadd bash zsh fish ;;
-                config) (( CURRENT == 2 )) && compadd check show || _arguments '--config[path to config file]:file:_files' '--json[print JSON]' ;;
+                config) (( CURRENT == 2 )) && compadd check show reload learned || _arguments '--config[path to config file]:file:_files' '--json[print JSON]' ;;
                 status) _arguments '(--idle)--json[print JSON]' '(--json)--idle[list agent sessions and which look idle]' ;;
                 version) _arguments '--json[print JSON]' ;;
                 learned) _arguments '--forget[forget one learned command]:signature:' '--clear[forget every learned command]' ;;
@@ -800,10 +773,16 @@ else
 fi
 `, stderr: ""},
 		"config": {code: 2, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
+       throt config reload
+       throt config learned [--forget SIGNATURE | --clear]
 `},
 		"config -h": {code: 0, stdout: `usage: throt config check|show [--config PATH] [--json]
+       throt config reload
+       throt config learned [--forget SIGNATURE | --clear]
 `, stderr: ""},
 		"config bogus": {code: 2, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
+       throt config reload
+       throt config learned [--forget SIGNATURE | --clear]
 `},
 		"config check": {code: 0, stdout: `ok: $DIR/plain.json
   socket_path $DIR/run/throt/throtd.sock -> /nonexistent/throtd.sock (file)
@@ -813,10 +792,14 @@ fi
 		"config check --json": {code: 2, stdout: "", stderr: `throt: flag provided but not defined: -json; see 'throt config check -h'
 `},
 		"config check -h": {code: 0, stdout: `usage: throt config check|show [--config PATH] [--json]
+       throt config reload
+       throt config learned [--forget SIGNATURE | --clear]
   -config string
     	path to config file (default "$DIR/xdg/throt/config.json")
 `, stderr: ""},
 		"config check extra": {code: 2, stdout: "", stderr: `throt: usage: throt config check|show [--config PATH] [--json]
+       throt config reload
+       throt config learned [--forget SIGNATURE | --clear]
 `},
 		"config check global": {code: 0, stdout: `ok: $DIR/plain.json
   socket_path $DIR/run/throt/throtd.sock -> /nonexistent/throtd.sock (file)
@@ -1462,10 +1445,12 @@ claude-1  4312  make     build  150%  2.0 GiB  running
   }
 }
 `, stderr: ""},
-		"status -h": {code: 0, stdout: `usage: throt status
+		"status -h": {code: 0, stdout: `usage: throt status [--json | --idle | --stats | PID]
 
 show host resources and pressure; --json for JSON; --idle
-lists agent sessions by memory and which look idle (report only)
+lists agent sessions by memory and which look idle (report
+only); --stats shows per-agent usage since throtd started;
+PID explains why that heavy workload runs, is paused or queued
 `, stderr: ""},
 		"status down":                {code: 1, stdout: "", stderr: "throt: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},
 		"status down invalid config": {code: 1, stdout: "", stderr: "throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not \"sometimes\"; using the default socket\nthrot: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},

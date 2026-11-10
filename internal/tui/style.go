@@ -14,14 +14,16 @@ import (
 // information.
 type styles struct {
 	title, header, selected, banner, degraded, footer lipgloss.Style
-	pressure                                          [domain.PressureCritical + 1]lipgloss.Style
+	// key is a key name in the footer hints.
+	key      lipgloss.Style
+	pressure [domain.PressureCritical + 1]lipgloss.Style
 	// badge is a pressure level as a filled label; levelBorder the border
 	// of the PRESSURE panel at that level.
 	badge, levelBorder [domain.PressureCritical + 1]lipgloss.Style
-	// Dashboard panels: border and panelTitle in the accent color,
-	// focusBorder for the focused panel.
-	border, focusBorder, panelTitle lipgloss.Style
-	// ok, warn and bad color a value by threshold.
+	// Dashboard panels: a quiet border and a bold title; the focused panel
+	// has both in the accent color.
+	border, focusBorder, panelTitle, focusTitle lipgloss.Style
+	// ok, warn and bad style a value by threshold; ok has no color.
 	ok, warn, bad lipgloss.Style
 	// agentBar and outsideBar fill the MEMORY BY OWNER bars; track is
 	// their unfilled part and axis a chart's scale.
@@ -58,17 +60,22 @@ func newStyles(colored, dark bool) styles {
 	}
 	ld := lipgloss.LightDark(dark)
 	c := func(light, dark string) color.Color { return ld(lipgloss.Color(light), lipgloss.Color(dark)) }
-	red := c("124", "9")
-	yellow := c("130", "11")
-	orange := c("166", "208")
-	green := c("28", "10")
-	grey := c("242", "247")
+	// One accent, a grey scale and three signal colors. A value is colored
+	// only when it means something: plain while it is fine.
+	accent := c("#3182F6", "#4593FC")
+	red := c("#E42939", "#F66570")
+	orange := c("#E8590C", "#FE9800")
+	yellow := c("#C77700", "#FFC342")
+	green := c("#029359", "#15C47E")
+	grey := c("#6B7684", "#8B95A1") // secondary text
+	line := c("#D1D6DB", "#4E5968") // borders and tracks
 	s.title = lipgloss.NewStyle().Bold(true)
-	s.header = lipgloss.NewStyle().Faint(true)
-	s.selected = lipgloss.NewStyle().Reverse(true)
+	s.header = lipgloss.NewStyle().Foreground(grey)
+	s.footer = s.header
+	s.key = lipgloss.NewStyle().Bold(true)
+	s.selected = lipgloss.NewStyle().Bold(true).Background(c("#E8F3FF", "#1F3355"))
 	s.banner = lipgloss.NewStyle().Bold(true).Foreground(red)
 	s.degraded = lipgloss.NewStyle().Foreground(yellow)
-	s.footer = lipgloss.NewStyle().Faint(true)
 	s.pressure = [...]lipgloss.Style{
 		domain.PressureUnknown:  lipgloss.NewStyle().Bold(true).Foreground(grey),
 		domain.PressureNormal:   lipgloss.NewStyle().Bold(true).Foreground(green),
@@ -84,27 +91,26 @@ func newStyles(colored, dark bool) styles {
 		s.splash[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(h))
 	}
 	s.splashShadow = lipgloss.NewStyle().Foreground(lipgloss.Color(shadow))
-	// The accent is the splash's sky blue, deeper on light backgrounds.
-	accent := c("#1C70B0", "#4FB3E8")
-	s.border = lipgloss.NewStyle().Foreground(accent)
-	s.focusBorder = lipgloss.NewStyle().Bold(true).Foreground(c("#0B4F86", "#AFE3FB"))
-	s.panelTitle = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	s.ok = lipgloss.NewStyle().Bold(true).Foreground(green)
+	s.border = lipgloss.NewStyle().Foreground(line)
+	s.focusBorder = lipgloss.NewStyle().Foreground(accent)
+	s.panelTitle = lipgloss.NewStyle().Bold(true)
+	s.focusTitle = lipgloss.NewStyle().Bold(true).Foreground(accent)
+	s.ok = lipgloss.NewStyle().Bold(true)
 	s.warn = lipgloss.NewStyle().Bold(true).Foreground(yellow)
 	s.bad = lipgloss.NewStyle().Bold(true).Foreground(red)
 	s.agentBar = lipgloss.NewStyle().Foreground(accent)
-	s.outsideBar = lipgloss.NewStyle().Foreground(c("97", "141"))
-	s.track = lipgloss.NewStyle().Foreground(c("252", "238"))
-	s.axis = lipgloss.NewStyle().Faint(true)
-	ink := c("231", "16") // text on a filled badge
+	s.outsideBar = lipgloss.NewStyle().Foreground(c("#8B95A1", "#B0B8C1"))
+	s.track = lipgloss.NewStyle().Foreground(line)
+	s.axis = s.header
+	ink := c("#FFFFFF", "#17171C") // text on a filled badge
 	for i, col := range [...]color.Color{grey, green, yellow, orange, red} {
 		s.badge[i] = lipgloss.NewStyle().Bold(true).Foreground(ink).Background(col)
 		s.levelBorder[i] = lipgloss.NewStyle().Foreground(col)
 	}
 	s.event = [...]lipgloss.Style{
 		eventOther:     {},
-		eventControl:   lipgloss.NewStyle().Foreground(c("25", "12")),
-		eventScheduler: lipgloss.NewStyle().Foreground(c("90", "13")),
+		eventControl:   lipgloss.NewStyle().Foreground(accent),
+		eventScheduler: lipgloss.NewStyle().Foreground(c("#0C8585", "#30B6B6")),
 		eventFailure:   lipgloss.NewStyle().Bold(true).Foreground(red),
 	}
 	return s

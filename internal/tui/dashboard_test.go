@@ -65,7 +65,7 @@ func ownerModel(t *testing.T, w, h int) Model {
 // TestDashboardFillsWindow checks the grid on a large and a medium
 // terminal: panels cover the whole window, every stat has a panel, the
 // time series, the memory gauge and the tables share rows, and the
-// focused panel has the heavy border.
+// focused panel has the ▸ marker.
 func TestDashboardFillsWindow(t *testing.T) {
 	m := ownerModel(t, 200, 55)
 	out := view(m)
@@ -88,18 +88,18 @@ func TestDashboardFillsWindow(t *testing.T) {
 		}
 		at += i
 	}
-	// Big numbers, the detail under them and the sparkline last.
+	// The value, its meter, the details and the sparkline last.
 	mem := panelBody(t, out, "MEMORY")
-	if mem[0] != "┏━┓ ┏━┓" || mem[3] != "21.1/24.0 GiB" || mem[4] != "kernel: warning" || !strings.HasSuffix(mem[5], "▇▇▇") {
+	if mem[0] != "88%" || !strings.HasPrefix(mem[1], "━━━") || mem[2] != "21.1/24.0 GiB" || mem[3] != "kernel: warning" || !strings.HasSuffix(mem[4], "▇▇▇") {
 		t.Errorf("MEMORY panel = %q", mem)
 	}
 	assertContains(t, strings.Join(panelBody(t, out, "PRESSURE"), "\n"), "ELEVATED\nwhy: kernel memory pressure warning\n")
 	assertContains(t, strings.Join(panelBody(t, out, "SCHEDULER"), "\n"), "OBSERVE\nlimit 3 (adaptive, start 2, max 10)\n0 would queue · 0 reserved")
 	// Row 2: the time series, five minutes each on a 0–100% axis.
-	for _, title := range []string{"CPU % · last 5m", "MEMORY % · last 5m", "SWAP % · last 5m"} {
+	for _, title := range []string{"CPU % · last 5m", "MEMORY % · last 5m", "SWAP % of RAM · last 5m"} {
 		body := panelBody(t, out, title)
-		if !strings.HasPrefix(body[0], "100%┤") || !strings.HasPrefix(body[len(body)-1], "  0%┤") ||
-			!strings.ContainsAny(body[len(body)-1], "⣿⣇⣆⣄") {
+		if !strings.HasPrefix(body[0], "100%") || !strings.HasPrefix(body[len(body)-1], "  0%") ||
+			!strings.ContainsFunc(strings.Join(body, ""), func(r rune) bool { return r > 0x2800 && r <= 0x28ff }) {
 			t.Errorf("%s chart = %q", title, body)
 		}
 	}
@@ -118,9 +118,9 @@ func TestDashboardFillsWindow(t *testing.T) {
 	if !strings.HasPrefix(lines[len(lines)-2], "╰") || !strings.Contains(lineContaining(t, out, "─ EVENTS ─"), "╭─ EVENTS") {
 		t.Errorf("events do not reach the footer:\n%s", out)
 	}
-	// Focus moves the heavy border and the marker.
+	// Focus moves the marker.
 	tabbed := view(press(t, m, "tab"))
-	assertContains(t, tabbed, "┏━ ▸ HEAVY WORKLOADS", "╭─ AGENTS (53)")
+	assertContains(t, tabbed, "╭─ ▸ HEAVY WORKLOADS", "╭─ AGENTS (53)")
 
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	out = view(m)

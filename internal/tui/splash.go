@@ -35,14 +35,14 @@ type splashDoneMsg struct{}
 // not fit, a one-line "THROT"), the tagline, the version and the daemon
 // connection state, centered in the window.
 func (m Model) splashLines() []string {
-	state := "connecting to throtd at " + m.socket + "…"
+	state := tr("connecting to throtd at ") + m.socket + "…"
 	switch {
 	case m.polled && m.connected:
-		state = "● connected to throtd"
+		state = tr("● connected to throtd")
 	case m.polled:
-		state = "○ waiting for throtd at " + m.socket
+		state = tr("○ waiting for throtd at ") + m.socket
 	}
-	info := []string{"Throt: " + tagline, "version " + app.Version, state, "", "any key to continue  q quit"}
+	info := []string{"Throt: " + tr(tagline), tr("version ") + app.Version, state, "", tr("any key to continue  q quit")}
 
 	var art []string
 	if m.width >= wordmarkWidth+2 && m.height >= wordmarkHeight+len(info)+2 {

@@ -31,7 +31,11 @@ type command struct {
 	// which prints a detailed usage for -h itself. For the other commands
 	// the dispatcher answers -h with commandUsage.
 	flags bool
-	run   func(ctx context.Context, e env, args []string) error
+	// hidden keeps the command out of the short usage: it is for agents
+	// and shells rather than people, or it is the older name of something
+	// another command now does. 'throt help' lists it.
+	hidden bool
+	run    func(ctx context.Context, e env, args []string) error
 }
 
 // commandUsage is the usage of a command without its own flag set.
@@ -52,18 +56,20 @@ func isHelp(a string) bool {
 func commands() []command {
 	return []command{
 		{name: "top", run: cmdTop, help: "open the terminal UI (the default with no command)"},
-		{name: "status", run: cmdStatus, help: `show host resources and pressure; --json for JSON; --idle
-lists agent sessions by memory and which look idle (report only)`},
-		{name: "stats", run: cmdStats, flags: true, help: "show per-agent resource usage since throtd started; --json for JSON"},
-		{name: "learned", run: cmdLearned, flags: true, synopsis: "[--forget SIGNATURE | --clear]", help: `list the commands throtd learned heavy, which the hook then
+		{name: "status", run: cmdStatus, synopsis: "[--json | --idle | --stats | PID]", help: `show host resources and pressure; --json for JSON; --idle
+lists agent sessions by memory and which look idle (report
+only); --stats shows per-agent usage since throtd started;
+PID explains why that heavy workload runs, is paused or queued`},
+		{name: "stats", hidden: true, run: cmdStats, flags: true, help: "show per-agent resource usage since throtd started; --json for JSON"},
+		{name: "learned", hidden: true, run: cmdLearned, flags: true, synopsis: "[--forget SIGNATURE | --clear]", help: `list the commands throtd learned heavy, which the hook then
 waits for like heavy tools; --forget or --clear drops them`},
 		{name: "usage", run: cmdUsage, flags: true, synopsis: "[--by session|project|hour] [--since D] [--json]", help: `tokens and active time per agent session, project or hour, from
 the Claude Code and Codex session logs (default: the last 24h);
 counts and timestamps only, read-only, needs no throtd. Active
 time: the gaps under 5 minutes between a session's log entries`},
-		{name: "ping", run: cmdPing, help: "check that throtd is reachable"},
+		{name: "ping", hidden: true, run: cmdPing, help: "check that throtd is reachable"},
 		{name: "events", run: cmdEvents, flags: true, help: "print recent daemon events as JSON lines; -f keeps printing new ones"},
-		{name: "explain", run: cmdExplain, synopsis: "PID", help: "explain why a heavy workload is running, paused, or queued"},
+		{name: "explain", hidden: true, run: cmdExplain, synopsis: "PID", help: "explain why a heavy workload is running, paused, or queued"},
 		{name: "pause", run: cmdPause, synopsis: "PID", help: "pause a heavy workload (SIGSTOP) shown in 'status'"},
 		{name: "resume", run: cmdResume, synopsis: "[--force] PID", help: `resume a paused workload (SIGCONT). Also resumes a stopped
 process throtd did not pause (listed by 'doctor', e.g. one an
@@ -72,30 +78,42 @@ agent; --force resumes any other such process of yours too,
 such as a shell job suspended with Ctrl-Z (prefer fg there)`},
 		{name: "run", run: cmdRun, flags: true, synopsis: "[--timeout D] [--no-wait] -- CMD [ARGS...]", help: `wait until throtd grants a heavy slot, reserved for CMD, then
 exec CMD (runs immediately if throtd is down)`},
-		{name: "wait", run: cmdWait, flags: true, synopsis: "[--timeout D]", help: `wait until a heavy slot is held for the calling agent (its place
+		{name: "wait", hidden: true, run: cmdWait, flags: true, synopsis: "[--timeout D]", help: `wait until a heavy slot is held for the calling agent (its place
 in line from 'hook claude-code --defer'), at most D (default 30m)`},
-		{name: "reload", run: cmdReload, help: "make throtd re-read its config file"},
+		{name: "reload", hidden: true, run: cmdReload, help: "make throtd re-read its config file"},
 		{name: "doctor", run: cmdDoctor, help: "print a sanitized diagnostic report (safe to share)"},
-		{name: "mcp", run: cmdMCP, help: "run a read-only MCP server on stdio for coding agents"},
-		{name: "config", run: cmdConfig, flags: true, synopsis: "check|show", help: `'check' validates the config file as throtd would, lists what
+		{name: "mcp", hidden: true, run: cmdMCP, help: "run a read-only MCP server on stdio for coding agents"},
+		{name: "config", run: cmdConfig, flags: true, synopsis: "check|show|reload|learned", help: `'check' validates the config file as throtd would, lists what
 it changes from the defaults, and warns about risky settings;
 'show [--json]' prints the effective config and the source
-(default, profile, or file) of each value. Both accept --config PATH.`},
-		{name: "hook", run: cmdHook, synopsis: "claude-code [--max-wait D] [--defer] [--clamp]", help: `Claude Code PreToolUse hook: before a lone heavy Bash command,
+(default, profile, or file) of each value. Both accept --config PATH.
+'reload' makes throtd re-read the file; 'learned' lists the
+commands throtd learned heavy (--forget SIGNATURE, --clear)`},
+		{name: "hook", hidden: true, run: cmdHook, synopsis: "claude-code [--max-wait D] [--defer] [--clamp]", help: `Claude Code PreToolUse hook: before a lone heavy Bash command,
 wait up to D (default 50s) for heavy-job capacity (advisory;
 fails open); --defer instead holds the agent's place in line
 and denies the call, asking Claude to run 'throt wait'`},
 		{name: "setup", run: cmdSetup, synopsis: "claude-code|codex [--write]", help: `print the configuration to paste into a coding agent;
 --write installs it in your home directory instead (adds only,
 keeps a .throt-backup of each changed file)`},
-		{name: "completion", run: cmdCompletion, synopsis: "bash|zsh|fish", help: "print a shell completion script"},
+		{name: "completion", hidden: true, run: cmdCompletion, synopsis: "bash|zsh|fish", help: "print a shell completion script"},
 		{name: "version", run: cmdVersion, synopsis: "[--json]", help: `print the client version; --json adds the protocol and Go
 versions, and throtd's version when it is reachable`},
 		{name: "update", run: cmdUpdate, flags: true, synopsis: "[--check] [--version vX.Y.Z] [--pre] [--yes]", help: `install the newest GitHub release over throt and throtd after
 verifying its SHA-256; --check only reports (exit 0 when up to
 date, 10 when an update is available); the only command that
 uses the network`},
+		{name: "help", hidden: true, run: cmdHelp, help: "list every command, with the ones the short usage leaves out"},
 	}
+}
+
+// cmdHelp is 'throt help': the usage with every command.
+func cmdHelp(_ context.Context, e env, args []string) error {
+	if err := noArgs("help", args); err != nil {
+		return err
+	}
+	fmt.Fprint(e.stdout, commandList(true))
+	return nil
 }
 
 // lookup returns the command called name.
@@ -110,11 +128,25 @@ func lookup(name string) (command, bool) {
 
 // usageText is throt's usage, up to the flag defaults.
 func usageText() string {
+	return commandList(false) + `
+For agents and shells: hook, wait, mcp, completion. 'throt help' lists
+every command, with the older names that still work.
+
+Flags:
+`
+}
+
+// commandList is the usage's command list: every command when all is set,
+// else the ones that are not hidden.
+func commandList(all bool) string {
 	// A short head shares a line with its help; a long one stands alone.
 	const indent = "             "
 	var b strings.Builder
 	b.WriteString("Usage: throt [flags] [command]\n\nCommands:\n")
 	for _, c := range commands() {
+		if c.hidden && !all {
+			continue
+		}
 		head := strings.TrimSpace(c.name + " " + c.synopsis)
 		lines := strings.Split(c.help, "\n")
 		if len(head) <= len(indent)-4 {
@@ -127,7 +159,6 @@ func usageText() string {
 			b.WriteString(indent + l + "\n")
 		}
 	}
-	b.WriteString("\nFlags:\n")
 	return b.String()
 }
 

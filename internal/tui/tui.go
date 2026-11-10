@@ -332,9 +332,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case controlMsg:
 		target := fmt.Sprintf("%s (pid %d)", msg.name, msg.key.PID)
 		if msg.err != nil {
-			cmd = m.setNotice(msg.verb + " " + target + " failed: " + msg.err.Error())
+			cmd = m.setNotice(tr(msg.verb) + " " + target + tr(" failed: ") + msg.err.Error())
 		} else {
-			cmd = m.setNotice(msg.verb + "d " + target)
+			cmd = m.setNotice(tr(msg.verb+"d") + " " + target)
 		}
 	case clearNoticeMsg:
 		if msg.id == m.noticeID {
@@ -454,7 +454,7 @@ func (m *Model) handleKey(k tea.KeyPressMsg) tea.Cmd {
 		case "ctrl+c":
 			return m.quit()
 		}
-		return m.setNotice(a.verb + " cancelled")
+		return m.setNotice(tr(a.verb) + tr(" cancelled"))
 	}
 	if m.filtering {
 		if k.String() == "ctrl+c" {
