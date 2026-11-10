@@ -102,22 +102,28 @@ const (
 	DefaultAdaptInterval  = 30 * time.Second
 )
 
-// Idle holders. A running heavy workload whose CPU (cores, its whole
-// subtree) stays below IdleCPU in every round for IdleWindow is idle: a build
-// that hangs, waits on a lock, the network or a container start. Below high
-// pressure it does not count as running, overall or for its owner, so queued
-// work may take its slot. It is never paused or signalled for being idle,
-// and it counts again in the first round it is busy, even above the limit:
-// nothing is preempted, new work just waits until the count is under the
-// limit again. Its memory still counts, since it is in MemoryHeadroom and
-// the pressure signals. A gap of more than idleGap between two rounds
-// restarts every window, so one sample after a gap cannot make a workload
-// idle.
+// Idle holders. A heavy slot is held like a carrier thread holds a virtual
+// thread: only while the workload uses the CPU. A running heavy workload
+// whose CPU (cores, its whole subtree) stays below IdleCPU in every round
+// for IdleWindow, and at least idleRounds rounds, is idle (parked): a build
+// that waits on a download, a lock, a container start or a test's sleep, or
+// one that hangs. Below high pressure it does not count as running, overall
+// or for its owner, so queued work may take its slot. It is never paused or
+// signalled for being idle, and it counts again in the first round it is
+// busy, even above the limit: nothing is preempted, new work just waits
+// until the count is under the limit again. So the limit bounds how many
+// heavy workloads are busy at once rather than how many exist, and may be
+// exceeded while parked workloads wake; slots lent this way are handed out
+// one per ResumeCooldown. Its memory still counts, since it is in
+// MemoryHeadroom and the pressure signals. A gap of more than idleGap
+// between two rounds restarts every window, so one sample after a gap
+// cannot make a workload idle.
 //
 // ponytail: fixed thresholds, not config, until someone needs to tune them.
 const (
 	IdleCPU    = 0.05
-	IdleWindow = 2 * time.Minute
+	IdleWindow = 10 * time.Second
+	idleRounds = 3
 	idleGap    = 30 * time.Second
 )
 
@@ -354,6 +360,8 @@ type entry struct {
 	// quietSince is the first round of the current run of rounds in which
 	// the workload ran below IdleCPU; zero while busy, paused or held.
 	quietSince time.Time
+	// quietRounds counts the rounds since quietSince, that one included.
+	quietRounds int
 	// idle is set when the latest round found it idle (see IdleWindow).
 	idle bool
 }
@@ -605,7 +613,7 @@ func (s *Scheduler) Decide(in Input) []Decision {
 	if !s.lastRound.IsZero() && (in.Now.Before(s.lastRound) || in.Now.Sub(s.lastRound) > idleGap) {
 		// A sampling gap (or a clock step) restarts every idle window.
 		for _, e := range s.seen {
-			e.quietSince = time.Time{}
+			e.quietSince, e.quietRounds = time.Time{}, 0
 		}
 	}
 	if in.Pressure == domain.PressureHigh || in.Pressure == domain.PressureCritical {
@@ -816,11 +824,13 @@ func (s *Scheduler) observe(in Input, paused, held, admitted map[domain.ProcessK
 		e.running = false // set again by Decide
 		switch {
 		case c.paused || c.held || v.CPU >= IdleCPU:
-			e.quietSince = time.Time{}
+			e.quietSince, e.quietRounds = time.Time{}, 0
 		case e.quietSince.IsZero():
-			e.quietSince = in.Now
+			e.quietSince, e.quietRounds = in.Now, 1
+		default:
+			e.quietRounds++
 		}
-		e.idle = !e.quietSince.IsZero() && in.Now.Sub(e.quietSince) >= IdleWindow
+		e.idle = e.quietRounds >= idleRounds && in.Now.Sub(e.quietSince) >= IdleWindow
 		cands = append(cands, c)
 	}
 	exited := 0

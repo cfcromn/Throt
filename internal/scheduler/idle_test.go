@@ -36,11 +36,11 @@ func TestIdleHolder(t *testing.T) {
 		resumeAt int
 	}{
 		{"quiet for the window frees the slot", domain.PressureNormal,
-			func(int) float64 { return quiet }, 120},
+			func(int) float64 { return quiet }, 20},
 		{"elevated frees it too", domain.PressureElevated,
-			func(int) float64 { return quiet }, 120},
+			func(int) float64 { return quiet }, 20},
 		{"just under the threshold counts as quiet", domain.PressureNormal,
-			func(int) float64 { return IdleCPU - 0.001 }, 120},
+			func(int) float64 { return IdleCPU - 0.001 }, 20},
 		{"at the threshold is busy", domain.PressureNormal,
 			func(int) float64 { return IdleCPU }, -1},
 		{"busy holds the slot", domain.PressureNormal,
@@ -49,23 +49,23 @@ func TestIdleHolder(t *testing.T) {
 			func(int) float64 { return quiet }, -1},
 		{"critical pressure frees nothing", domain.PressureCritical,
 			func(int) float64 { return quiet }, -1},
-		// One busy round every 12th: 110s quiet stretches never reach the
-		// 2 minute window, so admissions do not follow the flapping.
+		// Every third round busy: two quiet rounds never make a workload
+		// idle, so admissions do not follow the flapping.
 		{"flapping never reaches the window", domain.PressureNormal,
 			func(sec int) float64 {
-				if sec/10%12 == 11 {
+				if sec/10%3 == 2 {
 					return busy
 				}
 				return quiet
 			}, -1},
-		// The window restarts after the last busy round at 50s.
+		// The window restarts after the busy round at 10s.
 		{"a busy round restarts the window", domain.PressureNormal,
 			func(sec int) float64 {
-				if sec == 50 {
+				if sec == 10 {
 					return busy
 				}
 				return quiet
-			}, 180},
+			}, 40},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s := New(idlePolicy())
@@ -115,10 +115,7 @@ func TestIdleHolderWakes(t *testing.T) {
 	s.Decide(Input{Now: at(0), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{quiet}})
 	expect(t, s.Decide(Input{Now: at(10), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{quiet, wv(2, "b")}}),
 		brief{ActionQueue, 2, ReasonSlotsExhausted})
-	for sec := 20; sec < 120; sec += 10 {
-		expect(t, s.Decide(Input{Now: at(sec), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{quiet, wv(2, "b")}, Paused: keys(2)}))
-	}
-	expect(t, s.Decide(Input{Now: at(120), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{quiet, wv(2, "b")}, Paused: keys(2)}),
+	expect(t, s.Decide(Input{Now: at(20), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{quiet, wv(2, "b")}, Paused: keys(2)}),
 		brief{ActionResume, 2, ReasonHolderIdle})
 
 	// The holder wakes: two run under a limit of one. Nothing is preempted
@@ -155,17 +152,14 @@ func TestIdleWindowNeedsSamples(t *testing.T) {
 	round := func(sec int) []Decision {
 		return s.Decide(Input{Now: at(sec), Pressure: domain.PressureNormal, Heavy: []process.WorkloadView{quiet, withCPU(2, "b", 0)}, Paused: keys(2)})
 	}
-	for sec := 20; sec <= 100; sec += 10 {
-		expect(t, round(sec))
-	}
-	// 100s without a round: the window restarts at 200.
-	for sec := 200; sec < 320; sec += 10 {
+	// 190s without a round: the window restarts at 200.
+	for sec := 200; sec < 220; sec += 10 {
 		expect(t, round(sec))
 		if got := s.Idle(); len(got) != 0 {
 			t.Fatalf("t=%d: Idle() = %v, want none", sec, got)
 		}
 	}
-	expect(t, round(320), brief{ActionResume, 2, ReasonHolderIdle})
+	expect(t, round(220), brief{ActionResume, 2, ReasonHolderIdle})
 }
 
 // TestIdleHolderResumesAreSpaced checks that slots freed by idle holders
@@ -180,12 +174,9 @@ func TestIdleHolderResumesAreSpaced(t *testing.T) {
 	heavy := append(slices.Clone(holders), wv(3, "b"), wv(4, "c"))
 	expect(t, s.Decide(Input{Now: at(5), Pressure: domain.PressureNormal, Heavy: heavy}),
 		brief{ActionQueue, 3, ReasonSlotsExhausted}, brief{ActionQueue, 4, ReasonSlotsExhausted})
-	for sec := 10; sec < 120; sec += 10 {
-		expect(t, s.Decide(Input{Now: at(sec), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(3, 4)}))
-	}
-	expect(t, s.Decide(Input{Now: at(120), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(3, 4)}),
+	expect(t, s.Decide(Input{Now: at(10), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(3, 4)}),
 		brief{ActionResume, 3, ReasonHolderIdle})
-	expect(t, s.Decide(Input{Now: at(125), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(4)}))
-	expect(t, s.Decide(Input{Now: at(130), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(4)}),
+	expect(t, s.Decide(Input{Now: at(15), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(4)}))
+	expect(t, s.Decide(Input{Now: at(20), Pressure: domain.PressureNormal, Heavy: heavy, Paused: keys(4)}),
 		brief{ActionResume, 4, ReasonHolderIdle})
 }
