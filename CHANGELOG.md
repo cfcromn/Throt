@@ -6,6 +6,8 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+## [1.0.0-rc.2] - 2026-11-10
+
 ### Added
 - Idle holders free their slot, as a carrier thread drops a blocked virtual thread: a running heavy workload whose subtree stays under 5% of a core for 10 seconds and at least three scheduler rounds (a build waiting on a download, a lock, a container start or a test's sleep, or a hung one) no longer counts against `heavy_limit` or `per_agent_limit` below high pressure, so queued work resumes (new decision reason `holder_idle`, one per `resume_cooldown`). It is never paused or signalled for this; when it is busy again it counts again, nothing is preempted, and nothing new starts until the count is under the limit. So `heavy_limit` bounds how many heavy workloads are busy at once, not how many exist, and more than the limit can be busy for a while after parked ones wake. `status` heavy entries carry `idle`, and `throt status` shows `running (idle)`.
 - `throt usage [--by session|project|hour] [--since DURATION|DATE] [--json]`: tokens (input, output, cache write, cache read), messages and active time per agent kind and per session, project or hour, read from the Claude Code (`~/.claude/projects`, or `CLAUDE_CONFIG_DIR`) and Codex (`~/.codex/sessions`, or `CODEX_HOME`) session logs, for the last 24h by default. Active time is the sum of the gaps under 5 minutes between consecutive log entries of a session. It reads counts, ids, model names, timestamps and the working directory only, never message text, prompts, or tool input and output, and shows a project as its directory's base name. A response logged on several lines is counted once, subagents count for the session that started them, and a malformed line or one over 4 MiB is skipped and counted. No cost estimate. Read-only; needs no `throtd`.
@@ -242,7 +244,8 @@ First observe-only release candidate. Throt does not control any process.
 - `throt doctor` sanitized diagnostics.
 - Release automation: macOS/Linux archives, checksums, and SBOMs via GoReleaser.
 
-[Unreleased]: https://github.com/cfcromn/Throt/compare/v1.0.0-rc.1...HEAD
+[Unreleased]: https://github.com/cfcromn/Throt/compare/v1.0.0-rc.2...HEAD
+[1.0.0-rc.2]: https://github.com/cfcromn/Throt/compare/v1.0.0-rc.1...v1.0.0-rc.2
 [1.0.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.9.0-rc.1...v1.0.0-rc.1
 [0.9.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.8.0-rc.1...v0.9.0-rc.1
 [0.8.0-rc.1]: https://github.com/cfcromn/Throt/compare/v0.7.0-rc.1...v0.8.0-rc.1

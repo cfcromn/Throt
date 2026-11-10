@@ -34,7 +34,7 @@ Throt는 로컬에서 동작하는 Go 데몬(daemon, `throtd`)과 클라이언�
 
 Throt는 코딩 에이전트도, 컨테이너 오케스트레이터도, 클라우드 스케줄러도 아니다. 프로세스를 죽이는 일도 없다. 일시 정지하고 재개할 뿐이다.
 
-**상태: 1.0 릴리스 후보.** 최신 릴리스는 v1.0.0-rc.1이다. macOS와 Linux(amd64/arm64)를 지원한다. [호환성 정책](docs/ARCHITECTURE.md#compatibility)이 적용되므로 문서화된 동작은 1.x 안에서 깨지지 않는다.
+**상태: 1.0 릴리스 후보.** 최신 릴리스는 v1.0.0-rc.2이다. macOS와 Linux(amd64/arm64)를 지원한다. [호환성 정책](docs/ARCHITECTURE.md#compatibility)이 적용되므로 문서화된 동작은 1.x 안에서 깨지지 않는다.
 
 ## 빠른 시작
 
@@ -479,7 +479,7 @@ $ throt usage --since 7d --by project
 | v0.8 Integration and readiness | 지시 없이도 용량을 기다리기 | Claude Code 훅, `throt setup`, `throt config check`/`show`, `throt version --json`, 로그 레벨, soak 테스트 | 출시 (v0.8.0-rc.1) |
 | v0.9 Evidence and upkeep | 실제 머신에서 측정하고 최신 상태 유지하기 | `throt update`, 실제 머신 CPU·메모리 벤치마크, CI 러너에서 soak, CPU만 바쁠 때 늘어나는 적응형 한도, `start_limit`, `throt_wait_for_capacity`와 `throt_explain`을 갖춘 MCP `2026-07-28`, TUI 스케줄러 줄과 이벤트 필터 | 출시 (v0.9.0-rc.1) |
 | 1.0 | 명시한 프로필 아래에서 자신 있게 스케줄러 켜기 | 안정된 호환성 정책, 실제 머신 벤치마크. 벤치마크 근거에 따라 스케줄러는 옵트인으로 남긴다 | 출시 (v1.0.0-rc.1) |
-| 1.x 사용량 | "에이전트마다 토큰과 시간을 얼마나 썼나?" | `throt usage`: Claude Code와 Codex 세션 기록에서 에이전트 세션·프로젝트·시간대별 토큰(입력, 출력, 캐시)과 실제 작업 시간을 읽는다. 숫자와 시각만 읽고 대화 내용은 읽지 않는다. 읽기 전용이며 `throtd`가 필요 없다 | 출시 (미릴리스) |
+| 1.x 사용량 | "에이전트마다 토큰과 시간을 얼마나 썼나?" | `throt usage`: Claude Code와 Codex 세션 기록에서 에이전트 세션·프로젝트·시간대별 토큰(입력, 출력, 캐시)과 실제 작업 시간을 읽는다. 숫자와 시각만 읽고 대화 내용은 읽지 않는다. 읽기 전용이며 `throtd`가 필요 없다 | 출시 (v1.0.0-rc.2) |
 
 **1.0**은 명시한 `scheduler.mode`와 `profile` 아래에서 스케줄러를 자신 있게 켤 수 있다는 뜻이다. 기본값은 여전히 꺼짐이다([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#results)의 "Default decision" 참고). 1.0의 조건은 지원 OS 계열 두 개, [호환성 정책](docs/ARCHITECTURE.md#compatibility) 시행, 알려진 프로세스 유실 버그 없음, 재현 가능한 벤치마크, IPC와 프로세스 제어 경계에 대한 보안 검토다.
 
