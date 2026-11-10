@@ -76,6 +76,9 @@ func TestReadProcTask(t *testing.T) {
 // when both passes agree; CPU time must lie between the two passes; RSS,
 // which moves, must be close for nearly every process.
 func TestKernelCollectorMatchesPS(t *testing.T) {
+	// ps reports the resident size, so compare that.
+	defer func(f func() bool) { useFootprint = f }(useFootprint)
+	useFootprint = func() bool { return false }
 	ctx := context.Background()
 	euid := uint32(os.Geteuid())
 	own := func(uid uint32) bool { return euid == 0 || uid == euid }
@@ -230,4 +233,19 @@ func TestSamplerPaths(t *testing.T) {
 	}
 	check(s, withPS) // the periodic refresh
 	check(&darwinProcessSampler{psOnly: true}, pathPS)
+}
+
+// TestPhysFootprint checks proc_pid_rusage against proc_info on this
+// process, and that memory held but not resident still counts.
+func TestPhysFootprint(t *testing.T) {
+	if !useFootprint() {
+		t.Fatal("useFootprint() = false: proc_pid_rusage failed or disagrees with proc_info")
+	}
+	fp, res, err := physFootprint(os.Getpid())
+	if err != nil || fp < 1<<20 || res < 1<<20 {
+		t.Fatalf("physFootprint(self) = %d, %d, %v", fp, res, err)
+	}
+	if _, _, err := physFootprint(1); err == nil && os.Geteuid() != 0 {
+		t.Error("physFootprint(1) succeeded for another user's process")
+	}
 }

@@ -33,6 +33,48 @@ const (
 	sizeofProcTaskAllInfo = sizeofProcBSDInfo + 96
 )
 
+// From <sys/proc_info.h> and <sys/resource.h>: proc_pid_rusage is the
+// proc_info call 9; flavor 0 fills a struct rusage_info_v0, a 16-byte UUID
+// and ten uint64 of which the seventh is ri_resident_size and the eighth
+// ri_phys_footprint.
+const (
+	procInfoCallPIDRusage = 9
+	sizeofRusageInfoV0    = 96
+)
+
+// physFootprint reads pid's physical footprint: the memory it is charged
+// for, resident or compressed or swapped out, which is what Activity
+// Monitor shows. The resident size alone leaves out everything the
+// compressor holds, most of a process's memory on a machine short of it.
+// It also returns the resident size from the same call.
+func physFootprint(pid int) (footprint, resident uint64, err error) {
+	var buf [sizeofRusageInfoV0]byte
+	_, _, errno := unix.Syscall6(unix.SYS_PROC_INFO, procInfoCallPIDRusage, uintptr(pid), 0, 0,
+		uintptr(unsafe.Pointer(&buf[0])), 0)
+	if errno != 0 {
+		return 0, 0, errno
+	}
+	return binary.NativeEndian.Uint64(buf[72:]), binary.NativeEndian.Uint64(buf[64:]), nil
+}
+
+// useFootprint reports whether process memory is the physical footprint
+// rather than the resident size: when proc_pid_rusage works and its
+// resident size for this process agrees with proc_info's, which catches a
+// struct layout that moved. Tests comparing against ps replace it.
+var useFootprint = sync.OnceValue(func() bool {
+	var buf [sizeofProcTaskAllInfo]byte
+	hz, err := machTimebase()
+	if err != nil {
+		return false
+	}
+	t, err := readProcTask(os.Getpid(), hz, &buf)
+	if err != nil {
+		return false
+	}
+	fp, res, err := physFootprint(os.Getpid())
+	return err == nil && fp > 0 && res >= t.rss/2 && res <= t.rss*2
+})
+
 // procTask is the part of PROC_PIDTASKALLINFO the sampler uses.
 type procTask struct {
 	pid      int
@@ -186,7 +228,8 @@ func kinfoProcs(loc *time.Location) (procs []domain.ProcessSample, secs []int64,
 	return procs, secs, nil
 }
 
-// readOwnStats sets CPU time, RSS and running against sleeping on every
+// readOwnStats sets CPU time, memory (the physical footprint where it can
+// be read, else the resident size) and running against sleeping on every
 // process in procs that own reports true for, from proc_info. A process
 // that exited since kern.proc.all, or whose PID now names another
 // process, is marked in drop; one that is exiting keeps no stats, as a
@@ -203,6 +246,7 @@ func readOwnStats(procs []domain.ProcessSample, secs []int64, own func(uint32) b
 	if err := checkSelfCPU(hz, &buf); err != nil {
 		return err
 	}
+	footprint := useFootprint()
 	for i := range procs {
 		p := &procs[i]
 		if !own(p.UID) || p.State == domain.StateZombie {
@@ -220,6 +264,12 @@ func readOwnStats(procs []domain.ProcessSample, secs []int64, own func(uint32) b
 			continue
 		}
 		p.CPUTime, p.RSS = t.cpu, t.rss
+		if footprint {
+			// A process that exits here keeps its resident size.
+			if fp, _, err := physFootprint(p.PID); err == nil && fp > 0 {
+				p.RSS = fp
+			}
+		}
 		if p.State == domain.StateRunning && !t.running {
 			p.State = domain.StateSleeping
 		}
