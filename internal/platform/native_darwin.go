@@ -43,6 +43,9 @@ type procTask struct {
 	// running is true when at least one thread is running, which is when
 	// ps prints R.
 	running bool
+	// nice and priority are pbi_nice and pti_priority, the task's base
+	// priority.
+	nice, priority int
 }
 
 // readProcTask reads pid with proc_info. hz is the Mach timebase
@@ -70,6 +73,8 @@ func readProcTask(pid int, hz uint64, buf *[sizeofProcTaskAllInfo]byte) (procTas
 		rss:      ne.Uint64(task[8:]),
 		cpu:      machDuration(ne.Uint64(task[16:]), hz) + machDuration(ne.Uint64(task[24:]), hz),
 		running:  int32(ne.Uint32(task[88:])) > 0,
+		nice:     int(int32(ne.Uint32(bsd[116:]))),
+		priority: int(int32(ne.Uint32(task[92:]))),
 	}, nil
 }
 

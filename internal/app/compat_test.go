@@ -126,7 +126,7 @@ var protocolWant = map[string]struct {
 			"orphans[].owner", "orphans[].process.pid", "orphans[].process.start", "orphans[].since",
 			"paused[].by", "paused[].members[].pid", "paused[].members[].start", "paused[].name",
 			"paused[].owner", "paused[].process.pid", "paused[].process.start", "paused[].since",
-			"paused[].state", "pressure", "reason", "scheduler.adaptive", "scheduler.heavy_limit",
+			"paused[].state", "pressure", "reason", "scheduler.adaptive", "scheduler.background", "scheduler.heavy_limit",
 			"scheduler.leases[].agent", "scheduler.leases[].granted", "scheduler.leases[].id",
 			"scheduler.leases[].process.pid", "scheduler.leases[].process.start", "scheduler.max_limit",
 			"scheduler.mode", "scheduler.per_agent_limit", "scheduler.queued[].pid",

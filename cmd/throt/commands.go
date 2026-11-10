@@ -77,7 +77,7 @@ in line from 'hook claude-code --defer'), at most D (default 30m)`},
 it changes from the defaults, and warns about risky settings;
 'show [--json]' prints the effective config and the source
 (default, profile, or file) of each value. Both accept --config PATH.`},
-		{name: "hook", run: cmdHook, synopsis: "claude-code [--max-wait D] [--defer]", help: `Claude Code PreToolUse hook: before a lone heavy Bash command,
+		{name: "hook", run: cmdHook, synopsis: "claude-code [--max-wait D] [--defer] [--clamp]", help: `Claude Code PreToolUse hook: before a lone heavy Bash command,
 wait up to D (default 50s) for heavy-job capacity (advisory;
 fails open); --defer instead holds the agent's place in line
 and denies the call, asking Claude to run 'throt wait'`},

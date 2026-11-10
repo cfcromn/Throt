@@ -185,7 +185,7 @@ WantedBy=default.target
 | `throt update` | 더 새(또는 더 옛) 릴리스를 설치한다. [업데이트와 롤백](#업데이트와-롤백)을 참고한다. |
 | `throt mcp` | 코딩 에이전트용 읽기 전용 MCP 서버(stdio). |
 | `throt setup claude-code\|codex [--write]` | 코딩 에이전트에 붙여 넣을 설정을 출력한다. `--write`를 주면 대신 홈 디렉터리에 직접 설치한다(추가만 하고, 바꾸는 파일마다 `.throt-backup`을 남긴다). |
-| `throt hook claude-code [--max-wait D] [--defer]` | Claude Code 훅(hook). |
+| `throt hook claude-code [--max-wait D] [--defer] [--clamp]` | Claude Code 훅(hook). |
 | `throt wait [--timeout D]` | 호출한 에이전트 몫으로 무거운 작업 슬롯이 잡힐 때까지 기다린다. 훅의 `--defer`와 함께 쓴다(기본 30m). |
 | `throt completion bash\|zsh\|fish` | 셸 자동 완성 스크립트. |
 
@@ -265,6 +265,8 @@ claude mcp add --scope user throt -- throt mcp
 
 **기다리지 않고 미루기(선택 사항).** `throt hook claude-code --defer`를 쓰면 빈 슬롯이 없을 때 훅이 기다리지 않는다. `throtd`가 에이전트의 대기 순번을 잡아 두고(큐에 들어간 워크로드, `throt run` 호출과 같은 줄이다), 훅은 호출을 거부하면서 그 이유로 Claude에게 몇 번째인지 알리고, 그동안 다른 작업을 하다가 `throt wait`를 백그라운드로 실행해 두고 그것이 끝나면 같은 명령을 다시 실행하라고 전한다. `throt wait`는 에이전트 몫으로 슬롯이 잡히면 0으로 끝난다. 잡힌 슬롯은 에이전트의 다음 무거운 명령을 60s 동안 기다리고, 훅은 그 명령을 바로 통과시킨다. 처음부터 슬롯이 비어 있을 때도 그 명령 몫으로 슬롯을 잡아 둔다. 미뤄진 호출이나 `throt wait`가 10분 동안 갱신하지 않은 순번은 사라지고, 잡아 둔 슬롯을 쓰지 않으면 60s 뒤에 풀린다. 오류가 나거나 `throtd`가 이 기능보다 오래된 버전이면 훅은 위에서 설명한 대로 기다린다. `throt setup`은 아직 `--defer`를 넣지 않으므로 `settings.json`의 훅 명령에 직접 추가한다.
 
+**빌드를 utility 우선순위로 시작하기(선택 사항, macOS).** 이미 돌고 있는 빌드를 `throtd`가 발견했을 때 쓸 수 있는 수단은 macOS 백그라운드 상태뿐인데, 이 상태는 포그라운드 반응성은 지키지만 빌드를 몇 배 느리게 만든다. 프로세스를 직접 시작하는 쪽은 더 나은 방법을 쓸 수 있다. utility QoS 제한(clamp)을 걸고 시작한 빌드는 포그라운드 작업에 똑같이 양보하면서 속도는 거의 잃지 않는다([`scheduler.background`](#설정) 참고). `throt run`은 명령을 스스로 그렇게 시작한다. `throt hook claude-code --clamp`를 쓰면 훅이 Claude의 명령에도 같은 일을 한다. `throtd`가 무거운 작업을 백그라운드 우선순위로 돌리는 동안, 단순 명령 하나로 된 무거운 명령(`./gradlew build`, `make -j8`. `cd web && npm run build`, `CI=1 make`, `time make`는 해당하지 않는다)을 `/usr/sbin/taskpolicy -c utility COMMAND`로 고쳐 쓴다. 그 밖의 명령은 그대로 실행되고 전처럼 백그라운드 상태가 된다. 훅은 호출을 승인하지 않는다. Claude Code는 고쳐 쓴 명령을 기준으로 권한 규칙을 확인하므로, `./gradlew`를 허용한 규칙은 더 이상 맞지 않아 확인 창이 뜬다. `throt setup`은 `--clamp`를 넣지 않는다.
+
 #### 학습한 무거운 명령
 
 `python train.py`, `./scripts/build.sh`, `npx playwright test`처럼 Throt가 이름으로 모르는 명령은 실행된 뒤에야 무거운 작업(class `command`)으로 잡힌다. 그때 빌드를 일시 정지해도 이미 잡은 메모리는 그대로 남는다. 그래서 `throtd`가 이런 명령을 학습한다. 훅(과 `throt run`)은 단순 명령 하나를 실행하기 전에 그 명령의 *시그니처*를 `throtd`에 알린다. 시그니처는 프로그램의 base name과, 플래그가 아닌 첫 인자의 base name이다(`python train.py`, `build.sh`, `npx playwright`). 알린 뒤 10초 안에 그 에이전트의 무거운 작업이 시작되고, 그 작업을 띄웠을 만한 다른 보고가 그 에이전트에 없으면 시그니처를 학습한다. 그 뒤로 훅은 `make`처럼 이 명령 앞에서도 여유 용량을 기다린다. 학습한 명령이 무거워지지 않고 연달아 세 번 실행되면 잊는다. 최대 256개를 관찰한 최대 메모리와 함께 소켓 옆의 `learned.json`에 보관하므로 재시작해도 남는다(가득 차면 가장 오래전에 무거웠던 것부터 지운다).
@@ -343,7 +345,7 @@ Prefix heavy commands (builds, full test suites, container builds) with `throt r
 | `scheduler.start_limit` | 프로필에서 | 적응형 한도의 시작값(0–`heavy_limit`. 0이면 프로필 값을 쓰되 `heavy_limit`을 넘지 않는다). `adaptive`가 아니면 무시한다. |
 | `scheduler.adaptive` | 프로필에서 | high 압력에서는 한도를 절반으로 줄인다. 머신이 버티는 동안 30s마다 하나씩 CPU당 하나까지 올리고, 빈 메모리에 들어가는 대기 작업이 있으면 `heavy_limit`까지 즉시 올린다. |
 | `scheduler.per_agent_limit` | `0` (제한 없음) | 한 에이전트가 실행할 수 있는 무거운 작업의 최대 수. 한 에이전트가 모든 슬롯을 차지하지 못하게 한다(0–64). |
-| `scheduler.background` | `true` | `enforce` 모드에서 에이전트가 소유한 무거운 작업을 모두 백그라운드 우선순위로 돌린다. macOS에서는 `taskpolicy -b`와 같은 백그라운드 상태(가장 낮은 CPU 우선순위, Apple silicon에서는 효율 코어, 디스크 I/O 제한)이고, Linux에서는 nice +10과 가장 낮은 best-effort I/O 우선순위다. `enforce`를 끄거나 이 값을 끄거나 `throtd`를 멈추면 원래대로 되돌린다. 다만 Linux에서는 우선순위를 다시 올리는 일을 root만 할 수 있어서, 보통 nice 값은 프로세스가 끝날 때까지 남는다. 프로필은 이 값을 바꾸지 않는다. |
+| `scheduler.background` | `true` | `enforce` 모드에서 에이전트가 소유한 무거운 작업을 모두 백그라운드 우선순위로 돌린다. macOS에서는 `taskpolicy -b`와 같은 백그라운드 상태(가장 낮은 CPU 우선순위, Apple silicon에서는 효율 코어, 디스크 I/O 제한)이고, Linux에서는 nice +10과 가장 낮은 best-effort I/O 우선순위다. macOS에서 utility QoS 제한을 걸고 시작한 프로세스(`throt run`과 `throt hook claude-code --clamp`가 명령을 시작하는 방식)는 백그라운드 상태로 바꾸지 않고 그대로 둔다. M5 Pro에서 클린 빌드 6개를 동시에 돌려 측정하면 제한은 13%(27s 대비 30.5s), 백그라운드 상태는 5.4배(146s) 느렸고 포그라운드 지연은 같았다. `enforce`를 끄거나 이 값을 끄거나 `throtd`를 멈추면 원래대로 되돌린다. 다만 Linux에서는 우선순위를 다시 올리는 일을 root만 할 수 있어서, 보통 nice 값은 프로세스가 끝날 때까지 남는다. 프로필은 이 값을 바꾸지 않는다. |
 | `scheduler.resume_cooldown` | `10s` | 압력이 high나 critical이거나 메모리, swap, latency 때문에 elevated일 때, 그리고 압력 때문에 일시 정지한 뒤에 재개(와 선점) 사이에 두는 최소 간격. 압력이 normal이거나 CPU만 원인일 때, 또는 작업이 종료되었을 때는 빈 슬롯을 즉시 채운다. 최대 `10m`. |
 | `scheduler.max_queue_wait` | `5m` | 이만큼 대기한 작업은 high 압력에서도 다음 빈 슬롯을 받는다. 대기열이 기아 상태에 빠지지 않게 한다(최소 1s). |
 | `scheduler.pause_on_critical` | `false` | critical 압력에서 가장 최근에 시작한 무거운 작업을 일시 정지한다. 마지막 하나는 건드리지 않는다. |

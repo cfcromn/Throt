@@ -533,7 +533,7 @@ Commands:
              it changes from the defaults, and warns about risky settings;
              'show [--json]' prints the effective config and the source
              (default, profile, or file) of each value. Both accept --config PATH.
-  hook claude-code [--max-wait D] [--defer]
+  hook claude-code [--max-wait D] [--defer] [--clamp]
              Claude Code PreToolUse hook: before a lone heavy Bash command,
              wait up to D (default 50s) for heavy-job capacity (advisory;
              fails open); --defer instead holds the agent's place in line
@@ -946,16 +946,16 @@ explain why a heavy workload is running, paused, or queued
 `, stderr: ""},
 		"help":      {code: 0, stdout: goldenUsage, stderr: ""},
 		"help long": {code: 0, stdout: goldenUsage, stderr: ""},
-		"hook": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D] [--defer]
+		"hook": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D] [--defer] [--clamp]
 `},
-		"hook -h": {code: 0, stdout: `usage: throt hook claude-code [--max-wait D] [--defer]
+		"hook -h": {code: 0, stdout: `usage: throt hook claude-code [--max-wait D] [--defer] [--clamp]
 
 Claude Code PreToolUse hook: before a lone heavy Bash command,
 wait up to D (default 50s) for heavy-job capacity (advisory;
 fails open); --defer instead holds the agent's place in line
 and denies the call, asking Claude to run 'throt wait'
 `, stderr: ""},
-		"hook claude-code -h": {code: 0, stdout: `Usage: throt hook claude-code [--max-wait D] [--defer]
+		"hook claude-code -h": {code: 0, stdout: `Usage: throt hook claude-code [--max-wait D] [--defer] [--clamp]
 
 Claude Code PreToolUse hook for the Bash tool. When the command is a heavy
 tool (alone, or after "cd DIR &&", variable assignments, or "time"), or a
@@ -963,7 +963,7 @@ command throtd learned heavy because it started a heavy workload before,
 wait up to D for throtd to report capacity for a heavy job, then let it run
 unchanged. Only the command's signature (program and first argument base
 names) is sent to throtd, to learn from. Advisory: no slot is reserved.
-Without --defer it never blocks, denies, or changes a tool call. It returns at once on
+Without --defer or --clamp it never blocks, denies, or changes a tool call. It returns at once on
 any error or when throtd is unreachable. Keep D below the hook's "timeout" in settings.json. With
 THROT_HOOK_DEBUG=1 it says on stderr why it ignored an event.
 
@@ -973,7 +973,17 @@ agent's place in line and the hook denies the call, telling Claude to run
 rerun takes the slot held for it. On any error, or with an older throtd,
 it waits as above.
 
+With --clamp (macOS), while throtd runs heavy workloads at background
+priority, a heavy command that is one plain simple command (no "cd DIR &&",
+assignments or "time") is rewritten to start as
+"/usr/sbin/taskpolicy -c utility COMMAND": it yields to foreground work but
+runs several times faster than a build throtd has to put in the background
+after it started. Claude Code matches your permission rules against the
+rewritten command, so a rule that allowed COMMAND no longer does.
+
 Flags:
+  -clamp
+    	start a heavy simple command at low priority while throtd runs heavy workloads in the background (macOS)
   -defer
     	when no slot is free, hold the agent's place in line and deny the call instead of waiting
   -max-wait duration
@@ -987,7 +997,7 @@ Flags:
 		"hook claude-code heavy": {code: 0, stdout: `{"systemMessage":"throt: no heavy-job slot after 1s (all heavy slots are in use (2 running, limit 2)); running anyway"}
 `, stderr: ""},
 		"hook claude-code light": {code: 0, stdout: "", stderr: ""},
-		"hook codex": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D] [--defer]
+		"hook codex": {code: 1, stdout: "", stderr: `throt: usage: throt hook claude-code [--max-wait D] [--defer] [--clamp]
 `},
 		"hook invalid config": {code: 0, stdout: `{"systemMessage":"throt: no heavy-job slot after 1s (all heavy slots are in use (2 running, limit 2)); running anyway"}
 `, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
@@ -1473,6 +1483,8 @@ versions, and throtd's version when it is reachable
 		"version -json down": {code: 0, stdout: "{\n  \"version\": \"dev\",\n  \"protocol\": 1,\n  \"go\": \"$GO\",\n  \"daemon\": null,\n  \"daemon_error\": \"throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\"\n}\n", stderr: ""},
 		"version extra": {code: 2, stdout: "", stderr: `throt: usage: throt version [--json]
 `},
+		"version invalid config": {code: 0, stdout: `dev
+`, stderr: ""},
 		"wait -h": {code: 0, stdout: `Usage: throt wait [--timeout D]
 
 Wait until throtd holds a heavy slot for the agent this runs under, then
@@ -1489,7 +1501,5 @@ Flags:
 `, stderr: ""},
 		"wait extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt wait -h'
 `},
-		"version invalid config": {code: 0, stdout: `dev
-`, stderr: ""},
 	}
 }

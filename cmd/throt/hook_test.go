@@ -549,3 +549,66 @@ func TestClientConfigBadConfig(t *testing.T) {
 		t.Errorf("missing file warned: %q", errw.String())
 	}
 }
+
+// TestHookClamp checks which commands --clamp rewrites, that the rewrite
+// keeps every other field of the tool input and sets no permission
+// decision, and that nothing is rewritten unless throtd runs heavy
+// workloads in the background.
+func TestHookClamp(t *testing.T) {
+	prefix := []string{"/usr/sbin/taskpolicy", "-c", "utility"}
+	found := func(file string) (string, error) {
+		if file == "alias-only" {
+			return "", errors.New("not found")
+		}
+		return "/usr/bin/" + file, nil
+	}
+	for _, tt := range []struct {
+		name, command string
+		prefix        []string
+		background    bool
+		want          string // the rewritten command, or "" for no rewrite
+	}{
+		{"simple heavy command", "make -j8 all", prefix, true, "/usr/sbin/taskpolicy -c utility make -j8 all"},
+		{"wrapper by path", "  ./gradlew build", prefix, true, "/usr/sbin/taskpolicy -c utility ./gradlew build"},
+		{"quoted arguments stay verbatim", `go test -run 'A|B' ./...`, prefix, true, `/usr/sbin/taskpolicy -c utility go test -run 'A|B' ./...`},
+		{"cd first", "cd web && npm run build", prefix, true, ""},
+		{"assignment first", "CI=1 make", prefix, true, ""},
+		{"time first", "time make", prefix, true, ""},
+		{"background off", "make", prefix, false, ""},
+		{"no launcher on this platform", "make", nil, true, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeHook{t: t, clock: time.Unix(1000, 0), oks: []bool{true}}
+			h := f.waiter()
+			h.clamp, h.lookPath = tt.prefix, found
+			h.background = func(context.Context) bool { return tt.background }
+			var out bytes.Buffer
+			h.claudeCode(context.Background(), strings.NewReader(bashEvent(tt.command)), &out, 50*time.Second)
+			if tt.want == "" {
+				if out.Len() != 0 {
+					t.Fatalf("output %q, want none", out.String())
+				}
+				return
+			}
+			var r struct {
+				HookSpecificOutput map[string]json.RawMessage `json:"hookSpecificOutput"`
+			}
+			if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+				t.Fatalf("output %q: %v", out.String(), err)
+			}
+			if _, decided := r.HookSpecificOutput["permissionDecision"]; decided {
+				t.Fatalf("output %q sets a permission decision", out.String())
+			}
+			var input map[string]any
+			if err := json.Unmarshal(r.HookSpecificOutput["updatedInput"], &input); err != nil {
+				t.Fatalf("updatedInput in %q: %v", out.String(), err)
+			}
+			if input["command"] != tt.want || input["description"] != "d" || input["timeout"] != float64(120000) || len(input) != 3 {
+				t.Fatalf("updatedInput = %v, want command %q and the other fields unchanged", input, tt.want)
+			}
+		})
+	}
+	if clampable("alias-only build", found) {
+		t.Error("a command whose program is not found must not be rewritten")
+	}
+}

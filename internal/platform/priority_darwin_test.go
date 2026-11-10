@@ -108,3 +108,37 @@ func keyOf(pid int, start time.Time) domain.ProcessKey {
 
 // killPID kills a grandchild the test started through its own shell.
 func killPID(pid int) { syscall.Kill(pid, syscall.SIGKILL) }
+
+// TestBackgroundLeavesUtilityClamp checks that a process started under the
+// utility QoS clamp is recognized, a child of it too, and that Background
+// leaves it out of the background state.
+func TestBackgroundLeavesUtilityClamp(t *testing.T) {
+	if utilityClamped(os.Getpid()) || inBackground(t, os.Getpid()) {
+		t.Skip("the test itself runs at lowered priority")
+	}
+	cmd := exec.Command("/usr/sbin/taskpolicy", "-c", "utility", "/bin/sh", "-c", "/bin/sleep 30 & wait")
+	if err := cmd.Start(); err != nil {
+		t.Skip("taskpolicy unavailable:", err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	child := waitChild(t, cmd.Process.Pid)
+	t.Cleanup(func() { killPID(child) })
+	if !utilityClamped(cmd.Process.Pid) || !utilityClamped(child) {
+		t.Fatalf("utilityClamped = %v (child %v), want both; ps pri %d",
+			utilityClamped(cmd.Process.Pid), utilityClamped(child), psPri(t, cmd.Process.Pid))
+	}
+	_, key, p := startSleep(t)
+	if utilityClamped(key.PID) {
+		t.Fatal("an ordinary process reads as clamped")
+	}
+	start, _, err := kinfoIdentity(context.Background(), child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Background(context.Background(), keyOf(child, start), uint32(os.Getuid())); err != nil {
+		t.Fatal(err)
+	}
+	if inBackground(t, child) {
+		t.Fatal("Background put a utility-clamped process in the background state")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -112,11 +113,14 @@ type runner struct {
 	ancestors func(ctx context.Context) []int
 	lookPath  func(file string) (string, error)
 	// exec replaces this process; it returns only on failure.
-	exec   func(path string, argv, env []string) error
-	env    []string
-	now    func() time.Time
-	sleep  func(ctx context.Context, d time.Duration) error
-	stderr io.Writer
+	exec func(path string, argv, env []string) error
+	// lowPriority is the command prefix that starts a program at low
+	// priority (lowPriorityPrefix); nil where the platform has none.
+	lowPriority []string
+	env         []string
+	now         func() time.Time
+	sleep       func(ctx context.Context, d time.Duration) error
+	stderr      io.Writer
 }
 
 // checkFunc asks throtd once whether the command may start now. ok means
@@ -131,7 +135,7 @@ func (r runner) run(ctx context.Context, o runOptions) error {
 	ok, v, err := check(ctx)
 	if err != nil {
 		fmt.Fprintf(r.stderr, "throt: throtd is not reachable (%v); running without waiting\n", err)
-		return r.execute(o.argv)
+		return r.execute(o.argv, false)
 	}
 	if o.noWait {
 		verdict := "no"
@@ -177,7 +181,7 @@ func (r runner) run(ctx context.Context, o runOptions) error {
 		}
 		if ok, v, err = check(ctx); err != nil {
 			fmt.Fprintf(r.stderr, "throt: lost throtd (%v); running without waiting\n", err)
-			return r.execute(o.argv)
+			return r.execute(o.argv, false)
 		}
 	}
 }
@@ -248,24 +252,39 @@ func slotSummary(v capacity.Verdict) string {
 }
 
 // start reports argv's signature to a throtd that answered, best effort,
-// then executes argv.
+// then executes argv, at low priority when throtd runs heavy workloads in
+// the background.
 func (r runner) start(ctx context.Context, argv []string) error {
 	if sig, ok := signature.FromArgs(argv[0], argv[1:]); ok && r.expect != nil {
 		name := path.Base(argv[0])
 		r.expect(ctx, sig, heavyTool(name, argv[1:]) && !lightInvocation(name, argv[1:]))
 	}
-	return r.execute(argv)
+	low := false
+	if len(r.lowPriority) > 0 && r.status != nil {
+		st, err := r.callStatus(ctx)
+		low = err == nil && st.Scheduler.Background
+	}
+	return r.execute(argv, low)
 }
 
 // execute replaces this process with argv. Like a shell, it exits 127 when
-// the command does not exist and 126 when it cannot be executed.
-func (r runner) execute(argv []string) error {
+// the command does not exist and 126 when it cannot be executed. With low,
+// where the platform has a launcher for it, the launcher replaces this
+// process and then itself with argv, so PID, signals and exit status are
+// still the command's.
+func (r runner) execute(argv []string, low bool) error {
 	path, err := r.lookPath(argv[0])
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 			return exitError{exitNotFound, fmt.Sprintf("run: %s: command not found", argv[0])}
 		}
 		return exitError{exitNotExecOK, fmt.Sprintf("run: %v", err)}
+	}
+	if low && len(r.lowPriority) > 0 {
+		// The launcher gets the resolved path: it must run the program this
+		// lookup found, not search PATH again.
+		argv = slices.Concat(r.lowPriority, []string{path}, argv[1:])
+		path = argv[0]
 	}
 	if err := r.exec(path, argv, r.env); err != nil {
 		return exitError{exitNotExecOK, fmt.Sprintf("run: exec %s: %v", path, err)}
@@ -345,14 +364,15 @@ func cmdRun(ctx context.Context, e env, args []string) error {
 		return err
 	}
 	r := runner{
-		ppid:      os.Getppid(),
-		lookPath:  exec.LookPath,
-		exec:      syscall.Exec,
-		env:       os.Environ(),
-		now:       time.Now,
-		sleep:     sleepCtx,
-		stderr:    e.stderr,
-		ancestors: processAncestors,
+		ppid:        os.Getppid(),
+		lookPath:    exec.LookPath,
+		exec:        syscall.Exec,
+		lowPriority: lowPriorityPrefix(),
+		env:         os.Environ(),
+		now:         time.Now,
+		sleep:       sleepCtx,
+		stderr:      e.stderr,
+		ancestors:   processAncestors,
 	}
 	// A broken config falls back to the default socket, so the command
 	// still waits for a throtd that runs on its last good config.

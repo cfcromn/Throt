@@ -37,6 +37,13 @@ type SchedulerStatus struct {
 	// `throt run` commands that are not heavy workloads yet. They count as
 	// running heavy work.
 	Leases []Lease `json:"leases"`
+	// Background is set while throtd runs agents' heavy workloads at
+	// background priority (enforce mode with scheduler.background on). A
+	// client that starts a command itself then starts it at low priority
+	// where the platform has a cheaper way than the one throtd has for a
+	// running process (macOS: the utility QoS clamp, which throtd leaves
+	// alone).
+	Background bool `json:"background,omitempty"`
 }
 
 func newScheduler(c config.Scheduler) *scheduler.Scheduler {
@@ -209,5 +216,6 @@ func (d *Daemon) schedulerStatus() SchedulerStatus {
 	if p.Adaptive {
 		st.Adaptive, st.StartLimit, st.MaxLimit = true, p.StartLimit, p.HeavyLimit
 	}
+	st.Background = d.backgroundActive()
 	return st
 }
