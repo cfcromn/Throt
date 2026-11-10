@@ -157,6 +157,10 @@ func (s *darwinProcessSampler) sampleKernel(ctx context.Context, procs []domain.
 		s.path = pathKernel
 	}
 	s.others.observe(out, isOther, rows != nil)
+	if needPS && rows == nil {
+		// ps failed: ask again on the next sample, not at the next refresh.
+		s.others.sincePS = othersRefresh
+	}
 	return out, nil
 }
 

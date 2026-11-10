@@ -430,8 +430,12 @@ func TestScan(t *testing.T) {
 	c := NewCollector(ts("2026-10-15T00:00:00Z"))
 	sources := []Source{
 		{ClaudeCode, filepath.Join(dir, "claude", "projects")},
-		{Codex, filepath.Join(dir, "codex", "sessions")},
+		// A source directory that is a symbolic link is followed.
+		{Codex, filepath.Join(dir, "link")},
 		{Codex, filepath.Join(dir, "missing")},
+	}
+	if err := os.Symlink(filepath.Join(dir, "codex", "sessions"), filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
 	}
 	if err := Scan(context.Background(), sources, c); err != nil {
 		t.Fatal(err)

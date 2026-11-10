@@ -48,7 +48,13 @@ func Sources(getenv func(string) string, home string) []Source {
 func Scan(ctx context.Context, sources []Source, c *Collector) error {
 	r := bufio.NewReaderSize(nil, maxLine)
 	for _, src := range sources {
-		err := filepath.WalkDir(src.Dir, func(path string, d fs.DirEntry, err error) error {
+		// WalkDir does not follow a root that is a symbolic link, as a
+		// dotfiles manager or a moved config directory makes it.
+		root := src.Dir
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			root = resolved
+		}
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if cerr := ctx.Err(); cerr != nil {
 				return cerr
 			}
