@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/cfcromn/Throt/internal/domain"
+	"github.com/cfcromn/Throt/internal/process"
 	"github.com/cfcromn/Throt/internal/scheduler"
 )
 
@@ -92,7 +93,8 @@ func assess(st StatusResult, agent string, inLine bool) Verdict {
 			agentReserved++
 		}
 	}
-	busy, agentBusy := running+reserved, agentRunning+agentReserved
+	vms := len(vmSlots(st.VMs))
+	busy, agentBusy := running+reserved+vms, agentRunning+agentReserved
 	mode := st.Scheduler.Mode
 	if mode == "" {
 		mode = scheduler.ModeOff
@@ -131,6 +133,9 @@ func assess(st StatusResult, agent string, inLine bool) Verdict {
 		if reserved > 0 {
 			c.Reason = fmt.Sprintf("all heavy slots are in use (%d running, %d reserved, limit %d)", running, reserved, st.Scheduler.HeavyLimit)
 		}
+		if vms > 0 {
+			c.Reason += "; one taken by a busy VM"
+		}
 		if mode == scheduler.ModeEnforce {
 			c.Suggestion = "a new heavy job would be queued (paused) by throtd until a slot frees; wait for a running heavy job to finish or run a lighter task"
 		} else {
@@ -161,6 +166,20 @@ func assess(st StatusResult, agent string, inLine bool) Verdict {
 		c.Suggestion += fmt.Sprintf(" (note: agent %q is not currently detected; see throt_status for labels)", agent)
 	}
 	return c
+}
+
+// vmSlots returns one unattributed slot owner ("") while any VM is busy,
+// as the scheduler counts reserved slots: a VM running Docker's containers
+// competes for the same cores, though Throt never touches it. All VMs
+// together take one slot, so a long-running busy container cannot hold
+// every slot.
+func vmSlots(vms []process.VMView) []string {
+	for _, v := range vms {
+		if v.Busy() {
+			return []string{""}
+		}
+	}
+	return nil
 }
 
 func hasAgent(st StatusResult, label string) bool {

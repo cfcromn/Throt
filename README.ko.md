@@ -270,7 +270,7 @@ mkdir -p ~/.gradle
 printf '\norg.gradle.daemon=false\nkotlin.compiler.execution.strategy=in-process\n' >> ~/.gradle/gradle.properties
 ```
 
-그리고 `throtd`를 `scheduler.mode` `enforce`와 작은 고정 한도로 실행한다. 예를 들면 `"heavy_limit": 3, "adaptive": false, "per_agent_limit": 1`이다. 메모리를 지키는 건 빌드를 시작 전에 붙잡아 두는 쪽이다. 아직 아무것도 할당하지 않았기 때문이다. 이미 시작한 빌드는 일시 정지해도 메모리를 전부 쥐고 있다. Gradle은 보통 빌드를 부모가 `launchd`나 `init`인 분리된 데몬에 넘기므로, Throt는 그 빌드가 어느 에이전트 것인지 알 수 없어 대기열에 넣지 못한다. `org.gradle.daemon=false`로 두면 빌드가 에이전트 아래에서 돈다(`throt doctor`가 바쁜 미귀속 `java`를 짚어 준다). Kotlin Gradle 플러그인은 그와 상관없이 자체 컴파일러 데몬을 띄우는데, `kotlin.compiler.execution.strategy=in-process`로 두면 컴파일러가 빌드 안에서 돈다. 컨테이너는 Docker VM 안에서 돌아 Throt에는 프로세스가 아예 보이지 않으니, 컨테이너를 띄우는 `./gradlew test`를 막는 것이 유일한 방법이다.
+그리고 `throtd`를 `scheduler.mode` `enforce`와 작은 고정 한도로 실행한다. 예를 들면 `"heavy_limit": 3, "adaptive": false, "per_agent_limit": 1`이다. 메모리를 지키는 건 빌드를 시작 전에 붙잡아 두는 쪽이다. 아직 아무것도 할당하지 않았기 때문이다. 이미 시작한 빌드는 일시 정지해도 메모리를 전부 쥐고 있다. Gradle은 보통 빌드를 부모가 `launchd`나 `init`인 분리된 데몬에 넘기므로, Throt는 그 빌드가 어느 에이전트 것인지 알 수 없어 대기열에 넣지 못한다. `org.gradle.daemon=false`로 두면 빌드가 에이전트 아래에서 돈다(`throt doctor`가 바쁜 미귀속 `java`를 짚어 준다). Kotlin Gradle 플러그인은 그와 상관없이 자체 컴파일러 데몬을 띄우는데, `kotlin.compiler.execution.strategy=in-process`로 두면 컴파일러가 빌드 안에서 돈다. 컨테이너는 Docker VM 안에서 돌아 Throt에는 그 프로세스가 보이지 않으니, 컨테이너를 띄우는 `./gradlew test`를 막는 것이 유일한 방법이다. 다만 VM 프로세스 자체(Docker Desktop, Colima, OrbStack, Podman, QEMU, Parallels, VMware, VirtualBox)는 보인다. VM이 코어 하나 이상을 쓰는 동안에는 무거운 작업 슬롯 하나를 차지한 것으로 세므로, 에이전트 빌드가 바쁜 컨테이너에 자리를 양보한다. Throt는 VM을 멈추거나 우선순위를 바꾸지 않는다. `throt status`에 VM이 나오고, TUI는 바쁜 VM을 표시한다.
 
 ### 시작 전에 기다리기: `throt run`
 

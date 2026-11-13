@@ -165,3 +165,20 @@ func TestPrintStatusIdle(t *testing.T) {
 		t.Errorf("output lacks the idle state:\n%s", buf.String())
 	}
 }
+
+func TestPrintStatusVMs(t *testing.T) {
+	st := app.StatusResult{Host: &domain.HostSample{MemTotal: 1 << 30}, VMs: []process.VMView{
+		{Key: domain.ProcessKey{PID: 700}, Name: "com.apple.Virtualization.VirtualMachine", CPU: 3.2, RSS: 4 << 30},
+		{Key: domain.ProcessKey{PID: 701}, Name: "qemu-system-aarch64", CPU: 0.1, RSS: 512 << 20},
+	}}
+	var buf bytes.Buffer
+	printStatus(&buf, st)
+	for _, want := range []string{
+		"VM        com.apple.Virtualization.VirtualMachine pid 700, 320% CPU, 4.0 GiB (busy, takes a heavy slot)",
+		"VM        qemu-system-aarch64 pid 701, 10% CPU, 512 MiB (idle)",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, buf.String())
+		}
+	}
+}

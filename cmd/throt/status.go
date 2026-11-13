@@ -115,6 +115,13 @@ func printStatus(w io.Writer, st app.StatusResult) {
 		}
 		fmt.Fprintf(w, "RESERVED  pid %d (%s) since %s\n", l.Process.PID, agent, l.Granted.Format(time.TimeOnly))
 	}
+	for _, v := range st.VMs {
+		note := "idle"
+		if v.Busy() {
+			note = "busy, takes a heavy slot"
+		}
+		fmt.Fprintf(w, "VM        %s pid %d, %.0f%% CPU, %s (%s)\n", v.Name, v.Key.PID, v.CPU*100, gib(v.RSS), note)
+	}
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "\nAGENTS\nAGENT\tPID\tCPU\tMEM\tCHILDREN")

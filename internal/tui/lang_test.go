@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/cfcromn/Throt/internal/process"
 )
 
 // TestKorean checks that the Korean UI fits every layout (its text is two
@@ -25,5 +27,17 @@ func TestKorean(t *testing.T) {
 	SetLanguage("")
 	if out := view(m); strings.Contains(out, "에이전트") || !strings.Contains(out, "AGENTS") {
 		t.Errorf("English view after SetLanguage(\"\"):\n%s", out)
+	}
+}
+
+func TestVMNote(t *testing.T) {
+	m := Model{}
+	m.status.VMs = []process.VMView{{Name: "qemu-system-aarch64", CPU: 0.2}}
+	if n := m.vmNote(); n != "" {
+		t.Errorf("idle VM noted: %q", n)
+	}
+	m.status.VMs = []process.VMView{{Name: "com.apple.Virtualization.VirtualMachine", CPU: 2.5}}
+	if n := m.vmNote(); !strings.Contains(n, "com.apple.Virtualization.VirtualMachine busy") || !strings.Contains(n, "1 slot") {
+		t.Errorf("note = %q", n)
 	}
 }
