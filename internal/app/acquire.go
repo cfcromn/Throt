@@ -82,7 +82,12 @@ func (d *Daemon) acquire(ctx context.Context, raw json.RawMessage) (any, error) 
 	chain := d.ancestry(ctx, self.PPID)
 	paused := d.ctl.Paused()
 	now := time.Now()
-	res, l := d.admit(self.Key(), chain, paused, now, p.Overdue)
+	res, l, w := d.admit(self.Key(), chain, paused, now, p.Overdue)
+	if w.d > 0 {
+		d.statsMu.Lock()
+		d.acct.Waited(now, w.owner, w.attributed, w.d)
+		d.statsMu.Unlock()
+	}
 	if l.ID != "" {
 		d.emit(domain.EventLeaseGranted, fmt.Sprintf("lease %s granted to pid %d (%s): %s", l.ID, p.PID, ownerLabel(l.Agent), res.Verdict.Reason),
 			map[string]string{"lease_id": l.ID, "pid": strconv.Itoa(p.PID), "agent": l.Agent})
@@ -126,16 +131,19 @@ func (d *Daemon) caller(ctx context.Context, pid int) (self domain.ProcessSample
 
 // admit decides an acquire by key, whose ancestors are chain, and grants
 // the lease it returns. The check and the grant happen under d.mu. A zero
-// Lease means none was granted now, also when key already holds one.
-func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.PausedWorkload, now time.Time, overdue bool) (AcquireResult, Lease) {
+// Lease means none was granted now, also when key already holds one. The
+// lease wait returned is how long a granted caller waited in line, for the
+// stats.
+func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.PausedWorkload, now time.Time, overdue bool) (AcquireResult, Lease, leaseWait) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if l, ok := d.leases.find(key); ok {
-		return AcquireResult{Granted: true, Reason: "already holds a lease", LeaseID: l.ID}, Lease{}
+		return AcquireResult{Granted: true, Reason: "already holds a lease", LeaseID: l.ID}, Lease{}, leaseWait{}
 	}
 	st := d.statusWithLeases()
 	st.Paused = paused
-	agent := nearestAgent(chain, st.Agents)
+	view, attributed := nearestAgentView(chain, st.Agents)
+	agent := view.Agent
 	v := assess(st, agent, true)
 	res := AcquireResult{Reason: v.Reason, Verdict: v}
 	var l Lease
@@ -157,12 +165,21 @@ func (d *Daemon) admit(key domain.ProcessKey, chain []int, paused []control.Paus
 		l = d.leases.grant(key, agent, now)
 		res.Granted, res.LeaseID = true, l.ID
 	}
+	var w leaseWait
 	if res.Granted {
+		w = leaseWait{owner: view.Key, attributed: attributed, d: now.Sub(d.waiting.since(key, now))}
 		d.waiting.remove(key)
 	} else {
 		d.waiting.touch(key, agent, now)
 	}
-	return res, l
+	return res, l, w
+}
+
+// leaseWait is one finished wait in the lease line.
+type leaseWait struct {
+	owner      domain.ProcessKey
+	attributed bool
+	d          time.Duration
 }
 
 // aheadInLine counts the entries ahead of me, a lease waiter or a

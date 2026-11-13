@@ -42,6 +42,9 @@ type Lease struct {
 	// Agent is the caller's agent instance label, or "" when unattributed.
 	Agent   string    `json:"agent,omitempty"`
 	Granted time.Time `json:"granted"`
+	// waited is how long the reservation this lease was granted for
+	// waited in line, for the stats; zero otherwise.
+	waited time.Duration
 }
 
 // leaseEnd is a released lease and why it ended.

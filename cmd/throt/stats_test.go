@@ -25,16 +25,18 @@ func TestPrintStats(t *testing.T) {
 		Total:        row("", 0, 3786.4, 3<<30+900<<20, 11, 190, 2*time.Hour),
 		Unattributed: row("", 0, 12, 200<<20, 1, 0, time.Minute),
 	}
+	r.Agents[0].WaitedSeconds, r.Agents[0].LongestWaitSeconds = 95, 40
+	r.Total.WaitedSeconds, r.Total.LongestWaitSeconds = 95, 40
 	var b strings.Builder
 	printStats(&b, r, since.Add(3*time.Hour))
 	got := b.String()
 	for _, want := range []string{
 		"SINCE 2026-10-28 09:00:00 (3h0m0s ago",
-		"AGENT         PID   CPU-TIME  PEAK MEM  HEAVY JOBS  TIME QUEUED  ACTIVE FOR",
-		"codex-1       4400  1h2m5s    3.0 GiB   9           3m10s        2h0m0s",
-		"claude-1      4312  1m1s      900 MiB   2           0s           30m0s",
-		"all agents    -     1h3m6s    3.9 GiB   11          3m10s        2h0m0s",
-		"unattributed  -     12s       200 MiB   1           0s           1m0s",
+		"AGENT         PID   CPU-TIME  PEAK MEM  HEAVY JOBS  TIME QUEUED  WAITED  LONGEST WAIT  ACTIVE FOR",
+		"codex-1       4400  1h2m5s    3.0 GiB   9           3m10s        1m35s   40s           2h0m0s",
+		"claude-1      4312  1m1s      900 MiB   2           0s           0s      0s            30m0s",
+		"all agents    -     1h3m6s    3.9 GiB   11          3m10s        1m35s   40s           2h0m0s",
+		"unattributed  -     12s       200 MiB   1           0s           0s      0s            1m0s",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)

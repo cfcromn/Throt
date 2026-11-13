@@ -79,6 +79,10 @@ func TestAcquireWaitsInLine(t *testing.T) {
 	if len(d.waiting.w) != 0 {
 		t.Fatalf("granted caller still waiting: %+v", d.waiting.w)
 	}
+	// The wait in line is charged to the stats (unattributed: no agent here).
+	if u := d.acct.Report().Unattributed; u.WaitedSeconds <= 0 || u.LongestWaitSeconds != u.WaitedSeconds {
+		t.Fatalf("wait not charged: %+v", u)
+	}
 	// With the scheduler off there is no line.
 	d, _ = leaseDaemon(t, st)
 	d.status.Scheduler.Mode = scheduler.ModeOff

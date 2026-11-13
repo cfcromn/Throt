@@ -6,6 +6,9 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Added
+- `throt status --stats` shows `WAITED` and `LONGEST WAIT` per agent: time its commands spent in line for a heavy slot before they started (`throt run`, the Claude Code hook, `throt wait`), apart from `TIME QUEUED`, time paused after starting. The `stats` result gains `waited_seconds` and `longest_wait_seconds`.
+
 ## [1.0.0-rc.2] - 2026-11-10
 
 ### Added

@@ -52,7 +52,8 @@ func parseStatsArgs(args []string, stdout, stderr io.Writer) (asJSON bool, err e
 	return asJSON, nil
 }
 
-// printStats prints per-agent usage, most CPU time first (the daemon sorts
+// printStats prints per-agent usage (TIME QUEUED is time paused by the
+// scheduler, WAITED time spent in line before starting), most CPU time first (the daemon sorts
 // the rows), followed by the all-agents and unattributed totals.
 func printStats(w io.Writer, r app.StatsResult, now time.Time) {
 	if r.Since.IsZero() {
@@ -62,7 +63,7 @@ func printStats(w io.Writer, r app.StatsResult, now time.Time) {
 	fmt.Fprintf(w, "SINCE %s (%s ago, in memory; resets when throtd restarts)\n\n",
 		r.Since.Local().Format("2006-01-02 15:04:05"), now.Sub(r.Since).Round(time.Second))
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "AGENT\tPID\tCPU-TIME\tPEAK MEM\tHEAVY JOBS\tTIME QUEUED\tACTIVE FOR")
+	fmt.Fprintln(tw, "AGENT\tPID\tCPU-TIME\tPEAK MEM\tHEAVY JOBS\tTIME QUEUED\tWAITED\tLONGEST WAIT\tACTIVE FOR")
 	if len(r.Agents) == 0 {
 		fmt.Fprintln(tw, "(no agents seen)")
 	}
@@ -75,8 +76,8 @@ func printStats(w io.Writer, r app.StatsResult, now time.Time) {
 }
 
 func statsRow(w io.Writer, name, pid string, r stats.Row) {
-	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", name, pid, seconds(r.CPUSeconds), gib(r.PeakRSS),
-		r.HeavyStarted, seconds(r.QueuedSeconds), r.ActiveFor().Round(time.Second))
+	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", name, pid, seconds(r.CPUSeconds), gib(r.PeakRSS),
+		r.HeavyStarted, seconds(r.QueuedSeconds), seconds(r.WaitedSeconds), seconds(r.LongestWaitSeconds), r.ActiveFor().Round(time.Second))
 }
 
 func seconds(s float64) string {

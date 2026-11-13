@@ -193,6 +193,7 @@ func (d *Daemon) reserveFor(chain []int, paused []control.PausedWorkload, now ti
 			before = agentHeavy(st, a.Key.PID)
 		}
 		l := d.leases.grantAgent(a.Key, a.Agent, now, !wait, before)
+		l.waited = now.Sub(d.reserved.since(a.Key, now))
 		d.reserved.remove(a.Key)
 		res.Granted, res.LeaseID = true, l.ID
 		return res, l
@@ -226,7 +227,9 @@ func (d *Daemon) grantReservations(paused []control.PausedWorkload, now time.Tim
 		if st.Scheduler.Mode != scheduler.ModeOff && d.aheadInLine(r.waiter(), st, now) > 0 {
 			continue
 		}
-		granted = append(granted, d.leases.grantAgent(r.agent, r.owner, now, false, nil))
+		l := d.leases.grantAgent(r.agent, r.owner, now, false, nil)
+		l.waited = now.Sub(r.since)
+		granted = append(granted, l)
 		d.reserved.remove(r.agent)
 	}
 	return granted
@@ -244,8 +247,14 @@ func agentHeavy(st StatusResult, agent int) []domain.ProcessKey {
 	return out
 }
 
-// emitAgentLease emits lease_granted for an agent lease.
+// emitAgentLease emits lease_granted for an agent lease and charges the
+// agent's wait for it to the stats.
 func (d *Daemon) emitAgentLease(l Lease, reason string) {
+	if l.waited > 0 {
+		d.statsMu.Lock()
+		d.acct.Waited(l.Granted, l.Process, true, l.waited)
+		d.statsMu.Unlock()
+	}
 	d.emit(domain.EventLeaseGranted, fmt.Sprintf("lease %s granted to agent pid %d (%s) for its reservation: %s", l.ID, l.Process.PID, ownerLabel(l.Agent), reason),
 		map[string]string{"lease_id": l.ID, "pid": strconv.Itoa(l.Process.PID), "agent": l.Agent})
 }
