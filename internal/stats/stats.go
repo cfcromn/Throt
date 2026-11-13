@@ -33,9 +33,14 @@ type Row struct {
 	HeavyStarted int `json:"heavy_started"`
 	// QueuedSeconds is time its heavy workloads spent paused by the
 	// scheduler (queued or preempted). Manual pauses are not counted.
-	QueuedSeconds float64   `json:"queued_seconds"`
-	FirstSeen     time.Time `json:"first_seen"`
-	LastSeen      time.Time `json:"last_seen"`
+	QueuedSeconds float64 `json:"queued_seconds"`
+	// WaitedSeconds is time its commands spent waiting for a lease
+	// (throt run, the hook) before they started; LongestWaitSeconds is the
+	// longest one such wait.
+	WaitedSeconds      float64   `json:"waited_seconds"`
+	LongestWaitSeconds float64   `json:"longest_wait_seconds"`
+	FirstSeen          time.Time `json:"first_seen"`
+	LastSeen           time.Time `json:"last_seen"`
 }
 
 // ActiveFor is how long the row was observed.
@@ -181,6 +186,26 @@ func (a *Accountant) Observe(now time.Time, snap process.Snapshot, queued []doma
 	}
 	a.heavy = heavy
 	a.evict()
+}
+
+// Waited charges a lease wait of d that ended at now to owner's row, or
+// to the unattributed bucket when attributed is false or owner has no row.
+func (a *Accountant) Waited(now time.Time, owner domain.ProcessKey, attributed bool, d time.Duration) {
+	s := max(d.Seconds(), 0)
+	if s == 0 {
+		return
+	}
+	add := func(r *Row) {
+		r.WaitedSeconds += s
+		r.LongestWaitSeconds = max(r.LongestWaitSeconds, s)
+	}
+	if r := a.agents[owner]; attributed && r != nil {
+		add(r)
+		add(&a.total)
+		return
+	}
+	add(&a.unattr)
+	a.unattr.seen(now)
 }
 
 // evict drops the least recently seen instances beyond MaxAgents. Among

@@ -76,3 +76,25 @@ func TestUnattributedQueueTime(t *testing.T) {
 		t.Errorf("unattributed %v, total %v", rep.Unattributed.QueuedSeconds, rep.Total.QueuedSeconds)
 	}
 }
+
+// TestWaited checks that lease waits go to the owner's row and the total,
+// or to unattributed when the owner is unknown, keeping the longest.
+func TestWaited(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	c1 := domain.ProcessKey{PID: 10, Start: t0}
+	a := New()
+	a.Observe(t0, process.Snapshot{Agents: []process.AgentView{{Agent: "claude-1", Key: c1}}}, nil)
+	a.Waited(t0, c1, true, 30*time.Second)
+	a.Waited(t0, c1, true, 10*time.Second)
+	a.Waited(t0, c1, false, 5*time.Second)
+	a.Waited(t0, domain.ProcessKey{PID: 99}, true, 7*time.Second)
+	a.Waited(t0, c1, true, 0)
+	rep := a.Report()
+	r := find(t, rep, c1)
+	if r.WaitedSeconds != 40 || r.LongestWaitSeconds != 30 || rep.Total.WaitedSeconds != 40 || rep.Total.LongestWaitSeconds != 30 {
+		t.Errorf("agent %+v, total %+v", r, rep.Total)
+	}
+	if u := rep.Unattributed; u.WaitedSeconds != 12 || u.LongestWaitSeconds != 7 {
+		t.Errorf("unattributed %+v", u)
+	}
+}

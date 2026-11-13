@@ -169,7 +169,7 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 | `throt`, `throt top` | Terminal UI. Quitting it never affects `throtd`. `throt -ko` shows it in Korean. |
 | `throt status [--json]` | Pressure and its reason, host resources, agents, heavy workloads, scheduler state, stopped processes. |
 | `throt status --idle` | Every agent session by memory with its age, CPU, and whether it looks idle (under 1% CPU, or 5% for a session over an hour old, and no heavy workload over three samples). Report only: it never stops a process. |
-| `throt status --stats [--json]` | Per agent: CPU time, peak memory, heavy jobs and time queued since `throtd` started. |
+| `throt status --stats [--json]` | Per agent: CPU time, peak memory, heavy jobs, time queued and time waited in line since `throtd` started. |
 | `throt status PID` | Why a heavy workload is running, paused or queued. |
 | `throt usage [--by session\|project\|hour] [--since D] [--json]` | Tokens and active time per agent session, project or hour, read from the Claude Code and Codex session logs. Works without `throtd`. See [`throt usage`](#tokens-and-time-throt-usage). |
 | `throt events [-f] [-n N]` | Recent daemon events as JSON lines (default 50); `-f` keeps printing new ones. |

@@ -247,6 +247,14 @@ func TestReserveFIFOWithQueuedWork(t *testing.T) {
 	if len(g) != 1 || g[0].Process != agentKey {
 		t.Fatalf("granted %+v, want only the oldest reservation", g)
 	}
+	// It waited 5s, charged to the stats once the grant is announced.
+	if g[0].waited != 5*time.Second {
+		t.Fatalf("waited %v, want 5s", g[0].waited)
+	}
+	d.emitAgentLease(g[0], "test")
+	if u := d.acct.Report().Unattributed; u.WaitedSeconds != 5 {
+		t.Fatalf("stats after grant: %+v", u)
+	}
 	if len(d.reserved.r) != 1 || d.reserved.r[0].owner != "codex-1" {
 		t.Fatalf("reservations = %+v", d.reserved.r)
 	}

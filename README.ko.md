@@ -169,7 +169,7 @@ WantedBy=default.target
 | `throt`, `throt top` | 터미널 UI. 종료해도 `throtd`에는 영향이 없다. `throt -ko`는 한국어로 보여 준다. |
 | `throt status [--json]` | 압력과 그 이유, 호스트 리소스, 에이전트, 무거운 작업, 스케줄러 상태, 정지된 프로세스. |
 | `throt status --idle` | 모든 에이전트 세션을 메모리 순으로 나이, CPU, 유휴 여부(세 번의 샘플 동안 CPU 1% 미만, 1시간 넘은 세션은 5% 미만이고 무거운 작업이 없음)와 함께 보여 준다. 보고만 하며 프로세스를 멈추지 않는다. |
-| `throt status --stats [--json]` | 에이전트별 CPU 시간, 최대 메모리, 무거운 작업 수, `throtd` 시작 이후 대기한 시간. |
+| `throt status --stats [--json]` | 에이전트별 CPU 시간, 최대 메모리, 무거운 작업 수, `throtd` 시작 이후 멈춰 있던 시간과 시작 전 줄 서서 기다린 시간. |
 | `throt status PID` | 무거운 작업이 실행 중이거나, 일시 정지되었거나, 대기 중인 이유. |
 | `throt usage [--by session\|project\|hour] [--since D] [--json]` | 에이전트 세션·프로젝트·시간대별 토큰과 실제 작업 시간. Claude Code와 Codex 세션 기록에서 읽는다. `throtd` 없이도 동작한다. [`throt usage`](#토큰과-시간-throt-usage) 참고. |
 | `throt events [-f] [-n N]` | 최근 데몬 이벤트를 JSON lines로 출력한다(기본 50개). `-f`를 주면 새 이벤트를 계속 출력한다. |

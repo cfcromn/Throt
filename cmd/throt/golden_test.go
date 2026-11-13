@@ -1264,10 +1264,10 @@ Restart running Codex sessions to use it.
 `},
 		"stats": {code: 0, stdout: `SINCE 2026-10-28 14:00:00 (AGE ago, in memory; resets when throtd restarts)
 
-AGENT         PID   CPU-TIME  PEAK MEM  HEAVY JOBS  TIME QUEUED  ACTIVE FOR
-claude-1      1000  2m6s      900 MiB   3           12s          0s
-all agents    -     2m6s      900 MiB   3           12s          0s
-unattributed  -     4s        0 MiB     0           0s           0s
+AGENT         PID   CPU-TIME  PEAK MEM  HEAVY JOBS  TIME QUEUED  WAITED  LONGEST WAIT  ACTIVE FOR
+claude-1      1000  2m6s      900 MiB   3           12s          0s      0s            0s
+all agents    -     2m6s      900 MiB   3           12s          0s      0s            0s
+unattributed  -     4s        0 MiB     0           0s           0s      0s            0s
 `, stderr: ""},
 		"stats --json": {code: 0, stdout: `{
   "since": "2026-10-28T14:00:00Z",
@@ -1282,6 +1282,8 @@ unattributed  -     4s        0 MiB     0           0s           0s
       "peak_rss": 943718400,
       "heavy_started": 3,
       "queued_seconds": 12,
+      "waited_seconds": 0,
+      "longest_wait_seconds": 0,
       "first_seen": "0001-01-01T00:00:00Z",
       "last_seen": "0001-01-01T00:00:00Z"
     }
@@ -1296,6 +1298,8 @@ unattributed  -     4s        0 MiB     0           0s           0s
     "peak_rss": 943718400,
     "heavy_started": 3,
     "queued_seconds": 12,
+    "waited_seconds": 0,
+    "longest_wait_seconds": 0,
     "first_seen": "0001-01-01T00:00:00Z",
     "last_seen": "0001-01-01T00:00:00Z"
   },
@@ -1308,6 +1312,8 @@ unattributed  -     4s        0 MiB     0           0s           0s
     "peak_rss": 0,
     "heavy_started": 0,
     "queued_seconds": 0,
+    "waited_seconds": 0,
+    "longest_wait_seconds": 0,
     "first_seen": "0001-01-01T00:00:00Z",
     "last_seen": "0001-01-01T00:00:00Z"
   }
@@ -1332,6 +1338,8 @@ unattributed  -     4s        0 MiB     0           0s           0s
       "peak_rss": 943718400,
       "heavy_started": 3,
       "queued_seconds": 12,
+      "waited_seconds": 0,
+      "longest_wait_seconds": 0,
       "first_seen": "0001-01-01T00:00:00Z",
       "last_seen": "0001-01-01T00:00:00Z"
     }
@@ -1346,6 +1354,8 @@ unattributed  -     4s        0 MiB     0           0s           0s
     "peak_rss": 943718400,
     "heavy_started": 3,
     "queued_seconds": 12,
+    "waited_seconds": 0,
+    "longest_wait_seconds": 0,
     "first_seen": "0001-01-01T00:00:00Z",
     "last_seen": "0001-01-01T00:00:00Z"
   },
@@ -1358,6 +1368,8 @@ unattributed  -     4s        0 MiB     0           0s           0s
     "peak_rss": 0,
     "heavy_started": 0,
     "queued_seconds": 0,
+    "waited_seconds": 0,
+    "longest_wait_seconds": 0,
     "first_seen": "0001-01-01T00:00:00Z",
     "last_seen": "0001-01-01T00:00:00Z"
   }
