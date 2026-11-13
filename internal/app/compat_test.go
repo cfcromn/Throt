@@ -132,7 +132,7 @@ var protocolWant = map[string]struct {
 			"scheduler.mode", "scheduler.per_agent_limit", "scheduler.queued[].pid",
 			"scheduler.queued[].start", "scheduler.start_limit", "scheduler.would_queue[].pid",
 			"scheduler.would_queue[].start", "unattributed_memory[].name", "unattributed_memory[].processes",
-			"unattributed_memory[].rss", "unattributed_rss",
+			"unattributed_memory[].rss", "unattributed_rss", "vms[].cpu", "vms[].name", "vms[].process.pid", "vms[].process.start", "vms[].rss",
 		},
 	},
 }

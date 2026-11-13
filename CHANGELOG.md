@@ -8,6 +8,7 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ### Added
 - `throt status --stats` shows `WAITED` and `LONGEST WAIT` per agent: time its commands spent in line for a heavy slot before they started (`throt run`, the Claude Code hook, `throt wait`), apart from `TIME QUEUED`, time paused after starting. The `stats` result gains `waited_seconds` and `longest_wait_seconds`.
+- VM awareness: `throtd` lists the virtual machine processes no agent owns (Apple Virtualization framework, used by Docker Desktop, Colima, Lima, UTM and Tart; Docker VMM, krunkit, vfkit, OrbStack, QEMU, Parallels, VMware Fusion, VirtualBox) in `status` as `vms`. While any uses at least one core, they together take one heavy slot, for the scheduler and for `throt run`, the hook and `throt_capacity` alike, so agent builds yield to busy containers. A VM is never paused or reprioritized. `throt status` prints a `VM` line per VM, and the TUI notes a busy one on the heavy workloads panel.
 
 ## [1.0.0-rc.2] - 2026-11-10
 

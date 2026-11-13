@@ -637,3 +637,34 @@ func TestCommandWorkloads(t *testing.T) {
 		t.Error("command using 1.2 GiB is not heavy")
 	}
 }
+
+func TestVMs(t *testing.T) {
+	g := newGraph()
+	procs := []ps{
+		{pid: 10, ppid: 1, name: "claude"},
+		{pid: 11, ppid: 10, name: "qemu-system-aarch64", cpu: 9}, // owned: a workload, not listed
+		{pid: 20, ppid: 1, name: "com.apple.Virtualization.VirtualMachine", cpu: 1, rss: 4000},
+		{pid: 21, ppid: 1, name: "qemu-system-x86", cpu: 3}, // Linux truncates comm to 15
+		{pid: 22, ppid: 1, name: "node", cpu: 5},
+	}
+	g.Update(epoch, samples(procs))
+	for i := range procs {
+		procs[i].cpu *= 2
+	}
+	g.Update(epoch.Add(time.Second), samples(procs))
+	s := g.Snapshot()
+	want := []VMView{
+		{Key: key(21, 0), Name: "qemu-system-x86", CPU: 3},
+		{Key: key(20, 0), Name: "com.apple.Virtualization.VirtualMachine", CPU: 1, RSS: 4000 << 20},
+	}
+	if !reflect.DeepEqual(s.VMs, want) {
+		t.Fatalf("vms = %+v, want %+v", s.VMs, want)
+	}
+	if !s.VMs[1].Busy() || (VMView{CPU: 0.5}).Busy() {
+		t.Error("busy threshold")
+	}
+	s.VMs[0].Name = "mutated"
+	if g.Snapshot().VMs[0].Name != "qemu-system-x86" {
+		t.Error("snapshot shares the vm list")
+	}
+}

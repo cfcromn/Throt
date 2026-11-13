@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cfcromn/Throt/internal/agent"
@@ -79,6 +80,34 @@ type NameUsage struct {
 	RSS       uint64 `json:"rss"`
 }
 
+// VMView is a virtual machine process no agent owns, such as the one that
+// runs Docker Desktop's Linux VM. Throt never signals or reprioritizes it;
+// while any is busy (see BusyVMCPU), throtd counts one heavy slot in use.
+type VMView struct {
+	Key  domain.ProcessKey `json:"process"`
+	Name string            `json:"name"`
+	CPU  float64           `json:"cpu"`
+	RSS  uint64            `json:"rss"`
+}
+
+// BusyVMCPU is the CPU, in cores, above which a VM counts as busy.
+const BusyVMCPU = 1.0
+
+// Busy reports whether v uses at least BusyVMCPU cores.
+func (v VMView) Busy() bool { return v.CPU >= BusyVMCPU }
+
+// vmNames are the executables that run a whole VM: Apple's Virtualization
+// framework (Docker Desktop, Colima, Lima, UTM, Tart), Docker VMM, krunkit
+// and vfkit (Podman), OrbStack, Parallels, VMware Fusion and VirtualBox.
+// QEMU is matched by prefix.
+var vmNames = map[string]bool{
+	"com.apple.Virtualization.VirtualMachine": true,
+	"com.docker.krun":                         true, "krunkit": true, "vfkit": true,
+	"OrbStack Helper": true, "prl_vm_app": true, "vmware-vmx": true, "VBoxHeadless": true,
+}
+
+func isVM(name string) bool { return vmNames[name] || strings.HasPrefix(name, "qemu-system-") }
+
 // Snapshot is an immutable view of the graph after the latest Update. It
 // shares no memory with the graph and is safe to hand to other goroutines.
 type Snapshot struct {
@@ -95,6 +124,9 @@ type Snapshot struct {
 	// the agents they show where the host's memory goes.
 	Unattributed    []NameUsage `json:"unattributed,omitempty"`
 	UnattributedRSS uint64      `json:"unattributed_rss,omitempty"`
+	// VMs lists the virtual machine processes no agent owns, by CPU
+	// descending then PID.
+	VMs []VMView `json:"vms,omitempty"`
 	// TotalCPU is the busy fraction of all CPUs across observed processes
 	// since the previous Update, 0..1. Valid only when HasCPU is true.
 	TotalCPU float64 `json:"total_cpu"`
@@ -639,7 +671,13 @@ func (g *Graph) build(order []*proc, busy, dt float64, rates bool) Snapshot {
 		}
 		snap.Unattributed[i].Processes++
 		snap.Unattributed[i].RSS += p.s.RSS
+		if isVM(p.s.Name) {
+			snap.VMs = append(snap.VMs, VMView{Key: p.s.Key(), Name: p.s.Name, CPU: p.cpu, RSS: p.s.RSS})
+		}
 	}
+	slices.SortFunc(snap.VMs, func(a, b VMView) int {
+		return cmp.Or(cmp.Compare(b.CPU, a.CPU), cmp.Compare(a.Key.PID, b.Key.PID))
+	})
 	slices.SortFunc(snap.Unattributed, func(a, b NameUsage) int {
 		return cmp.Or(cmp.Compare(b.RSS, a.RSS), cmp.Compare(a.Name, b.Name))
 	})
@@ -678,6 +716,7 @@ func (g *Graph) Snapshot() Snapshot {
 	s.Heavy = slices.Clone(s.Heavy)
 	s.Stopped = slices.Clone(s.Stopped)
 	s.Unattributed = slices.Clone(s.Unattributed)
+	s.VMs = slices.Clone(s.VMs)
 	return s
 }
 

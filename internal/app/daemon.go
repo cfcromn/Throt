@@ -46,6 +46,10 @@ type StatusResult struct {
 	// no arguments, no paths.
 	UnattributedMemory []process.NameUsage `json:"unattributed_memory,omitempty"`
 	UnattributedRSS    uint64              `json:"unattributed_rss,omitempty"`
+	// VMs lists virtual machine processes no agent owns (Docker Desktop's
+	// VM, QEMU, ...). Throt never acts on them; while any is busy
+	// (process.VMView.Busy) they take one heavy slot.
+	VMs []process.VMView `json:"vms,omitempty"`
 }
 
 // StatsResult is returned by the "stats" method: per-agent usage since the

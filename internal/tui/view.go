@@ -737,6 +737,17 @@ func moreAgents(rest []process.AgentView) string {
 		len(rest), math.Ceil(maxCPU*100), formatBytes(maxRSS), cores(sumCPU), formatBytes(sumRSS))
 }
 
+// vmNote names the busiest VM while one is busy: throtd counts it as a
+// heavy slot in use though it is not a workload.
+func (m Model) vmNote() string {
+	for _, v := range m.status.VMs { // busiest first
+		if v.Busy() {
+			return fmt.Sprintf(tr("  VM %s busy, %s CPU · 1 slot"), v.Name, cores(v.CPU))
+		}
+	}
+	return ""
+}
+
 func (m Model) heavyPane(rows, w int) panel {
 	cols := []column{
 		{title: "OWNER", min: 6},
@@ -753,7 +764,7 @@ func (m Model) heavyPane(rows, w int) panel {
 		cells[i] = []string{owner(h.Owner), fmt.Sprint(h.Key.PID), h.Name, string(h.Class), cores(h.CPU), formatBytes(h.RSS), state(h)}
 		cols[6].width = max(cols[6].width, lipgloss.Width(cells[i][6]))
 	}
-	return m.table(paneHeavy, "HEAVY WORKLOADS", "", tr("(no heavy workloads)"), cols, cells, rows, "", w)
+	return m.table(paneHeavy, "HEAVY WORKLOADS", m.vmNote(), tr("(no heavy workloads)"), cols, cells, rows, "", w)
 }
 
 // stateOf returns a lookup of each workload's scheduling state: tr("QUEUED"),
