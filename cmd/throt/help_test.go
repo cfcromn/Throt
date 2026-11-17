@@ -34,7 +34,7 @@ func TestHelpGoesToStdout(t *testing.T) {
 		{"stats -h", func(w io.Writer) error { _, err := parseStatsArgs([]string{"-h"}, w, io.Discard); return err }, "usage: throt stats"},
 		{"events -h", func(w io.Writer) error {
 			n := 50
-			_, err := parseEventsArgs([]string{"-h"}, &n, w, io.Discard)
+			_, _, err := parseEventsArgs([]string{"-h"}, &n, w, io.Discard)
 			return err
 		}, "usage: throt events"},
 		{"run -h", func(w io.Writer) error { _, err := parseRunArgs([]string{"-h"}, w, io.Discard); return err }, "Usage: throt run"},

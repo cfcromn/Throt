@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog and versions follow Semantic Versioni
 
 ## [Unreleased]
 
+### Changed
+- `throt events` prints one readable line per event on a terminal (time, a short colored tag such as `queue`, `resume`, `lease` or `exit`, then the message; the date only for events before today; `NO_COLOR` turns color off). In a pipe, or with the new `--json`, it prints JSON lines as before, so scripts are unaffected.
+- `throt usage`: Korean and other wide project names no longer push their row out of line, `FIRST` and `LAST` drop the year (it is in the `SINCE` line), and the header note is shorter.
+
 ### Added
 - `throt status --stats` shows `WAITED` and `LONGEST WAIT` per agent: time its commands spent in line for a heavy slot before they started (`throt run`, the Claude Code hook, `throt wait`), apart from `TIME QUEUED`, time paused after starting. The `stats` result gains `waited_seconds` and `longest_wait_seconds`.
 

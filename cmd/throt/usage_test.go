@@ -79,7 +79,7 @@ func TestPrintUsageEmpty(t *testing.T) {
 	since := time.Date(2026, 10, 28, 9, 0, 0, 0, time.Local)
 	rep := usage.NewCollector(since).Report(usage.BySession, time.Local)
 	printUsage(&b, rep, []usage.Source{{Agent: usage.ClaudeCode, Dir: "/h/.claude/projects"}, {Agent: usage.Codex, Dir: "/h/.codex/sessions"}})
-	want := `SINCE 2026-10-28 09:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+	want := `SINCE 2026-10-28 09:00  ·  ACTIVE sums a session's gaps under 5m  ·  tokens as logged, no cost estimate
 
 no agent sessions found in:
   /h/.claude/projects
@@ -87,5 +87,14 @@ no agent sessions found in:
 `
 	if b.String() != want {
 		t.Errorf("got\n%s\nwant\n%s", b.String(), want)
+	}
+}
+
+func TestWideCell(t *testing.T) {
+	if got := wideCell("스트레스 풀기"); got != "스트레스 풀기      " {
+		t.Errorf("wideCell = %q", got)
+	}
+	if got := wideCell("mvp-tasks"); got != "mvp-tasks" {
+		t.Errorf("ascii changed: %q", got)
 	}
 }

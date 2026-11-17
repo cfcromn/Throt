@@ -11,7 +11,9 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
+	"charm.land/lipgloss/v2"
 	"github.com/cfcromn/Throt/internal/usage"
 )
 
@@ -112,7 +114,7 @@ const usageTime = "2006-01-02 15:04"
 
 // printUsage prints the per-agent totals, then the grouped rows.
 func printUsage(w io.Writer, r usage.Report, sources []usage.Source) {
-	fmt.Fprintf(w, "SINCE %s (active: gaps under %dm between a session's log entries, summed over sessions; tokens as logged, no cost estimate)\n\n",
+	fmt.Fprintf(w, "SINCE %s  ·  ACTIVE sums a session's gaps under %dm  ·  tokens as logged, no cost estimate\n\n",
 		r.Since.Local().Format(usageTime), r.ActiveGapSeconds/60)
 	if len(r.Rows) == 0 {
 		fmt.Fprintln(w, "no agent sessions found in:")
@@ -143,11 +145,11 @@ func printUsage(w io.Writer, r usage.Report, sources []usage.Source) {
 	for _, row := range r.Rows {
 		switch r.By {
 		case usage.ByProject:
-			fmt.Fprintf(tw, "%s\t%d\t", orDash(row.Project), row.Sessions)
+			fmt.Fprintf(tw, "%s\t%d\t", wideCell(orDash(row.Project)), row.Sessions)
 		case usage.ByHour:
 			fmt.Fprintf(tw, "%s\t%d\t", row.Hour.Local().Format(usageTime), row.Sessions)
 		default:
-			fmt.Fprintf(tw, "%s\t%s\t%s\t", shortID(row.Session), row.Agent, orDash(row.Project))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t", shortID(row.Session), row.Agent, wideCell(orDash(row.Project)))
 		}
 		fmt.Fprintln(tw, usageCounts(row))
 	}
@@ -162,7 +164,16 @@ func usageCounts(row usage.Row) string {
 	return fmt.Sprintf("%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s", tokenText(row.Input), tokenText(row.Output),
 		tokenText(row.CacheWrite), tokenText(row.CacheRead), row.Messages,
 		activeText(time.Duration(row.ActiveSeconds)*time.Second),
-		row.First.Local().Format(usageTime), row.Last.Local().Format(usageTime))
+		row.First.Local().Format(usageCellTime), row.Last.Local().Format(usageCellTime))
+}
+
+// usageCellTime is FIRST and LAST: the year is in the SINCE line.
+const usageCellTime = "01-02 15:04"
+
+// wideCell pads s so tabwriter, which counts runes, aligns it by its
+// width on screen: a Korean or CJK character takes two cells.
+func wideCell(s string) string {
+	return s + strings.Repeat(" ", max(lipgloss.Width(s)-utf8.RuneCountInString(s), 0))
 }
 
 // tokenText renders a token count: exact below 10,000, then "12.3k",

@@ -57,7 +57,7 @@ func TestFollow(t *testing.T) {
 		{},                   // interrupted during this poll
 	}}
 	var out, errw strings.Builder
-	if err := follow(ctx, s.fetch, &out, &errw, time.Millisecond, 50); err != nil {
+	if err := follow(ctx, s.fetch, jsonLines(&out), &errw, time.Millisecond, 50); err != nil {
 		t.Fatal(err)
 	}
 	var got []uint64
@@ -98,12 +98,12 @@ func TestFollowErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s := &scriptedFetch{cancel: func() {}, results: []fetchResult{{err: errors.New("connect: no such file")}, {}}}
-	if err := follow(ctx, s.fetch, &strings.Builder{}, &strings.Builder{}, time.Millisecond, 50); err == nil || !strings.Contains(err.Error(), "no such file") {
+	if err := follow(ctx, s.fetch, jsonLines(&strings.Builder{}), &strings.Builder{}, time.Millisecond, 50); err == nil || !strings.Contains(err.Error(), "no such file") {
 		t.Errorf("first-call error = %v, want it returned", err)
 	}
 	// An old daemon that does not number events cannot be followed.
 	s = &scriptedFetch{cancel: func() {}, results: []fetchResult{{events: []domain.Event{{Kind: domain.EventDaemonStarted}}}, {}}}
-	if err := follow(ctx, s.fetch, &strings.Builder{}, &strings.Builder{}, time.Millisecond, 50); err == nil || !strings.Contains(err.Error(), "upgrade throtd") {
+	if err := follow(ctx, s.fetch, jsonLines(&strings.Builder{}), &strings.Builder{}, time.Millisecond, 50); err == nil || !strings.Contains(err.Error(), "upgrade throtd") {
 		t.Errorf("unnumbered events error = %v, want upgrade hint", err)
 	}
 }
@@ -126,7 +126,7 @@ func TestFollowDetectsRestartPastLastSeq(t *testing.T) {
 		{}, // interrupted during this poll
 	}}
 	var out, errw strings.Builder
-	if err := follow(ctx, s.fetch, &out, &errw, time.Millisecond, 50); err != nil {
+	if err := follow(ctx, s.fetch, jsonLines(&out), &errw, time.Millisecond, 50); err != nil {
 		t.Fatal(err)
 	}
 	if want := "[0 3 0 5]"; jsonSeqs(s.sinces) != want {
