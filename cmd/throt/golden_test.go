@@ -936,15 +936,17 @@ print a sanitized diagnostic report (safe to share)
 `, stderr: ""},
 		"events -bogus": {code: 2, stdout: "", stderr: `throt: flag provided but not defined: -bogus; see 'throt events -h'
 `},
-		"events -h": {code: 0, stdout: `usage: throt events [-f] [-n N]
+		"events -h": {code: 0, stdout: `usage: throt events [-f] [-n N] [--json]
   -f	keep printing new events until interrupted
+  -json
+    	print JSON lines even on a terminal (the default elsewhere)
   -n int
     	number of recent events to print first (default 50)
 `, stderr: ""},
 		"events -n": {code: 0, stdout: `{"seq":2,"time":"2026-10-28T14:00:02Z","kind":"scheduler_decision","attrs":{"decision":"admit","limit":"2","observed":"true","pid":"4312","pressure":"elevated","reason":"heavy_slots_exhausted","running":"1"}}
 `, stderr: ""},
 		"events down": {code: 1, stdout: "", stderr: "throt: throtd is not running (no socket at $DIR/norun/throt/throtd.sock); start it with `throtd`\n"},
-		"events extra": {code: 2, stdout: "", stderr: `throt: usage: throt events [-f] [-n N]
+		"events extra": {code: 2, stdout: "", stderr: `throt: usage: throt events [-f] [-n N] [--json]
 `},
 		"events invalid config": {code: 0, stdout: `{"seq":2,"time":"2026-10-28T14:00:02Z","kind":"scheduler_decision","attrs":{"decision":"admit","limit":"2","observed":"true","pid":"4312","pressure":"elevated","reason":"heavy_slots_exhausted","running":"1"}}
 `, stderr: `throt: config $DIR/bad.json is invalid: scheduler.mode must be off, observe, or enforce, not "sometimes"; using the default socket
@@ -1510,43 +1512,43 @@ Flags:
 `},
 		"update extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt update -h'
 `},
-		"usage": {code: 0, stdout: `SINCE 2026-10-28 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+		"usage": {code: 0, stdout: `SINCE 2026-10-28 00:00  ·  ACTIVE sums a session's gaps under 5m  ·  tokens as logged, no cost estimate
 
-AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
-claude-code  1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
-codex        1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
-total        2         29.0k  1970    20.3k        3.1M        5         5m      2026-10-28 09:58  2026-10-28 11:30
+AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST        LAST
+claude-code  1         16     1640    20.3k        3.0M        3         4m      10-28 09:58  10-28 11:30
+codex        1         29.0k  330     0            24.0k       2         1m      10-28 10:10  10-28 10:11
+total        2         29.0k  1970    20.3k        3.1M        5         5m      10-28 09:58  10-28 11:30
 
-SESSION   AGENT        PROJECT  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
-11111111  claude-code  app      16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
-01a00000  codex        tools    29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
-
-1 malformed or overlong log line(s) skipped
-`, stderr: ""},
-		"usage --by hour": {code: 0, stdout: `SINCE 2026-10-28 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
-
-AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
-claude-code  1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
-codex        1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
-total        2         29.0k  1970    20.3k        3.1M        5         5m      2026-10-28 09:58  2026-10-28 11:30
-
-HOUR              SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
-2026-10-28 09:00  1         12     350     20.0k        1.5M        1         1m      2026-10-28 09:58  2026-10-28 09:59
-2026-10-28 10:00  2         29.0k  1580    0            1.5M        3         3m      2026-10-28 10:02  2026-10-28 10:11
-2026-10-28 11:00  1         1      40      300          9000        1         0s      2026-10-28 11:30  2026-10-28 11:30
+SESSION   AGENT        PROJECT  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST        LAST
+11111111  claude-code  app      16     1640    20.3k        3.0M        3         4m      10-28 09:58  10-28 11:30
+01a00000  codex        tools    29.0k  330     0            24.0k       2         1m      10-28 10:10  10-28 10:11
 
 1 malformed or overlong log line(s) skipped
 `, stderr: ""},
-		"usage --by project": {code: 0, stdout: `SINCE 2026-10-28 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+		"usage --by hour": {code: 0, stdout: `SINCE 2026-10-28 00:00  ·  ACTIVE sums a session's gaps under 5m  ·  tokens as logged, no cost estimate
 
-AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
-claude-code  1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
-codex        1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
-total        2         29.0k  1970    20.3k        3.1M        5         5m      2026-10-28 09:58  2026-10-28 11:30
+AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST        LAST
+claude-code  1         16     1640    20.3k        3.0M        3         4m      10-28 09:58  10-28 11:30
+codex        1         29.0k  330     0            24.0k       2         1m      10-28 10:10  10-28 10:11
+total        2         29.0k  1970    20.3k        3.1M        5         5m      10-28 09:58  10-28 11:30
 
-PROJECT  SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST             LAST
-app      1         16     1640    20.3k        3.0M        3         4m      2026-10-28 09:58  2026-10-28 11:30
-tools    1         29.0k  330     0            24.0k       2         1m      2026-10-28 10:10  2026-10-28 10:11
+HOUR              SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST        LAST
+2026-10-28 09:00  1         12     350     20.0k        1.5M        1         1m      10-28 09:58  10-28 09:59
+2026-10-28 10:00  2         29.0k  1580    0            1.5M        3         3m      10-28 10:02  10-28 10:11
+2026-10-28 11:00  1         1      40      300          9000        1         0s      10-28 11:30  10-28 11:30
+
+1 malformed or overlong log line(s) skipped
+`, stderr: ""},
+		"usage --by project": {code: 0, stdout: `SINCE 2026-10-28 00:00  ·  ACTIVE sums a session's gaps under 5m  ·  tokens as logged, no cost estimate
+
+AGENT        SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST        LAST
+claude-code  1         16     1640    20.3k        3.0M        3         4m      10-28 09:58  10-28 11:30
+codex        1         29.0k  330     0            24.0k       2         1m      10-28 10:10  10-28 10:11
+total        2         29.0k  1970    20.3k        3.1M        5         5m      10-28 09:58  10-28 11:30
+
+PROJECT  SESSIONS  INPUT  OUTPUT  CACHE WRITE  CACHE READ  MESSAGES  ACTIVE  FIRST        LAST
+app      1         16     1640    20.3k        3.0M        3         4m      10-28 09:58  10-28 11:30
+tools    1         29.0k  330     0            24.0k       2         1m      10-28 10:10  10-28 10:11
 
 1 malformed or overlong log line(s) skipped
 `, stderr: ""},
@@ -1646,7 +1648,7 @@ excludes cached tokens); there is no cost estimate.
 `},
 		"usage extra": {code: 2, stdout: "", stderr: `throt: unexpected argument "x"; see 'throt usage -h'
 `},
-		"usage none": {code: 0, stdout: `SINCE 2026-10-29 00:00 (active: gaps under 5m between a session's log entries, summed over sessions; tokens as logged, no cost estimate)
+		"usage none": {code: 0, stdout: `SINCE 2026-10-29 00:00  ·  ACTIVE sums a session's gaps under 5m  ·  tokens as logged, no cost estimate
 
 no agent sessions found in:
   $DIR/home/.claude/projects

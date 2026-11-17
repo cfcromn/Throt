@@ -172,7 +172,7 @@ WantedBy=default.target
 | `throt status --stats [--json]` | 에이전트별 CPU 시간, 최대 메모리, 무거운 작업 수, `throtd` 시작 이후 멈춰 있던 시간과 시작 전 줄 서서 기다린 시간. |
 | `throt status PID` | 무거운 작업이 실행 중이거나, 일시 정지되었거나, 대기 중인 이유. |
 | `throt usage [--by session\|project\|hour] [--since D] [--json]` | 에이전트 세션·프로젝트·시간대별 토큰과 실제 작업 시간. Claude Code와 Codex 세션 기록에서 읽는다. `throtd` 없이도 동작한다. [`throt usage`](#토큰과-시간-throt-usage) 참고. |
-| `throt events [-f] [-n N]` | 최근 데몬 이벤트를 JSON lines로 출력한다(기본 50개). `-f`를 주면 새 이벤트를 계속 출력한다. |
+| `throt events [-f] [-n N] [--json]` | 최근 데몬 이벤트를 출력한다(기본 50개). 터미널에서는 한 줄씩 읽기 쉽게, 파이프나 `--json`이면 JSON lines로 낸다. `-f`를 주면 새 이벤트를 계속 출력한다. |
 | `throt pause PID` | 내 에이전트가 소유한 무거운 작업을 일시 정지(SIGSTOP)한다. |
 | `throt resume [--force] PID` | 다시 재개한다. Throt가 일시 정지하지 않은 정지 프로세스도 재개한다. [문제 해결](#프로세스가-정지-상태t에-멈춰-있다)을 참고한다. |
 | `throt run [--timeout D] [--no-wait] -- CMD` | 무거운 작업 슬롯이 빌 때까지 기다린 뒤 `CMD`를 실행한다. [`throt run`](#시작-전에-기다리기-throt-run)을 참고한다. |

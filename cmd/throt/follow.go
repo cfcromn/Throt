@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,12 +21,11 @@ const (
 // limit events when since is 0 (the "events" method).
 type fetchEvents func(ctx context.Context, since uint64, limit int) ([]domain.Event, error)
 
-// follow prints the newest limit events, then every new event, as JSON lines
+// follow prints the newest limit events, then every new event, with print
 // until ctx is cancelled. Notices (restarts, missed events, connection
-// errors) go to errw so out stays machine-readable. Only a failure of the
+// errors) go to errw so the output stays machine-readable. Only a failure of the
 // first call is returned; later ones are reported once and retried.
-func follow(ctx context.Context, fetch fetchEvents, out, errw io.Writer, interval time.Duration, limit int) error {
-	enc := json.NewEncoder(out)
+func follow(ctx context.Context, fetch fetchEvents, print func(domain.Event), errw io.Writer, interval time.Duration, limit int) error {
 	var last uint64
 	var instance string
 	first, failing := true, false
@@ -74,7 +72,7 @@ func follow(ctx context.Context, fetch fetchEvents, out, errw io.Writer, interva
 					fmt.Fprintf(errw, "throt: missed %d events dropped from throtd's history\n", events[0].Seq-last-1)
 				}
 				for _, e := range events {
-					enc.Encode(e)
+					print(e)
 				}
 				last = events[len(events)-1].Seq
 			}

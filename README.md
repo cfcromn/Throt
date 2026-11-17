@@ -172,7 +172,7 @@ If `throt` still cannot reach a `throtd` started at login (your shell sets its o
 | `throt status --stats [--json]` | Per agent: CPU time, peak memory, heavy jobs, time queued and time waited in line since `throtd` started. |
 | `throt status PID` | Why a heavy workload is running, paused or queued. |
 | `throt usage [--by session\|project\|hour] [--since D] [--json]` | Tokens and active time per agent session, project or hour, read from the Claude Code and Codex session logs. Works without `throtd`. See [`throt usage`](#tokens-and-time-throt-usage). |
-| `throt events [-f] [-n N]` | Recent daemon events as JSON lines (default 50); `-f` keeps printing new ones. |
+| `throt events [-f] [-n N] [--json]` | Recent daemon events (default 50), one readable line each on a terminal and JSON lines in a pipe or with `--json`; `-f` keeps printing new ones. |
 | `throt pause PID` | Pause (SIGSTOP) a heavy workload owned by one of your agents. |
 | `throt resume [--force] PID` | Resume it. Also resumes stopped processes Throt did not pause; see [Troubleshooting](#a-process-is-stuck-stopped-state-t). |
 | `throt run [--timeout D] [--no-wait] -- CMD` | Wait for a free heavy slot, then run `CMD`. See [`throt run`](#wait-before-starting-throt-run). |
